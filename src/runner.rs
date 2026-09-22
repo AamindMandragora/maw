@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
@@ -14,6 +15,9 @@ pub trait Runner {
 
     // runs a command on the user's terminal, like an editor
     fn interactive(&self, program: &str, args: &[String]) -> Result<(), RunError>;
+
+    // runs a command on the user's terminal with text on its stdin, like a pager
+    fn pipe(&self, program: &str, args: &[String], input: &str) -> Result<(), RunError>;
 }
 
 pub struct SystemRunner;
@@ -42,6 +46,15 @@ impl Runner for SystemRunner {
         if !status.success() {
             return Err(RunError::Failed { program: program.into(), stderr: format!("exited with {status}") });
         }
+        Ok(())
+    }
+
+    // a pager that quits early just closes its stdin, which isn't an error
+    fn pipe(&self, program: &str, args: &[String], input: &str) -> Result<(), RunError> {
+        let spawn = |source| RunError::Spawn { program: program.into(), source };
+        let mut child = Command::new(program).args(args).stdin(std::process::Stdio::piped()).spawn().map_err(spawn)?;
+        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+        child.wait().map_err(spawn)?;
         Ok(())
     }
 }
@@ -73,6 +86,10 @@ pub mod fake {
 
         // recorded like run, with the answer ignored
         fn interactive(&self, program: &str, args: &[String]) -> Result<(), RunError> {
+            self.run(program, args).map(|_| ())
+        }
+
+        fn pipe(&self, program: &str, args: &[String], _: &str) -> Result<(), RunError> {
             self.run(program, args).map(|_| ())
         }
     }

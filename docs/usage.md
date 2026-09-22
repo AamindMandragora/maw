@@ -1,5 +1,16 @@
 # Usage
 
+## Getting help
+
+```sh
+maw help              # list topics
+maw help usage        # this guide; also modules, formats
+maw help drift        # any section, by its heading
+maw help add          # a command's options
+```
+
+Every command's `--help` ends with a `see:` line naming the section that explains it. On a terminal, help opens in `$PAGER` (`less` by default); set `NO_COLOR` to turn off styling.
+
 ## Setting up
 
 ```sh

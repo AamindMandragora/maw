@@ -4,6 +4,7 @@ pub mod build;
 pub mod edit;
 pub mod cli;
 pub mod env;
+pub mod help;
 pub mod eval;
 pub mod inputs;
 pub mod registry;

@@ -17,6 +17,7 @@ src/
   state.rs        # maw.nix: read from nix, written in a fixed shape
   edit.rs         # edit, new (with live-file import), add
   status.rs       # status and diff, planned without writing
+  help.rs         # maw help: the user docs, compiled in and rendered for the terminal
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/
@@ -40,7 +41,7 @@ Two seams keep everything testable without touching the machine:
 - `Env` holds every path: home, system root, state, and maw's share dir. Tests build one over a tempdir.
 - `Runner` runs every external command. Unit tests use `FakeRunner`, which records calls and answers with canned output.
 - `Ask` asks the user a question. The CLI asks on the terminal; tests answer with a fixed string or nothing.
-- `Runner::interactive` runs a command on the user's terminal, like the editor. `FakeRunner` records it like any other call.
+- `Runner::interactive` runs a command on the user's terminal, like the editor, and `Runner::pipe` feeds one text on stdin, like the pager. `FakeRunner` records both like any other call.
 
 Running the binary picks these up from the environment:
 
@@ -67,6 +68,10 @@ MAW_BLESS=1 cargo test      # rewrite goldens from current output
 ```
 
 After blessing, check the golden diff before committing.
+
+## Docs
+
+`docs/usage.md`, `docs/modules.md`, and `docs/formats.md` are compiled into the binary and served by `maw help`, so they're user-facing twice: keep them readable as plain text, with headings that make sense as `maw help <heading>`. Link between them as `[formats.md](formats.md)`; the terminal renders that as `maw help formats`. A test checks that every command's `see:` line names a real heading. This file isn't compiled in.
 
 ## Pinned nixpkgs lib
 

@@ -2,16 +2,17 @@ use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
 use crate::build::{self, BuildError, Report};
 use crate::edit;
 use crate::env::Env;
-use crate::status;
+use crate::help;
 use crate::repo::Repo;
 use crate::runner::{Runner, SystemRunner};
+use crate::status;
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "maw", version, about = "declarative system manager for void linux")]
+#[command(name = "maw", version, about = "declarative system manager for void linux", disable_help_subcommand = true, after_help = "see: maw help")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -19,38 +20,51 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    #[command(about = "create a dotfiles repo, or adopt an existing one")]
-    Init { path: PathBuf },
-    #[command(about = "render changed modules into out/")]
+    #[command(about = "create a dotfiles repo, or adopt an existing one", after_help = "see: maw help setting up")]
+    Init {
+        #[arg(help = "where the repo is, or should be")]
+        path: PathBuf,
+    },
+    #[command(about = "render changed modules into out/", after_help = "see: maw help building")]
     Build {
         #[arg(long, help = "overwrite out/ files edited in place, backing them up")]
         force: bool,
     },
-    #[command(about = "build, then link everything into place")]
+    #[command(about = "build, then link everything into place", after_help = "see: maw help activating")]
     Activate {
         #[arg(long, help = "print the plan without changing anything")]
         dry_run: bool,
         #[arg(long, help = "replace drifted files, backing them up")]
         force: bool,
     },
-    #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate")]
-    Edit { name: String },
-    #[command(about = "create modules/<name>.nix, importing any live config, then edit it")]
+    #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate", after_help = "see: maw help editing")]
+    Edit {
+        #[arg(help = "a module or static/ name, or `config`")]
+        name: String,
+    },
+    #[command(about = "create modules/<name>.nix, importing any live config, then edit it", after_help = "see: maw help writing a module")]
     New {
+        #[arg(help = "the program, as the registry names it")]
         name: String,
         #[arg(long, help = "css, ini, json, kdl, keyValue, raw, shell, or toml; defaults to the registry's")]
         format: Option<String>,
     },
-    #[command(about = "copy a file or dir into static/, then activate so it's linked back in place")]
+    #[command(about = "copy a file or dir into static/, then activate so it's linked back in place", after_help = "see: maw help adding verbatim files")]
     Add {
+        #[arg(help = "file or dir to copy")]
         path: PathBuf,
         #[arg(help = "registry name to file it under; inferred from the path when omitted")]
         name: Option<String>,
     },
-    #[command(about = "show what activating would change in each live file")]
+    #[command(about = "show what activating would change in each live file", after_help = "see: maw help checking")]
     Diff,
-    #[command(about = "list files out of sync with the repo")]
+    #[command(about = "list files out of sync with the repo", after_help = "see: maw help checking")]
     Status,
+    #[command(about = "read the docs: a topic, a command, or any section by its heading")]
+    Help {
+        #[arg(help = "usage, modules, formats, a command, or a heading like `drift`")]
+        query: Vec<String>,
+    },
 }
 
 pub fn main() -> Result<()> {
@@ -67,6 +81,7 @@ pub fn main() -> Result<()> {
         Command::Add { path, name } => add(&env, &runner, &path, name.as_deref()),
         Command::Diff => diff(&env, &runner),
         Command::Status => status(&env, &runner),
+        Command::Help { query } => show_help(&runner, &query.join(" ")),
     }
 }
 
@@ -211,6 +226,43 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     Ok(())
 }
 
+// a topic, a command's --help, or a doc section, paged on a terminal
+fn show_help(runner: &dyn Runner, query: &str) -> Result<()> {
+    let terminal = std::io::stdout().is_terminal();
+    let color = terminal && std::env::var_os("NO_COLOR").is_none();
+    let Some(text) = help_text(query, color) else {
+        anyhow::bail!("no help on {query}; `maw help` lists topics");
+    };
+
+    // $PAGER, else less; printing directly if there's no terminal or no pager
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -FRX".into());
+    let mut words = pager.split_whitespace().map(String::from);
+    let paged = terminal && words.next().is_some_and(|program| runner.pipe(&program, &words.collect::<Vec<_>>(), &text).is_ok());
+    if !paged {
+        print!("{text}");
+    }
+    Ok(())
+}
+
+// the topic list for no query, else the first of: topic, command, section
+fn help_text(query: &str, color: bool) -> Option<String> {
+    if query.is_empty() {
+        let topics: String = help::TOPICS.iter().map(|topic| format!("  {:<9}{}\n", topic.name, topic.summary)).collect();
+        return Some(format!("topics:\n{topics}\nmaw help <topic | command | heading>, e.g. `maw help drift`\n"));
+    }
+    let render = |markdown: String| help::render(&markdown, color);
+    if help::TOPICS.iter().any(|topic| topic.name == query) {
+        return help::find(query).map(render);
+    }
+
+    let mut command = Cli::command();
+    command.build();
+    match command.find_subcommand_mut(query) {
+        Some(subcommand) => Some(subcommand.render_long_help().to_string()),
+        None => help::find(query).map(render),
+    }
+}
+
 fn relative(repo: &Repo, path: &Path) -> String {
     path.strip_prefix(&repo.root).unwrap_or(path).display().to_string()
 }
@@ -246,5 +298,27 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
 
     if dry_run && !activation.steps.is_empty() {
         println!("dry run, nothing linked");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_see_pointer_resolves() {
+        Cli::command().get_subcommands().filter_map(|subcommand| subcommand.get_after_help()).for_each(|after| {
+            let query = after.to_string().trim_start_matches("see: maw help ").to_string();
+            assert!(help::find(&query).is_some(), "{query}");
+        });
+    }
+
+    #[test]
+    fn help_resolves_topics_commands_and_sections() {
+        assert!(help_text("", false).unwrap().contains("formats"));
+        assert!(help_text("formats", false).unwrap().starts_with("Formats"));
+        assert!(help_text("add", false).unwrap().contains("Usage: maw add"));
+        assert!(help_text("drift", false).unwrap().starts_with("Drift"));
+        assert!(help_text("nonsense words", false).is_none());
     }
 }
