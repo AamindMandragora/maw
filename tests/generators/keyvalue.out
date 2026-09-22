@@ -1,0 +1,6 @@
+command=exec foo --bar
+enabled=true
+font=mono
+include=a.conf
+include=b.conf
+size=11

@@ -1,0 +1,359 @@
+binds {
+    Ctrl+Alt+Delete {
+        quit
+    }
+    Mod+1 {
+        focus-workspace 1
+    }
+    Mod+2 {
+        focus-workspace 2
+    }
+    Mod+3 {
+        focus-workspace 3
+    }
+    Mod+4 {
+        focus-workspace 4
+    }
+    Mod+5 {
+        focus-workspace 5
+    }
+    Mod+6 {
+        focus-workspace 6
+    }
+    Mod+7 {
+        focus-workspace 7
+    }
+    Mod+8 {
+        focus-workspace 8
+    }
+    Mod+9 {
+        focus-workspace 9
+    }
+    Mod+A {
+        toggle-window-floating
+    }
+    Mod+Alt+R {
+        spawn "sh" "-c" "pkill gpu-screen-recorder"
+    }
+    Mod+Alt+S {
+        spawn "bash" "-c" "grim -g \"$(slurp)\" - | tesseract stdin stdout -l eng 2>/dev/null | wl-copy"
+    }
+    Mod+BracketLeft {
+        consume-or-expel-window-left
+    }
+    Mod+BracketRight {
+        consume-or-expel-window-right
+    }
+    Mod+C {
+        center-column
+    }
+    Mod+Ctrl+1 {
+        move-column-to-workspace 1
+    }
+    Mod+Ctrl+2 {
+        move-column-to-workspace 2
+    }
+    Mod+Ctrl+3 {
+        move-column-to-workspace 3
+    }
+    Mod+Ctrl+4 {
+        move-column-to-workspace 4
+    }
+    Mod+Ctrl+5 {
+        move-column-to-workspace 5
+    }
+    Mod+Ctrl+6 {
+        move-column-to-workspace 6
+    }
+    Mod+Ctrl+7 {
+        move-column-to-workspace 7
+    }
+    Mod+Ctrl+8 {
+        move-column-to-workspace 8
+    }
+    Mod+Ctrl+9 {
+        move-column-to-workspace 9
+    }
+    Mod+Ctrl+Down {
+        move-window-down
+    }
+    Mod+Ctrl+Left {
+        move-column-left
+    }
+    Mod+Ctrl+R {
+        reset-window-height
+    }
+    Mod+Ctrl+Right {
+        move-column-right
+    }
+    Mod+Ctrl+S {
+        screenshot-screen
+    }
+    Mod+Ctrl+Shift+R {
+        switch-preset-window-height
+    }
+    Mod+Ctrl+Up {
+        move-window-up
+    }
+    Mod+Down {
+        focus-window-or-workspace-down
+    }
+    Mod+E {
+        spawn "nautilus"
+    }
+    Mod+Equal {
+        set-column-width "+10%"
+    }
+    Mod+F {
+        maximize-column
+    }
+    Mod+L {
+        spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"
+    }
+    Mod+Left {
+        focus-column-or-monitor-left
+    }
+    Mod+Minus {
+        set-column-width "-10%"
+    }
+    Mod+O repeat=false {
+        toggle-overview
+    }
+    Mod+Period {
+        spawn "emote"
+    }
+    Mod+Q repeat=false {
+        close-window
+    }
+    Mod+R {
+        switch-preset-column-width
+    }
+    Mod+Right {
+        focus-column-or-monitor-right
+    }
+    Mod+S {
+        screenshot
+    }
+    Mod+Shift+A {
+        switch-focus-between-floating-and-tiling
+    }
+    Mod+Shift+Down {
+        move-column-to-monitor-down
+    }
+    Mod+Shift+Equal {
+        set-window-height "+10%"
+    }
+    Mod+Shift+F {
+        fullscreen-window
+    }
+    Mod+Shift+Left {
+        move-column-to-monitor-left
+    }
+    Mod+Shift+Minus {
+        set-window-height "-10%"
+    }
+    Mod+Shift+R {
+        spawn "sh" "-c" "GEOM=$(slurp) && REGION=$(echo \"$GEOM\" | awk -F'[ ,x]' '{print $3\"x\"$4\"+\"$1\"+\"$2}') && gpu-screen-recorder -encoder cpu -w region -region \"$REGION\" -a default_output -f 60 -o ~/Videos/Captures/$(date +%Y-%m-%d_%H-%M-%S).mp4"
+    }
+    Mod+Shift+Right {
+        move-column-to-monitor-right
+    }
+    Mod+Shift+S {
+        screenshot-window
+    }
+    Mod+Shift+Slash {
+        show-hotkey-overlay
+    }
+    Mod+Shift+Up {
+        move-column-to-monitor-up
+    }
+    Mod+Shift+WheelScrollDown {
+        focus-column-or-monitor-right
+    }
+    Mod+Shift+WheelScrollUp {
+        focus-column-or-monitor-left
+    }
+    Mod+Space hotkey-overlay-title="fuzzel" {
+        spawn "fuzzel"
+    }
+    Mod+T hotkey-overlay-title="ghostty" {
+        spawn "ghostty"
+    }
+    Mod+Tab {
+        focus-workspace-previous
+    }
+    Mod+TouchpadScrollDown {
+        spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02+ -l 1.0"
+    }
+    Mod+TouchpadScrollUp {
+        spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.02-"
+    }
+    Mod+Up {
+        focus-window-or-workspace-up
+    }
+    Mod+V {
+        spawn "vivaldi-stable"
+    }
+    Mod+W {
+        toggle-column-tabbed-display
+    }
+    Mod+WheelScrollDown cooldown-ms=200 {
+        focus-window-or-workspace-down
+    }
+    Mod+WheelScrollUp cooldown-ms=200 {
+        focus-window-or-workspace-up
+    }
+    XF86AudioLowerVolume {
+        spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.05-"
+    }
+    XF86AudioMicMute {
+        spawn-sh "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"
+    }
+    XF86AudioMute {
+        spawn-sh "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+    }
+    XF86AudioNext {
+        spawn-sh "playerctl next"
+    }
+    XF86AudioPlay {
+        spawn-sh "playerctl play-pause"
+    }
+    XF86AudioPrev {
+        spawn-sh "playerctl previous"
+    }
+    XF86AudioRaiseVolume {
+        spawn-sh "wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.05+ -l 1.0"
+    }
+    XF86AudioStop {
+        spawn-sh "playerctl stop"
+    }
+    XF86MonBrightnessDown {
+        spawn "brightnessctl" "--class=backlight" "set" "10%-"
+    }
+    XF86MonBrightnessUp {
+        spawn "brightnessctl" "--class=backlight" "set" "+10%"
+    }
+    XF86PowerOff {
+        spawn "~/.local/bin/powermenu"
+    }
+    XF86WakeUp {
+        spawn "true"
+    }
+}
+environment {
+    QT_QPA_PLATFORM "wayland"
+    QT_QPA_PLATFORMTHEME "qt5ct"
+}
+gestures {
+    hot-corners {
+        off
+    }
+}
+hotkey-overlay {
+    skip-at-startup
+}
+input {
+    disable-power-key-handling
+    keyboard {
+        numlock
+        xkb {
+            options "compose:ralt"
+        }
+    }
+    mouse {
+        accel-profile "adaptive"
+        accel-speed 1
+    }
+    tablet {
+        map-to-output "DP-1"
+    }
+    touchpad {
+        accel-profile "adaptive"
+        accel-speed 0.5
+        dwt
+        dwtp
+        natural-scroll
+        tap
+    }
+}
+layer-rule {
+    match namespace="^wallpaper$"
+    place-within-backdrop true
+}
+layout {
+    background-color "transparent"
+    border {
+        off
+    }
+    center-focused-column "never"
+    default-column-display "tabbed"
+    default-column-width {
+        proportion 0.5
+    }
+    focus-ring {
+        off
+    }
+    gaps 0
+    preset-column-widths {
+        proportion 0.25
+        proportion 0.33333
+        proportion 0.5
+        proportion 0.66667
+        proportion 0.75
+        proportion 1.0
+    }
+    tab-indicator {
+        corner-radius 16
+        gap 4
+        hide-when-single-tab
+        length total-proportion=1.0
+        place-within-column
+        position "left"
+        width 6
+    }
+}
+output "eDP-1" {
+    position x=0 y=0
+    scale 2
+}
+output "DP-4" {
+    mode "2560x1440@59.951"
+    position x=1440 y=-540
+}
+overview {
+    workspace-shadow {
+        off
+    }
+    zoom 0.65
+}
+prefer-no-csd
+recent-windows {
+    binds {}
+}
+screenshot-path "~/Pictures/Screenshots/%Y-%m-%d_%H-%M-%S.png"
+spawn-at-startup "gnome-keyring-daemon" "--start" "--components=pkcs11,secrets,ssh"
+spawn-at-startup "wl-paste" "--watch" "cliphist" "store"
+spawn-at-startup "swaybg" "-i" "/home/advay/Documents/Wallpapers/paper.jpg"
+spawn-at-startup "waybar"
+spawn-at-startup "gsettings" "set" "org.gnome.desktop.interface" "color-scheme" "prefer-dark"
+spawn-at-startup "pipewire"
+spawn-at-startup "sh" "-c" "sleep 0.5 && pipewire-pulse"
+spawn-at-startup "sh" "-c" "sleep 1 && wireplumber"
+window-rule {
+    default-column-width {}
+    match app-id="^org\\.wezfurlong\\.wezterm$"
+}
+window-rule {
+    clip-to-geometry true
+    geometry-corner-radius 0
+}
+window-rule {
+    match app-id="^ssf2\\.exe"
+    min-height 844
+    min-width 1424
+    open-maximized true
+}
+window-rule {
+    match app-id="[Rr]yujinx" title="ContentDialogOverlayWindow"
+    open-floating true
+}

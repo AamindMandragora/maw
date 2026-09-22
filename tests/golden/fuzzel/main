@@ -1,0 +1,30 @@
+[border]
+radius=30
+selection-radius=15
+width=2
+
+[colors]
+background=1c1c1eE6
+border=ffffff1a
+match=8e8e93ff
+placeholder=8e8e93ff
+selection=ffffff1f
+selection-match=ffffffff
+selection-text=ffffffff
+text=f2f2f7ff
+
+[main]
+anchor=center
+fields=filename,name,generic,keywords
+font=Adwaita Sans:size=16
+horizontal-pad=24
+icons-enabled=yes
+image-size-ratio=0.4
+inner-pad=10
+layer=overlay
+line-height=28
+lines=8
+prompt="🔍 "
+vertical-pad=18
+width=48
+y-margin=180

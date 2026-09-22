@@ -1,0 +1,183 @@
+{
+  "backlight": {
+    "format": "{icon}  {percent}%",
+    "format-icons": [
+      "󰃞",
+      "󰃟",
+      "󰃠"
+    ],
+    "tooltip-format": "Brightness: {percent}%"
+  },
+  "backlight/slider": {
+    "max": 100,
+    "min": 5,
+    "orientation": "horizontal"
+  },
+  "battery": {
+    "bat": "BAT0",
+    "format": "{icon}  {capacity}%",
+    "format-charging": "󰂄  {capacity}%",
+    "format-full": "󰁹  Full",
+    "format-icons": [
+      "󰁺",
+      "󰁻",
+      "󰁼",
+      "󰁽",
+      "󰁾",
+      "󰁿",
+      "󰂀",
+      "󰂁",
+      "󰂂",
+      "󰁹"
+    ],
+    "interval": 30,
+    "states": {
+      "critical": 10,
+      "warning": 25
+    },
+    "tooltip-format": "{timeTo}\n{power:.1f}W draw"
+  },
+  "bluetooth": {
+    "format": "󰂯  {status}",
+    "format-connected": "󰂱  {device_alias}",
+    "format-connected-battery": "󰂱  {device_alias}  {device_battery_percentage}%",
+    "format-disabled": "󰂲",
+    "format-off": "󰂲",
+    "on-click": "blueman-manager",
+    "tooltip-format-connected": "{device_enumerate}",
+    "tooltip-format-enumerate-connected": "{device_alias}\t{device_battery_percentage}%"
+  },
+  "clock": {
+    "actions": {
+      "on-click": "tz_up"
+    },
+    "calendar": {
+      "format": {
+        "months": "<span color='#ffffff'><b>{}</b></span>",
+        "today": "<span color='#FF3B30'><b>{}</b></span>",
+        "weekdays": "<span color='#bbbbbb'><b>{}</b></span>",
+        "weeks": "<span color='#888888'>W{}</span>"
+      },
+      "mode": "month",
+      "weeks-pos": "left"
+    },
+    "format": "{0:%a %d %b  ·  %I:%M %p (%Z)}",
+    "timezones": [
+      "",
+      "Asia/Kolkata"
+    ],
+    "tooltip": true,
+    "tooltip-format": "<tt>{calendar}</tt>"
+  },
+  "cpu": {
+    "format": "{usage:>2}% cpu",
+    "interval": 1
+  },
+  "custom/off": {
+    "format": "⏻",
+    "on-click": "~/.local/bin/powermenu",
+    "tooltip": true,
+    "tooltip-format": "Power Off"
+  },
+  "exclusive": true,
+  "group/device": {
+    "drawer": {
+      "transition-duration": 250
+    },
+    "modules": [
+      "battery",
+      "cpu",
+      "memory"
+    ],
+    "orientation": "inherit"
+  },
+  "group/internet": {
+    "drawer": {
+      "transition-duration": 250
+    },
+    "modules": [
+      "network",
+      "bluetooth"
+    ],
+    "orientation": "inherit"
+  },
+  "group/waves": {
+    "drawer": {
+      "transition-duration": 250
+    },
+    "modules": [
+      "wireplumber",
+      "pulseaudio/slider",
+      "backlight",
+      "backlight/slider"
+    ],
+    "orientation": "inherit"
+  },
+  "height": 34,
+  "layer": "top",
+  "memory": {
+    "format": "{percentage}% memory",
+    "interval": 30
+  },
+  "modules-center": [
+    "clock"
+  ],
+  "modules-left": [
+    "group/device",
+    "group/internet",
+    "group/waves"
+  ],
+  "modules-right": [
+    "mpris",
+    "niri/workspaces",
+    "custom/off"
+  ],
+  "mpris": {
+    "artist-len": 12,
+    "format": "{status_icon}  <i>{title}</i> - {artist}",
+    "format-paused": "{status_icon}  <i>{title}</i> - {artist}",
+    "status-icons": {
+      "paused": "<span font='8'>󰐊</span>",
+      "playing": "<span font='8'>󰏤</span>"
+    },
+    "title-len": 20,
+    "tooltip": false
+  },
+  "network": {
+    "format-disconnected": "󰖪",
+    "format-ethernet": "󰈀  {ifname}",
+    "format-wifi": "󰖩  {essid}",
+    "on-click": "ghostty -e 'sh -c \"sleep 0.005 && nmtui\"'",
+    "tooltip-format-wifi": "{signalStrength}%  ·  {ipaddr}  ·  {bandwidthUpBits}↑ {bandwidthDownBits}↓"
+  },
+  "niri/workspaces": {
+    "all-outputs": false,
+    "disable-click": false,
+    "format": "{icon}",
+    "format-icons": {
+      "active": "○",
+      "default": "•",
+      "empty": " ",
+      "focused": "●"
+    }
+  },
+  "position": "top",
+  "pulseaudio/slider": {
+    "max": 100,
+    "min": 0,
+    "on-click": "pwvucontrol",
+    "orientation": "horizontal"
+  },
+  "spacing": 0,
+  "wireplumber": {
+    "format": "{icon}  {volume}%",
+    "format-icons": [
+      "󰕿",
+      "󰖀",
+      "󰕾"
+    ],
+    "format-muted": "󰝟  Muted",
+    "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+    "tooltip-format": "Volume: {volume}%\nNode: {node_name}"
+  }
+}

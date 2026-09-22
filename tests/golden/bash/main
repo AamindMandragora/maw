@@ -1,0 +1,5 @@
+alias gs='git status'
+alias ll='ls -l'
+export EDITOR='nvim'
+export PATH="$HOME/.local/bin:$PATH"
+PS1='\w \$ '

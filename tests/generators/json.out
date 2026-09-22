@@ -1,0 +1,12 @@
+{
+  "clock": {
+    "format": "{:%H:%M}"
+  },
+  "custom": { "exec": "date" },
+  "empty": {},
+  "height": 30,
+  "layer": "top",
+  "modules-left": [
+    "niri/workspaces"
+  ]
+}

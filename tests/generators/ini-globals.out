@@ -1,0 +1,4 @@
+shell=bash
+
+[main]
+term=xterm-256color
