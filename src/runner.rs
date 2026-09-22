@@ -11,6 +11,9 @@ pub enum RunError {
 // every external command goes through this, so tests can swap in a fake
 pub trait Runner {
     fn run(&self, program: &str, args: &[String]) -> Result<String, RunError>;
+
+    // runs a command on the user's terminal, like an editor
+    fn interactive(&self, program: &str, args: &[String]) -> Result<(), RunError>;
 }
 
 pub struct SystemRunner;
@@ -28,6 +31,18 @@ impl Runner for SystemRunner {
             return Err(RunError::Failed { program: program.into(), stderr });
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+
+    fn interactive(&self, program: &str, args: &[String]) -> Result<(), RunError> {
+        let status = Command::new(program).args(args).status().map_err(|source| RunError::Spawn {
+            program: program.into(),
+            source,
+        })?;
+
+        if !status.success() {
+            return Err(RunError::Failed { program: program.into(), stderr: format!("exited with {status}") });
+        }
+        Ok(())
     }
 }
 
@@ -54,6 +69,11 @@ pub mod fake {
         fn run(&self, program: &str, args: &[String]) -> Result<String, RunError> {
             self.calls.borrow_mut().push(format!("{program} {}", args.join(" ")));
             Ok((self.respond)(program, args))
+        }
+
+        // recorded like run, with the answer ignored
+        fn interactive(&self, program: &str, args: &[String]) -> Result<(), RunError> {
+            self.run(program, args).map(|_| ())
         }
     }
 }

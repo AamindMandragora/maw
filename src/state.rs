@@ -78,12 +78,12 @@ fn answer_nix(answer: &PathAnswer) -> String {
 }
 
 // a nix string literal, escaping quotes, backslashes, and interpolation
-fn string(text: &str) -> String {
+pub fn string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\"").replace("${", "\\${"))
 }
 
 // attribute names are bare when nix allows it, else quoted
-fn attr_name(name: &str) -> String {
+pub fn attr_name(name: &str) -> String {
     let mut chars = name.chars();
     let starts_ok = chars.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
     let rest_ok = chars.all(|char| char.is_ascii_alphanumeric() || "_'-".contains(char));

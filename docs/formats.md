@@ -135,6 +135,25 @@ For bashrc-style files. Takes `{ aliases; exports; extra; }`:
 
 Values are single-quoted. Use `lib.raw` to keep `$` expansion.
 
+## toml (`lib.toTOML`)
+
+Scalars and lists at the top level come first. Attrsets become `[tables]`, nested ones `[a.b]`, and lists of attrsets `[[arrays of tables]]`. An attrset inside a list is written inline. A `lib.raw` value is written as-is after `key = `.
+
+```nix
+{
+  terminal.vt = 1;
+  default_session = { command = "tuigreet --cmd niri-session"; user = "greeter"; };
+}
+```
+```toml
+[default_session]
+command = "tuigreet --cmd niri-session"
+user = "greeter"
+
+[terminal]
+vt = 1
+```
+
 ## raw
 
 The default format. `settings` is a string written as-is.

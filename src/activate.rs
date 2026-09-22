@@ -1,5 +1,6 @@
 use crate::backup;
 use crate::build::{self, BuildError, Report};
+pub use crate::build::Options;
 use crate::env::Env;
 use crate::inputs::{Inputs, InputsError, load_json, save_json};
 use crate::registry::{self, Registry};
@@ -35,12 +36,6 @@ pub trait Ask {
     fn ask(&self, question: &str) -> Option<String>;
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Options {
-    pub dry_run: bool,
-    pub force: bool,
-}
-
 // one linked file as the last activation left it
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct Linked {
@@ -56,10 +51,10 @@ struct Manifest {
 
 // a file that should be linked into place
 #[derive(Debug, Clone)]
-struct Wanted {
-    destination: PathBuf,
-    source: PathBuf,
-    hash: String,
+pub struct Wanted {
+    pub destination: PathBuf,
+    pub source: PathBuf,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,10 +84,33 @@ pub struct Activation {
     pub answered: Vec<String>,
 }
 
+// everything an activation would do, before any link is touched
+pub struct Planned {
+    pub build: Report,
+    pub wanted: Vec<Wanted>,
+    pub steps: Vec<Step>,
+    manifest: Manifest,
+    next: Manifest,
+}
+
 // builds, plans links against the manifest and live files, and applies the plan unless dry_run
 pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, options: Options) -> Result<Activation, ActivateError> {
     let answered = if options.dry_run { Vec::new() } else { place_loose(env, runner, repo, ask)? };
-    let build = build::build(env, runner, repo, options.force && !options.dry_run)?;
+    let planned = plan_activation(env, runner, repo, options)?;
+    if options.dry_run {
+        return Ok(Activation { build: planned.build, steps: planned.steps, backups: Vec::new(), answered });
+    }
+
+    let backups = apply(env, &planned.steps, &planned.wanted)?;
+    if planned.next != planned.manifest {
+        save_json(&env.state_dir.join("manifest"), &planned.next)?;
+    }
+    Ok(Activation { build: planned.build, steps: planned.steps, backups, answered })
+}
+
+// builds (or with dry_run only renders), then plans every link without touching one
+pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> Result<Planned, ActivateError> {
+    let build = build::build(env, runner, repo, options)?;
 
     let inputs_file = env.state_dir.join("inputs");
     let mut inputs = Inputs::load(&inputs_file)?;
@@ -101,20 +119,10 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
 
     let wanted = wanted(&build, statics)?;
     let edited: HashSet<PathBuf> = build.drifted.iter().map(|output| output.out.clone()).collect();
-    let manifest_file = env.state_dir.join("manifest");
-    let manifest: Manifest = load_json(&manifest_file)?;
+    let manifest: Manifest = load_json(&env.state_dir.join("manifest"))?;
     let (mut steps, next) = plan(&manifest, &wanted, &edited, options.force);
     steps.extend(unplaced.into_iter().map(|file| Step::Unplaced { file }));
-
-    if options.dry_run {
-        return Ok(Activation { build, steps, backups: Vec::new(), answered });
-    }
-
-    let backups = apply(env, &steps, &wanted)?;
-    if next != manifest {
-        save_json(&manifest_file, &next)?;
-    }
-    Ok(Activation { build, steps, backups, answered })
+    Ok(Planned { build, wanted, steps, manifest, next })
 }
 
 // the plan, plus the manifest it leaves behind once applied
@@ -164,7 +172,7 @@ fn decide(manifest: &Manifest, file: &Wanted, edited: &HashSet<PathBuf>, force: 
     }
 }
 
-fn links_to(link: &Path, target: &Path) -> bool {
+pub fn links_to(link: &Path, target: &Path) -> bool {
     fs::read_link(link).is_ok_and(|current| current == target)
 }
 
@@ -264,7 +272,7 @@ fn loose_name(registry: &Registry, path: &Path) -> Option<String> {
 }
 
 // scripts, wallpapers, or fonts, when exactly one fits
-fn category(path: &Path) -> Option<&'static str> {
+pub fn category(path: &Path) -> Option<&'static str> {
     let extension = path.extension().map(|ext| ext.to_string_lossy().to_lowercase()).unwrap_or_default();
     let executable = fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
     let image = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "jxl", "avif"].contains(&extension.as_str());
@@ -318,7 +326,7 @@ fn parse_answer(answer: &str, file_name: &str, registry: &Registry) -> Option<Pa
 }
 
 // every non-directory under dir, sorted; a missing dir has none
-fn walk(dir: &Path) -> Result<Vec<PathBuf>, ActivateError> {
+pub fn walk(dir: &Path) -> Result<Vec<PathBuf>, ActivateError> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -338,16 +346,9 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, ActivateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::fake::FakeRunner;
+    use crate::testing::{self, Fixture, write};
     use serde_json::json;
     use std::time::SystemTime;
-
-    struct Fixture {
-        _dir: tempfile::TempDir,
-        env: Env,
-        repo: Repo,
-        runner: FakeRunner,
-    }
 
     // answers every question the same way
     struct Answer(Option<&'static str>);
@@ -358,42 +359,11 @@ mod tests {
         }
     }
 
-    // a repo with foot and scripts modules and a static/nvim file, over a fake nix
+    // foot and scripts modules plus a static/nvim file
     fn fixture() -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
-        let env = Env::new(&dir.path().join("home"), &dir.path().join("sys"), &dir.path().join("share"));
-        fs::create_dir_all(env.nix_dir()).unwrap();
-        ["lib.nix", "default.nix"].iter().for_each(|file| fs::write(env.nix_dir().join(file), "").unwrap());
-        fs::write(env.registry_file(), "").unwrap();
-
-        let (repo, _) = Repo::init(&env, &FakeRunner::new(|_, _| String::new()), &dir.path().join("dots")).unwrap();
-        ["foot", "scripts"].iter().for_each(|name| fs::write(repo.module_file(name), "").unwrap());
-        write(&repo.static_dir().join("nvim/init.lua"), "vim.o.number = true\n");
-
-        Fixture { _dir: dir, env, repo, runner: FakeRunner::new(fake_nix) }
-    }
-
-    // answers registry.nix, maw.nix, and -A modules.<name> like nix-instantiate would
-    fn fake_nix(_: &str, args: &[String]) -> String {
-        let target = args.last().unwrap();
-        if target.ends_with("registry.nix") {
-            return json!({
-                "foot": { "files": { "main": "foot/foot.ini" } },
-                "scripts": { "dir": "~/.local/bin", "executable": true },
-                "wallpapers": { "dir": "~/.local/share/wallpapers" },
-            })
-            .to_string();
-        }
-        if target.ends_with("maw.nix") {
-            return json!({ "paths": {} }).to_string();
-        }
-        let name = args[args.len() - 2].trim_start_matches("modules.");
-        json!([{ "name": name, "key": "main", "content": format!("{name} v1\n"), "executable": false, "scope": "user" }]).to_string()
-    }
-
-    fn write(path: &Path, content: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, content).unwrap();
+        let fixture = testing::fixture(&["foot", "scripts"]);
+        write(&fixture.repo.static_dir().join("nvim/init.lua"), "vim.o.number = true\n");
+        fixture
     }
 
     fn run(fixture: &Fixture, options: Options) -> Activation {
@@ -421,10 +391,10 @@ mod tests {
         assert_eq!(fs::read_link(foot(&fixture)).unwrap(), fixture.repo.out_dir().join("foot/foot.ini"));
         assert_eq!(fs::read_to_string(fixture.env.home.join(".config/nvim/init.lua")).unwrap(), "vim.o.number = true\n");
 
-        let before = snapshot(fixture._dir.path());
+        let before = snapshot(fixture.dir.path());
         let second = run(&fixture, Options::default());
         assert!(second.steps.is_empty() && second.build.is_empty());
-        assert_eq!(snapshot(fixture._dir.path()), before);
+        assert_eq!(snapshot(fixture.dir.path()), before);
     }
 
     #[test]

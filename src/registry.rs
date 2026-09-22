@@ -55,11 +55,12 @@ impl Registry {
         self.entries.get(name).cloned().unwrap_or_default()
     }
 
-    // destination spec of one file: files.<key>, else <dir>/<key>, with main named config
+    // destination spec of one file: files.<key>, else the files entry with that file name, else <dir>/<key>
     pub fn spec(&self, name: &str, key: &str) -> String {
         let entry = self.entry(name);
-        entry.files.get(key).cloned().unwrap_or_else(|| {
-            let dir = entry.dir.unwrap_or_else(|| name.into());
+        let by_file_name = || entry.files.values().find(|spec| Path::new(spec).file_name().is_some_and(|file| file == key)).cloned();
+        entry.files.get(key).cloned().or_else(by_file_name).unwrap_or_else(|| {
+            let dir = entry.dir.clone().unwrap_or_else(|| name.into());
             format!("{dir}/{}", default_file_name(key))
         })
     }
@@ -70,6 +71,21 @@ impl Registry {
             Some(spec) => Path::new(spec).file_name().map(PathBuf::from).unwrap_or_else(|| key.into()),
             None => default_file_name(key).into(),
         }
+    }
+
+    // the (name, key) whose destination is this path: an exact files entry, else a file under an entry's dir
+    pub fn locate(&self, env: &Env, path: &Path) -> Option<(String, String)> {
+        let file_name = path.file_name()?.to_string_lossy().into_owned();
+        let exact = self.entries.iter().find(|(_, entry)| entry.files.values().any(|spec| resolve(env, spec) == path)).map(|(name, _)| (name.clone(), file_name));
+
+        // entries without a dir default to ~/.config/<name>, which the caller handles
+        let under_dir = || {
+            self.entries.iter().find_map(|(name, entry)| {
+                let relative = path.strip_prefix(resolve(env, entry.dir.as_deref()?)).ok()?;
+                Some((name.clone(), relative.to_string_lossy().into_owned()))
+            })
+        };
+        exact.or_else(under_dir)
     }
 }
 
@@ -121,6 +137,7 @@ mod tests {
         assert_eq!(registry.spec("scripts", "powermenu"), "~/.local/bin/powermenu");
         assert_eq!(registry.spec("unknown", "main"), "unknown/config");
         assert_eq!(registry.spec("unknown", "theme.conf"), "unknown/theme.conf");
+        assert_eq!(registry.spec("bash", ".bashrc"), "~/.bashrc");
     }
 
     #[test]
@@ -138,6 +155,16 @@ mod tests {
         assert_eq!(registry.out_name("bash", "main"), PathBuf::from(".bashrc"));
         assert_eq!(registry.out_name("unknown", "main"), PathBuf::from("config"));
         assert_eq!(registry.out_name("unknown", "themes/dark"), PathBuf::from("themes/dark"));
+    }
+
+    #[test]
+    fn locate_finds_files_then_dirs() {
+        let registry = registry(json!({}));
+        let env = Env::new(Path::new("/h"), Path::new("/sys"), Path::new("/share"));
+        assert_eq!(registry.locate(&env, Path::new("/h/.bashrc")), Some(("bash".into(), ".bashrc".into())));
+        assert_eq!(registry.locate(&env, Path::new("/h/.local/bin/tools/up")), Some(("scripts".into(), "tools/up".into())));
+        assert_eq!(registry.locate(&env, Path::new("/h/.config/foot/foot.ini")), Some(("foot".into(), "foot.ini".into())));
+        assert_eq!(registry.locate(&env, Path::new("/h/.config/nvim/init.lua")), None);
     }
 
     #[test]

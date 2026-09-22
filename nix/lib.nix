@@ -213,6 +213,49 @@ let
   # css from selector -> properties, with nesting and @-blocks
   toCSS = settings: if isRaw settings then settings.text else concatStringsSep "\n" (cssRules "" "" settings);
 
+  # toml keys are bare when toml allows it
+  tomlKey = key: if builtins.match "[A-Za-z0-9_-]+" key != null then key else builtins.toJSON key;
+
+  # inline toml value: json covers strings, numbers, and bools; attrsets become inline tables
+  tomlValue =
+    value:
+    if isRaw value then
+      value.text
+    else if isList value then
+      "[${concatMapStringsSep ", " tomlValue value}]"
+    else if isAttrs value then
+      "{ ${concatStringsSep ", " (mapAttrsToList (key: item: "${tomlKey key} = ${tomlValue item}") value)} }"
+    else
+      builtins.toJSON value;
+
+  isTable = value: isAttrs value && !isRaw value;
+  isTableArray = value: isList value && value != [ ] && builtins.all isTable value;
+
+  # one table: its own pairs under a header, then its subtables and arrays of tables
+  tomlTable =
+    array: path: table:
+    let
+      header = concatMapStringsSep "." tomlKey path;
+      pairs = concatStrings (
+        mapAttrsToList (key: value: "${tomlKey key} = ${tomlValue value}\n") (
+          filterAttrs (_: value: !isTable value && !isTableArray value) table
+        )
+      );
+      tables = filterAttrs (_: isTable) table;
+      arrays = filterAttrs (_: isTableArray) table;
+
+      # a plain table only needs a header when it holds pairs or nothing at all
+      needsHeader = path != [ ] && (array || pairs != "" || tables == { } && arrays == { });
+      own = if needsHeader then (if array then "[[${header}]]\n" else "[${header}]\n") + pairs else pairs;
+      nested =
+        mapAttrsToList (key: tomlTable false (path ++ [ key ])) tables
+        ++ concatLists (mapAttrsToList (key: map (tomlTable true (path ++ [ key ]))) arrays);
+    in
+    concatStringsSep "\n" (builtins.filter (text: text != "") ([ own ] ++ nested));
+
+  # toml with top-level pairs first, then [tables] and [[arrays of tables]]
+  toTOML = settings: if isRaw settings then settings.text else tomlTable false [ ] settings;
+
   generators = {
     css = toCSS;
     ini = toINI;
@@ -220,6 +263,7 @@ let
     json = toJSON;
     keyValue = toKeyValue;
     shell = toShell;
+    toml = toTOML;
     raw = settings: if isRaw settings then settings.text else settings;
   };
 
@@ -263,6 +307,7 @@ nixpkgs
     toKDL
     toKeyValue
     toShell
+    toTOML
     ;
   kdl.node = kdlNode;
   mawVersion = "0.1.0";

@@ -41,6 +41,14 @@ pub struct Output {
     pub root: bool,
     pub executable: bool,
     pub hash: String,
+    pub content: String,
+}
+
+// dry_run writes nothing to out/; force overwrites files edited in place
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    pub dry_run: bool,
+    pub force: bool,
 }
 
 #[derive(Debug, Default)]
@@ -72,7 +80,7 @@ enum Placement {
 }
 
 // renders every module into out/, re-evaluating only modules whose inputs changed
-pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, force: bool) -> Result<Report, BuildError> {
+pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> Result<Report, BuildError> {
     let inputs_file = env.state_dir.join("inputs");
     let mut inputs = Inputs::load(&inputs_file)?;
 
@@ -98,7 +106,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, force: bool) -> Result
 
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
     let outputs: Vec<Output> = files.iter().map(|file| to_output(env, repo, &registry, file)).collect();
-    let placements = place_all(env, &files, &outputs, force)?;
+    let placements = place_all(env, &outputs, options)?;
 
     // sort each file into the report by what happened to it
     let placed = || outputs.iter().zip(&placements);
@@ -106,7 +114,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, force: bool) -> Result
     let report = Report {
         evaluated: modules.iter().filter(|(_, _, fresh)| *fresh).map(|(name, _, _)| name.clone()).collect(),
         written: placed().filter(|(_, placement)| !matches!(placement, Placement::Unchanged | Placement::Drifted)).map(|(output, _)| output.out.clone()).collect(),
-        removed: prune(&repo.out_dir(), &keep)?,
+        removed: prune(&repo.out_dir(), &keep, options.dry_run)?,
         drifted: placed().filter(|(_, placement)| **placement == Placement::Drifted).map(|(output, _)| output.clone()).collect(),
         backups: placed()
             .filter_map(|(output, placement)| match placement {
@@ -123,13 +131,12 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, force: bool) -> Result
 }
 
 // places every file in out/, checked against the hash maw last wrote there, and records the new hashes
-fn place_all(env: &Env, files: &[&RenderedFile], outputs: &[Output], force: bool) -> Result<Vec<Placement>, BuildError> {
+fn place_all(env: &Env, outputs: &[Output], options: Options) -> Result<Vec<Placement>, BuildError> {
     let recorded_file = env.state_dir.join("outputs");
     let recorded: BTreeMap<PathBuf, String> = load_json(&recorded_file)?;
-    let placements = files
+    let placements = outputs
         .iter()
-        .zip(outputs)
-        .map(|(file, output)| place(env, output, &file.content, recorded.get(&output.out), force))
+        .map(|output| place(env, output, recorded.get(&output.out), options))
         .collect::<Result<Vec<_>, BuildError>>()?;
 
     // drifted files keep their old record so they stay drifted until forced
@@ -141,7 +148,7 @@ fn place_all(env: &Env, files: &[&RenderedFile], outputs: &[Output], force: bool
             _ => Some((output.out.clone(), output.hash.clone())),
         })
         .collect();
-    if now_recorded != recorded {
+    if now_recorded != recorded && !options.dry_run {
         save_json(&recorded_file, &now_recorded)?;
     }
     Ok(placements)
@@ -167,19 +174,24 @@ fn to_output(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -
         root: entry.root || file.scope == "root",
         executable: entry.executable || file.executable,
         hash: hash_bytes(file.content.as_bytes()),
+        content: file.content.clone(),
     }
 }
 
 // writes one out/ file, unless it was edited since maw last wrote it; --force backs up the edit first
-fn place(env: &Env, output: &Output, content: &str, recorded: Option<&String>, force: bool) -> Result<Placement, BuildError> {
+fn place(env: &Env, output: &Output, recorded: Option<&String>, options: Options) -> Result<Placement, BuildError> {
     let current = fs::read(&output.out).ok().map(|bytes| hash_bytes(&bytes));
     let edited = matches!((&current, recorded), (Some(current), Some(written)) if current != written && *current != output.hash);
-    if edited && !force {
+    if edited && (!options.force || options.dry_run) {
         return Ok(Placement::Drifted);
+    }
+    if options.dry_run {
+        let stale = current.as_ref() != Some(&output.hash) || is_executable(&output.out) != output.executable;
+        return Ok(if stale { Placement::Written } else { Placement::Unchanged });
     }
 
     let backup = if edited { Some(backup::backup(env, &output.out).map_err(io(&output.out))?) } else { None };
-    let written = write_if_changed(&output.out, content, output.executable)?;
+    let written = write_if_changed(&output.out, &output.content, output.executable)?;
     Ok(match (backup, written) {
         (Some(backup), _) => Placement::Replaced(backup),
         (None, true) => Placement::Written,
@@ -205,8 +217,8 @@ fn write_if_changed(path: &Path, content: &str, executable: bool) -> Result<bool
     Ok(true)
 }
 
-// deletes files under dir that aren't kept, then any dirs left empty; returns deleted files
-fn prune(dir: &Path, keep: &HashSet<PathBuf>) -> Result<Vec<PathBuf>, BuildError> {
+// deletes files under dir that aren't kept, then any dirs left empty; returns deleted files, or with dry_run the ones it would delete
+fn prune(dir: &Path, keep: &HashSet<PathBuf>, dry_run: bool) -> Result<Vec<PathBuf>, BuildError> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -218,15 +230,17 @@ fn prune(dir: &Path, keep: &HashSet<PathBuf>) -> Result<Vec<PathBuf>, BuildError
         .filter_map(|entry| Some(entry.ok()?.path()))
         .map(|path| {
             if path.is_dir() {
-                let inner = prune(&path, keep)?;
-                if fs::read_dir(&path).map_err(io(&path))?.next().is_none() {
+                let inner = prune(&path, keep, dry_run)?;
+                if !dry_run && fs::read_dir(&path).map_err(io(&path))?.next().is_none() {
                     fs::remove_dir(&path).map_err(io(&path))?;
                 }
                 Ok(inner)
             } else if keep.contains(&path) {
                 Ok(Vec::new())
             } else {
-                fs::remove_file(&path).map_err(io(&path))?;
+                if !dry_run {
+                    fs::remove_file(&path).map_err(io(&path))?;
+                }
                 Ok(vec![path])
             }
         })
@@ -238,42 +252,7 @@ fn prune(dir: &Path, keep: &HashSet<PathBuf>) -> Result<Vec<PathBuf>, BuildError
 mod tests {
     use super::*;
     use crate::runner::fake::FakeRunner;
-    use serde_json::json;
-
-    struct Fixture {
-        _dir: tempfile::TempDir,
-        env: Env,
-        repo: Repo,
-        runner: FakeRunner,
-    }
-
-    // a repo whose modules/<name>.nix "evaluates" to one file per name, via a fake nix
-    fn fixture(modules: &[&str]) -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
-        let env = Env::new(&dir.path().join("home"), &dir.path().join("sys"), &dir.path().join("share"));
-        fs::create_dir_all(env.nix_dir()).unwrap();
-        ["lib.nix", "default.nix"].iter().for_each(|file| fs::write(env.nix_dir().join(file), "").unwrap());
-        fs::write(env.registry_file(), "").unwrap();
-
-        let (repo, _) = Repo::init(&env, &FakeRunner::new(|_, _| String::new()), &dir.path().join("dots")).unwrap();
-        modules.iter().for_each(|name| fs::write(repo.module_file(name), "").unwrap());
-
-        let runner = FakeRunner::new(fake_nix);
-        Fixture { _dir: dir, env, repo, runner }
-    }
-
-    // answers registry.nix, maw.nix, and -A modules.<name> like nix-instantiate would
-    fn fake_nix(_: &str, args: &[String]) -> String {
-        let target = args.last().unwrap();
-        if target.ends_with("registry.nix") {
-            return json!({ "foot": { "files": { "main": "foot/foot.ini" } }, "scripts": { "dir": "~/.local/bin", "executable": true } }).to_string();
-        }
-        if target.ends_with("maw.nix") {
-            return json!({ "paths": {} }).to_string();
-        }
-        let name = args[args.len() - 2].trim_start_matches("modules.");
-        json!([{ "name": name, "key": "main", "content": format!("{name} v1\n"), "executable": false, "scope": "user" }]).to_string()
-    }
+    use crate::testing::fixture;
 
     fn module_evals(runner: &FakeRunner) -> usize {
         runner.calls.borrow().iter().filter(|call| call.contains("-A modules.")).count()
@@ -282,12 +261,12 @@ mod tests {
     #[test]
     fn first_build_writes_and_second_is_a_no_op() {
         let fixture = fixture(&["foot", "scripts"]);
-        let first = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let first = build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
         assert_eq!(first.evaluated, ["foot", "scripts"]);
         assert_eq!(fs::read_to_string(fixture.repo.out_dir().join("foot/foot.ini")).unwrap(), "foot v1\n");
 
         let calls_before = fixture.runner.calls.borrow().len();
-        let second = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let second = build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
         assert!(second.is_empty());
         assert_eq!(fixture.runner.calls.borrow().len(), calls_before);
     }
@@ -295,10 +274,10 @@ mod tests {
     #[test]
     fn config_change_reevaluates_every_module() {
         let fixture = fixture(&["foot", "scripts"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
 
         fs::write(fixture.repo.config_file(), "{ changed = true; }").unwrap();
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
         assert_eq!(report.evaluated.len(), 2);
         assert_eq!(module_evals(&fixture.runner), 4);
     }
@@ -306,19 +285,19 @@ mod tests {
     #[test]
     fn module_change_reevaluates_only_that_module() {
         let fixture = fixture(&["foot", "scripts"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
 
         fs::write(fixture.repo.module_file("foot"), "# edited").unwrap();
-        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap().evaluated, ["foot"]);
+        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap().evaluated, ["foot"]);
     }
 
     #[test]
     fn deleted_module_is_pruned_from_out() {
         let fixture = fixture(&["foot", "scripts"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
 
         fs::remove_file(fixture.repo.module_file("foot")).unwrap();
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
         assert_eq!(report.removed, [fixture.repo.out_dir().join("foot/foot.ini")]);
         assert!(!fixture.repo.out_dir().join("foot").exists());
     }
@@ -326,7 +305,7 @@ mod tests {
     #[test]
     fn outputs_carry_destination_and_mode() {
         let fixture = fixture(&["foot", "scripts"]);
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
 
         let scripts = report.outputs.iter().find(|output| output.name == "scripts").unwrap();
         assert_eq!(scripts.destination, fixture.env.home.join(".local/bin/config"));
@@ -335,20 +314,29 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_reports_without_writing() {
+        let fixture = fixture(&["foot"]);
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, Options { dry_run: true, ..Options::default() }).unwrap();
+        assert_eq!(report.written, [fixture.repo.out_dir().join("foot/foot.ini")]);
+        assert!(!fixture.repo.out_dir().join("foot").exists());
+        assert!(!fixture.env.state_dir.join("outputs").exists());
+    }
+
+    #[test]
     fn edited_out_file_is_drift_until_forced() {
         let fixture = fixture(&["foot"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
         let out = fixture.repo.out_dir().join("foot/foot.ini");
         fs::write(&out, "edited through the link\n").unwrap();
 
         // a module change would normally rewrite out/, but the edit is kept
         fs::write(fixture.repo.config_file(), "{ changed = true; }").unwrap();
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
         assert_eq!(report.drifted.len(), 1);
         assert_eq!(fs::read_to_string(&out).unwrap(), "edited through the link\n");
-        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap().drifted.len(), 1);
+        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap().drifted.len(), 1);
 
-        let forced = build(&fixture.env, &fixture.runner, &fixture.repo, true).unwrap();
+        let forced = build(&fixture.env, &fixture.runner, &fixture.repo, Options { force: true, ..Options::default() }).unwrap();
         assert_eq!(fs::read_to_string(&out).unwrap(), "foot v1\n");
         assert_eq!(fs::read_to_string(&forced.backups[0].1).unwrap(), "edited through the link\n");
     }

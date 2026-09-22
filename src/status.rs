@@ -1,0 +1,130 @@
+use crate::activate::{self, ActivateError, Options, Step, links_to};
+use crate::env::Env;
+use crate::repo::Repo;
+use crate::runner::Runner;
+use similar::TextDiff;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+// a destination whose content activating would change: what's there now, and what maw would leave
+#[derive(Debug, PartialEq)]
+pub struct FileDiff {
+    pub destination: PathBuf,
+    pub live: Vec<u8>,
+    pub wanted: Vec<u8>,
+}
+
+impl FileDiff {
+    // a unified diff between live and wanted, or None when either side isn't text
+    pub fn unified(&self, label: &str) -> Option<String> {
+        let live = std::str::from_utf8(&self.live).ok()?;
+        let wanted = std::str::from_utf8(&self.wanted).ok()?;
+        let diff = TextDiff::from_lines(live, wanted);
+        Some(diff.unified_diff().context_radius(3).header(&format!("{label} (live)"), &format!("{label} (maw)")).to_string())
+    }
+}
+
+// every pending step, planned without building out/ or touching links
+pub fn status(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Step>, ActivateError> {
+    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
+    let sources: HashMap<&PathBuf, &PathBuf> = planned.wanted.iter().map(|file| (&file.destination, &file.source)).collect();
+
+    // an update is pending only while out/ lags the module; static edits are live through the link already
+    let pending = |destination: &PathBuf| sources.get(destination).is_some_and(|source| planned.build.written.contains(source));
+    Ok(planned.steps.into_iter().filter(|step| !matches!(step, Step::Update { destination } if !pending(destination))).collect())
+}
+
+// what `activate --force` would change in each live file, including links it would remove
+pub fn diff(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<FileDiff>, ActivateError> {
+    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
+    let rendered: HashMap<&PathBuf, &String> = planned.build.outputs.iter().map(|output| (&output.out, &output.content)).collect();
+    let read = |path: &PathBuf| fs::read(path).unwrap_or_default();
+
+    let removals = planned.steps.iter().filter_map(|step| match step {
+        Step::Unlink { destination } => Some(FileDiff { destination: destination.clone(), live: read(destination), wanted: Vec::new() }),
+        _ => None,
+    });
+
+    // a static file behind its own link is the same file, so it's skipped unread
+    let changes = planned.wanted.iter().filter_map(|file| {
+        let render = rendered.get(&file.source);
+        if render.is_none() && links_to(&file.destination, &file.source) {
+            return None;
+        }
+        let wanted = render.map_or_else(|| read(&file.source), |content| content.as_bytes().to_vec());
+        let live = read(&file.destination);
+        (live != wanted).then(|| FileDiff { destination: file.destination.clone(), live, wanted })
+    });
+    Ok(removals.chain(changes).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::activate::{Ask, activate};
+    use crate::testing::{fixture, write};
+
+    struct Nobody;
+
+    impl Ask for Nobody {
+        fn ask(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn status_lists_pending_links_without_making_them() {
+        let fixture = fixture(&["foot"]);
+        write(&fixture.env.home.join(".config/foot/foot.ini"), "hand written\n");
+
+        let steps = status(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        let destination = fixture.env.home.join(".config/foot/foot.ini");
+        assert_eq!(steps, [Step::Link { destination, backup: true }]);
+        assert!(!fixture.repo.out_dir().join("foot").exists());
+    }
+
+    #[test]
+    fn static_edits_are_not_pending() {
+        let fixture = fixture(&["foot"]);
+        write(&fixture.repo.static_dir().join("nvim/init.lua"), "-- lua\n");
+        activate(&fixture.env, &fixture.runner, &fixture.repo, &Nobody, Options::default()).unwrap();
+        write(&fixture.repo.static_dir().join("nvim/init.lua"), "-- edited\n");
+        fs::write(fixture.repo.module_file("foot"), "# edited").unwrap();
+
+        let foot = fixture.env.home.join(".config/foot/foot.ini");
+        assert!(status(&fixture.env, &fixture.runner, &fixture.repo).unwrap().is_empty());
+        fs::write(fixture.repo.out_dir().join("foot/foot.ini"), "stale\n").unwrap();
+        assert_eq!(status(&fixture.env, &fixture.runner, &fixture.repo).unwrap(), [Step::Edited { destination: foot }]);
+    }
+
+    #[test]
+    fn diff_compares_live_content_with_what_maw_would_place() {
+        let fixture = fixture(&["foot"]);
+        write(&fixture.env.home.join(".config/foot/foot.ini"), "hand written\n");
+
+        let diffs = diff(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        assert_eq!((diffs[0].live.as_slice(), diffs[0].wanted.as_slice()), (&b"hand written\n"[..], &b"foot v1\n"[..]));
+        assert!(diffs[0].unified("foot.ini").unwrap().contains("-hand written\n+foot v1\n"));
+    }
+
+    #[test]
+    fn nothing_to_diff_after_activating() {
+        let fixture = fixture(&["foot"]);
+        write(&fixture.repo.static_dir().join("nvim/init.lua"), "-- lua\n");
+        activate(&fixture.env, &fixture.runner, &fixture.repo, &Nobody, Options::default()).unwrap();
+
+        assert!(diff(&fixture.env, &fixture.runner, &fixture.repo).unwrap().is_empty());
+        assert!(status(&fixture.env, &fixture.runner, &fixture.repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn removed_module_diffs_to_nothing() {
+        let fixture = fixture(&["foot"]);
+        activate(&fixture.env, &fixture.runner, &fixture.repo, &Nobody, Options::default()).unwrap();
+        fs::remove_file(fixture.repo.module_file("foot")).unwrap();
+
+        let diffs = diff(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        assert_eq!((diffs[0].live.as_slice(), diffs[0].wanted.len()), (&b"foot v1\n"[..], 0));
+    }
+}

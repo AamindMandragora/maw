@@ -69,7 +69,7 @@ unlink ~/.config/foot/foot.ini
 
 Since everything is a link, a change reaches the live file as soon as it's in `out/` or `static/`. Running `maw activate` twice in a row does nothing the second time.
 
-`maw activate --dry-run` prints the plan and changes nothing outside the repo. It still builds `out/`.
+`maw activate --dry-run` prints the plan and changes nothing, not even `out/`.
 
 ### Loose static files
 
@@ -105,6 +105,83 @@ drift ~/.config/waybar/style.css: edited in place; --force to overwrite
 Drifted files are left alone and reported on every run. To keep the change, move it into the module or `static/`. To discard it, run `maw activate --force`, which backs up the drifted file and puts maw's version back.
 
 Editing a `static/` file through its link is not drift: the link points straight at `static/`, so you're editing the repo.
+
+## Day to day
+
+### Writing a module
+
+```sh
+maw new foot
+maw new foot --format ini
+```
+
+Creates `modules/foot.nix`, opens it in your editor, and activates when you close it. The format defaults to the registry's for that program (`raw` if it has none), and a program with several files gets a `files` set with a format per file, guessed from each file's extension.
+
+If the program already has a config where the module will put it, the file is imported as `lib.raw`, so the module renders exactly what you had:
+
+```nix
+{ config, lib, ... }:
+lib.program "foot" {
+  format = "ini";
+  # imported from ~/.config/foot/foot.ini
+  settings = lib.raw ''
+    [main]
+    font=monospace:size=11
+  '';
+}
+```
+
+From there, move settings out of the raw block into Nix at your own pace.
+
+### Editing
+
+```sh
+maw edit foot       # modules/foot.nix, or static/foot/ if there's no module
+maw edit config     # config.nix
+```
+
+Opens `$VISUAL`, else `$EDITOR`, else `vi`, then activates. If the module doesn't evaluate, maw prints the error and asks whether to reopen it.
+
+### Adding verbatim files
+
+```sh
+maw add ~/.config/nvim          # a whole dir, file by file
+maw add ~/.bashrc
+maw add ~/.tmux.conf tmux       # under an explicit name
+```
+
+Copies into `static/` and activates, so the original is backed up and replaced by a link to the copy. Each file lands back exactly where it came from:
+
+- a path the registry knows is filed under that program: `~/.bashrc` becomes `static/bash/.bashrc`
+- a path under `~/.config/<name>/` is filed under `<name>`: `static/nvim/init.lua`
+- anything else goes at the top of `static/`, like a [loose file](#loose-static-files)
+
+When the registry alone would put the copy somewhere else, the original path is recorded in `maw.nix` `paths`. Adding a file maw already links is an error.
+
+### Checking
+
+```sh
+maw status
+```
+
+One line per file that isn't in sync, or `clean`:
+
+| label | meaning |
+|---|---|
+| `new` | declared, not linked yet |
+| `blocked` | a file maw doesn't manage is in the way; activating backs it up |
+| `changed` | a module changed and `out/` hasn't caught up |
+| `moved` | the file now comes from somewhere else |
+| `stale` | no longer declared; activating unlinks it |
+| `replaced` | [drift](#drift): the link was replaced |
+| `edited` | [drift](#drift): edited through the link |
+| `unplaced` | a loose static file with no destination yet |
+
+```sh
+maw diff
+```
+
+A unified diff of each live file against what maw would put there, the same as `maw activate --force` would leave. Removed links diff against nothing. Neither command writes anything.
 
 ## Where files go
 

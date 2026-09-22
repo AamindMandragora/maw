@@ -1,6 +1,8 @@
-use crate::activate::{self, Activation, Ask, Options, Step};
-use crate::build::{self, Report};
+use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
+use crate::build::{self, BuildError, Report};
+use crate::edit;
 use crate::env::Env;
+use crate::status;
 use crate::repo::Repo;
 use crate::runner::{Runner, SystemRunner};
 use anyhow::Result;
@@ -31,6 +33,24 @@ enum Command {
         #[arg(long, help = "replace drifted files, backing them up")]
         force: bool,
     },
+    #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate")]
+    Edit { name: String },
+    #[command(about = "create modules/<name>.nix, importing any live config, then edit it")]
+    New {
+        name: String,
+        #[arg(long, help = "css, ini, json, kdl, keyValue, raw, shell, or toml; defaults to the registry's")]
+        format: Option<String>,
+    },
+    #[command(about = "copy a file or dir into static/, then activate so it's linked back in place")]
+    Add {
+        path: PathBuf,
+        #[arg(help = "registry name to file it under; inferred from the path when omitted")]
+        name: Option<String>,
+    },
+    #[command(about = "show what activating would change in each live file")]
+    Diff,
+    #[command(about = "list files out of sync with the repo")]
+    Status,
 }
 
 pub fn main() -> Result<()> {
@@ -42,6 +62,11 @@ pub fn main() -> Result<()> {
         Command::Init { path } => init(&env, &runner, &path),
         Command::Build { force } => build(&env, &runner, force),
         Command::Activate { dry_run, force } => activate(&env, &runner, Options { dry_run, force }),
+        Command::Edit { name } => edit(&env, &runner, &name),
+        Command::New { name, format } => new(&env, &runner, &name, format.as_deref()),
+        Command::Add { path, name } => add(&env, &runner, &path, name.as_deref()),
+        Command::Diff => diff(&env, &runner),
+        Command::Status => status(&env, &runner),
     }
 }
 
@@ -72,7 +97,7 @@ fn init(env: &Env, runner: &dyn Runner, path: &Path) -> Result<()> {
 // builds and lists evaluated modules, changed out/ files, and drift
 fn build(env: &Env, runner: &dyn Runner, force: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let report = build::build(env, runner, &repo, force)?;
+    let report = build::build(env, runner, &repo, build::Options { force, dry_run: false })?;
     print_build(env, &repo, &report);
     report.drifted.iter().for_each(|output| println!("drift {}: edited in place; --force to overwrite", env.pretty(&output.destination)));
 
@@ -86,16 +111,112 @@ fn build(env: &Env, runner: &dyn Runner, force: bool) -> Result<()> {
 fn activate(env: &Env, runner: &dyn Runner, options: Options) -> Result<()> {
     let repo = Repo::locate(env)?;
     let activation = activate::activate(env, runner, &repo, &Terminal, options)?;
-    print_activation(env, &repo, &activation, options.dry_run);
+    report_activation(env, &repo, &activation, options.dry_run)
+}
 
+fn report_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bool) -> Result<()> {
+    print_activation(env, repo, activation, dry_run);
     if activation.build.is_empty() && activation.steps.is_empty() && activation.answered.is_empty() {
         println!("up to date");
     }
     Ok(())
 }
 
+// opens a file in the editor, then activates; on an evaluation error, offers to reopen it
+fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path) -> Result<()> {
+    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
+    loop {
+        edit::open_editor(runner, &editor, path)?;
+        match activate::activate(env, runner, repo, &Terminal, Options::default()) {
+            Err(ActivateError::Build(BuildError::Eval(error))) => {
+                eprintln!("error: {error}");
+                let again = Terminal.ask("edit again? [Y/n] ").is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n'));
+                if !again {
+                    return Err(error.into());
+                }
+            }
+            result => return report_activation(env, repo, &result?, false),
+        }
+    }
+}
+
+fn edit(env: &Env, runner: &dyn Runner, name: &str) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let target = edit::edit_target(&repo, name)?;
+    edit_then_activate(env, runner, &repo, &target)
+}
+
+// scaffolds the module, then edits it like `maw edit`
+fn new(env: &Env, runner: &dyn Runner, name: &str, format: Option<&str>) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let module = edit::new_module(env, runner, &repo, name, format)?;
+    println!("create {}", env.pretty(&module));
+    edit_then_activate(env, runner, &repo, &module)
+}
+
+// copies into static/, then activates so the original is backed up and linked
+fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let copies = edit::add(env, runner, &repo, path, name)?;
+    copies.iter().for_each(|(file, copy)| println!("copy {} -> {}", env.pretty(file), relative(&repo, copy)));
+    let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
+    report_activation(env, &repo, &activation, false)
+}
+
+// unified diffs per file, colored on a terminal
+fn diff(env: &Env, runner: &dyn Runner) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let color = std::io::stdout().is_terminal();
+    status::diff(env, runner, &repo)?.iter().for_each(|file| {
+        let label = env.pretty(&file.destination);
+        match file.unified(&label) {
+            Some(text) => print!("{}", if color { colorize(&text) } else { text }),
+            None => println!("binary {label} differs"),
+        }
+    });
+    Ok(())
+}
+
+// + lines green, - lines red, hunk headers cyan
+fn colorize(diff: &str) -> String {
+    diff.lines()
+        .map(|line| match line.chars().next() {
+            Some('+') if !line.starts_with("+++") => format!("\x1b[32m{line}\x1b[0m\n"),
+            Some('-') if !line.starts_with("---") => format!("\x1b[31m{line}\x1b[0m\n"),
+            Some('@') => format!("\x1b[36m{line}\x1b[0m\n"),
+            _ => format!("{line}\n"),
+        })
+        .collect()
+}
+
+// one line per out-of-sync file, like git status --short
+fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let steps = status::status(env, runner, &repo)?;
+    let line = |label: &str, path: &PathBuf| println!("{label:<9}{}", env.pretty(path));
+
+    steps.iter().for_each(|step| match step {
+        Step::Link { destination, backup: false } => line("new", destination),
+        Step::Link { destination, backup: true } => line("blocked", destination),
+        Step::Relink { destination } => line("moved", destination),
+        Step::Update { destination } => line("changed", destination),
+        Step::Unlink { destination } => line("stale", destination),
+        Step::Replaced { destination } => line("replaced", destination),
+        Step::Edited { destination } => line("edited", destination),
+        Step::Unplaced { file } => line("unplaced", &PathBuf::from("static").join(file)),
+    });
+    if steps.is_empty() {
+        println!("clean");
+    }
+    Ok(())
+}
+
+fn relative(repo: &Repo, path: &Path) -> String {
+    path.strip_prefix(&repo.root).unwrap_or(path).display().to_string()
+}
+
 fn print_build(env: &Env, repo: &Repo, report: &Report) {
-    let relative = |path: &PathBuf| path.strip_prefix(&repo.root).unwrap_or(path).display().to_string();
+    let relative = |path: &PathBuf| relative(repo, path);
     report.evaluated.iter().for_each(|name| println!("eval {name}"));
     report.backups.iter().for_each(|(file, moved)| println!("backup {} -> {}", relative(file), env.pretty(moved)));
     report.written.iter().for_each(|path| println!("write {}", relative(path)));
