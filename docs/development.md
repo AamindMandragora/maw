@@ -12,6 +12,9 @@ src/
   registry.rs     # name + file role -> destination
   repo.rs         # locate and scaffold the dotfiles repo
   build.rs        # incremental build into out/
+  activate.rs     # link plan against the manifest, drift, loose static/ files
+  backup.rs       # moves files aside before maw replaces them
+  state.rs        # maw.nix: read from nix, written in a fixed shape
 registry.nix      # shipped registry
 nix/
   default.nix     # entry point: takes { dotfiles }, exposes modules.<name>
@@ -20,6 +23,7 @@ nix/
 tests/
   golden.rs       # golden tests for modules and generators
   build.rs        # end-to-end build of the fixture repo with real nix
+  activate.rs     # end-to-end activate of the fixture repo, then a no-op rerun
   fixtures/dotfiles/   # example dotfiles repo
   golden/<module>/<key>   # expected output per fixture module file
   generators/<name>.nix   # generator fixture, expected output in <name>.out
@@ -31,6 +35,7 @@ Two seams keep everything testable without touching the machine:
 
 - `Env` holds every path: home, system root, state, and maw's share dir. Tests build one over a tempdir.
 - `Runner` runs every external command. Unit tests use `FakeRunner`, which records calls and answers with canned output.
+- `Ask` asks the user a question. The CLI asks on the terminal; tests answer with a fixed string or nothing.
 
 Running the binary picks these up from the environment:
 

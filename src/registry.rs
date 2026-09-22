@@ -23,6 +23,7 @@ pub struct Entry {
     pub executable: bool,
 }
 
+#[derive(Debug, Default)]
 pub struct Registry {
     entries: BTreeMap<String, Entry>,
 }
@@ -43,6 +44,10 @@ impl Registry {
 
         answers.as_object().into_iter().flatten().for_each(|(name, answer)| apply_answer(entries.entry(name.clone()).or_default(), answer));
         Ok(Registry { entries })
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.entries.contains_key(name)
     }
 
     // the entry for a name, or an empty one meaning ~/.config/<name>/

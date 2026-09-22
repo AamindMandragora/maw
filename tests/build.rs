@@ -16,7 +16,7 @@ fn fixture_builds_to_goldens_then_no_ops() {
     let env = Env::new(&dir.path().join("home"), &dir.path().join("sys"), Path::new(env!("CARGO_MANIFEST_DIR")));
     let (repo, _) = Repo::init(&env, &SystemRunner, &dots).unwrap();
 
-    let first = build(&env, &SystemRunner, &repo).unwrap();
+    let first = build(&env, &SystemRunner, &repo, false).unwrap();
     assert_eq!(first.evaluated, ["bash", "fuzzel", "niri", "waybar"]);
 
     // each out/ file matches its golden, and lands where the registry says
@@ -28,6 +28,6 @@ fn fixture_builds_to_goldens_then_no_ops() {
     let niri = first.outputs.iter().find(|output| output.name == "niri").unwrap();
     assert_eq!(niri.destination, env.home.join(".config/niri/config.kdl"));
 
-    let second = build(&env, &SystemRunner, &repo).unwrap();
+    let second = build(&env, &SystemRunner, &repo, false).unwrap();
     assert!(second.evaluated.is_empty() && second.written.is_empty());
 }

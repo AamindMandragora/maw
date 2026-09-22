@@ -100,6 +100,10 @@ impl Repo {
         self.root.join("out")
     }
 
+    pub fn static_dir(&self) -> PathBuf {
+        self.root.join("static")
+    }
+
     pub fn module_file(&self, name: &str) -> PathBuf {
         self.root.join("modules").join(format!("{name}.nix"))
     }

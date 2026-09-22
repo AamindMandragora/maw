@@ -43,6 +43,10 @@ impl Env {
         self.state_dir.join("cache")
     }
 
+    pub fn backup_dir(&self) -> PathBuf {
+        self.state_dir.join("backups")
+    }
+
     // a path for display, with home shortened to ~
     pub fn pretty(&self, path: &Path) -> String {
         match path.strip_prefix(&self.home) {

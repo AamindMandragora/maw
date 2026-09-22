@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,6 +25,8 @@ struct Stamp {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Inputs {
     files: BTreeMap<PathBuf, Stamp>,
+    #[serde(skip)]
+    changed: bool,
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
@@ -35,20 +38,29 @@ pub fn combine(parts: &[&str]) -> String {
     hash_bytes(parts.join("\n").as_bytes())
 }
 
+// a json state file, or the default if there is none yet
+pub fn load_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T, InputsError> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| InputsError::Json { path: path.into(), source }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(source) => Err(InputsError::Io { path: path.into(), source }),
+    }
+}
+
+pub fn save_json(path: &Path, value: &impl Serialize) -> Result<(), InputsError> {
+    let io = |source| InputsError::Io { path: path.into(), source };
+    fs::create_dir_all(path.parent().unwrap()).map_err(io)?;
+    fs::write(path, serde_json::to_vec_pretty(value).unwrap()).map_err(io)
+}
+
 impl Inputs {
-    // loads the recorded stamps, or starts empty if there are none
     pub fn load(path: &Path) -> Result<Self, InputsError> {
-        match fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| InputsError::Json { path: path.into(), source }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Inputs::default()),
-            Err(source) => Err(InputsError::Io { path: path.into(), source }),
-        }
+        load_json(path)
     }
 
+    // writes the stamps, only if a file was re-hashed since loading
     pub fn save(&self, path: &Path) -> Result<(), InputsError> {
-        let io = |source| InputsError::Io { path: path.into(), source };
-        fs::create_dir_all(path.parent().unwrap()).map_err(io)?;
-        fs::write(path, serde_json::to_vec_pretty(self).unwrap()).map_err(io)
+        if self.changed { save_json(path, self) } else { Ok(()) }
     }
 
     // hash of a file, reusing the recorded one while mtime and size are unchanged
@@ -64,6 +76,7 @@ impl Inputs {
 
         let hash = hash_bytes(&fs::read(path).map_err(io)?);
         self.files.insert(path.into(), Stamp { mtime, size, hash: hash.clone() });
+        self.changed = true;
         Ok(hash)
     }
 }
@@ -109,6 +122,14 @@ mod tests {
         inputs.hash(&file).unwrap();
         inputs.save(&state).unwrap();
         assert_eq!(Inputs::load(&state).unwrap().files, inputs.files);
+    }
+
+    #[test]
+    fn unchanged_inputs_are_not_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("inputs");
+        Inputs::load(&state).unwrap().save(&state).unwrap();
+        assert!(!state.exists());
     }
 
     #[test]

@@ -1,3 +1,5 @@
+pub mod activate;
+pub mod backup;
 pub mod build;
 pub mod cli;
 pub mod env;
@@ -6,3 +8,4 @@ pub mod inputs;
 pub mod registry;
 pub mod repo;
 pub mod runner;
+pub mod state;

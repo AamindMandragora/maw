@@ -1,10 +1,12 @@
+use crate::backup;
 use crate::env::Env;
 use crate::eval::{self, EvalError, RenderedFile};
-use crate::inputs::{Inputs, InputsError, combine, hash_bytes};
+use crate::inputs::{Inputs, InputsError, combine, hash_bytes, load_json, save_json};
 use crate::registry::{self, Registry, RegistryError};
 use crate::repo::{Repo, RepoError};
 use crate::runner::Runner;
-use std::collections::HashSet;
+use crate::state::{MawState, StateError};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,8 @@ pub enum BuildError {
     Registry(#[from] RegistryError),
     #[error(transparent)]
     Repo(#[from] RepoError),
+    #[error(transparent)]
+    State(#[from] StateError),
     #[error("{path}: {source}")]
     Io { path: PathBuf, source: std::io::Error },
 }
@@ -45,10 +49,30 @@ pub struct Report {
     pub written: Vec<PathBuf>,
     pub removed: Vec<PathBuf>,
     pub outputs: Vec<Output>,
+    // out/ files edited in place, left alone
+    pub drifted: Vec<Output>,
+    // edited out/ files moved aside by --force: (file, backup)
+    pub backups: Vec<(PathBuf, PathBuf)>,
+    pub registry: Registry,
+}
+
+impl Report {
+    pub fn is_empty(&self) -> bool {
+        self.evaluated.is_empty() && self.written.is_empty() && self.removed.is_empty() && self.drifted.is_empty()
+    }
+}
+
+// what happened to one out/ file
+#[derive(Debug, PartialEq)]
+enum Placement {
+    Unchanged,
+    Written,
+    Drifted,
+    Replaced(PathBuf),
 }
 
 // renders every module into out/, re-evaluating only modules whose inputs changed
-pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Report, BuildError> {
+pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, force: bool) -> Result<Report, BuildError> {
     let inputs_file = env.state_dir.join("inputs");
     let mut inputs = Inputs::load(&inputs_file)?;
 
@@ -58,9 +82,8 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Report, Buil
         &inputs.hash(&env.nix_dir().join("default.nix"))?,
         env!("CARGO_PKG_VERSION"),
     ]);
-    let maw_hash = inputs.hash(&repo.maw_file())?;
-    let shared_hash = combine(&[&inputs.hash(&repo.config_file())?, &maw_hash, &lib_hash]);
-    let registry = load_registry(env, runner, repo, &mut inputs, &maw_hash)?;
+    let shared_hash = combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash]);
+    let (registry, _) = load_registry(env, runner, repo, &mut inputs)?;
 
     // evaluate each module, keyed by its own file plus the shared inputs
     let modules = repo
@@ -73,33 +96,64 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Report, Buil
         })
         .collect::<Result<Vec<_>, BuildError>>()?;
 
-    // write every file whose content changed
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
     let outputs: Vec<Output> = files.iter().map(|file| to_output(env, repo, &registry, file)).collect();
-    let writes = files
-        .iter()
-        .zip(&outputs)
-        .map(|(file, output)| Ok((output.out.clone(), write_if_changed(&output.out, &file.content, output.executable)?)))
-        .collect::<Result<Vec<_>, BuildError>>()?;
+    let placements = place_all(env, &files, &outputs, force)?;
 
+    // sort each file into the report by what happened to it
+    let placed = || outputs.iter().zip(&placements);
     let keep: HashSet<PathBuf> = outputs.iter().map(|output| output.out.clone()).collect();
     let report = Report {
         evaluated: modules.iter().filter(|(_, _, fresh)| *fresh).map(|(name, _, _)| name.clone()).collect(),
-        written: writes.into_iter().filter(|(_, written)| *written).map(|(out, _)| out).collect(),
+        written: placed().filter(|(_, placement)| !matches!(placement, Placement::Unchanged | Placement::Drifted)).map(|(output, _)| output.out.clone()).collect(),
         removed: prune(&repo.out_dir(), &keep)?,
+        drifted: placed().filter(|(_, placement)| **placement == Placement::Drifted).map(|(output, _)| output.clone()).collect(),
+        backups: placed()
+            .filter_map(|(output, placement)| match placement {
+                Placement::Replaced(backup) => Some((output.out.clone(), backup.clone())),
+                _ => None,
+            })
+            .collect(),
         outputs,
+        registry,
     };
 
     inputs.save(&inputs_file)?;
     Ok(report)
 }
 
+// places every file in out/, checked against the hash maw last wrote there, and records the new hashes
+fn place_all(env: &Env, files: &[&RenderedFile], outputs: &[Output], force: bool) -> Result<Vec<Placement>, BuildError> {
+    let recorded_file = env.state_dir.join("outputs");
+    let recorded: BTreeMap<PathBuf, String> = load_json(&recorded_file)?;
+    let placements = files
+        .iter()
+        .zip(outputs)
+        .map(|(file, output)| place(env, output, &file.content, recorded.get(&output.out), force))
+        .collect::<Result<Vec<_>, BuildError>>()?;
+
+    // drifted files keep their old record so they stay drifted until forced
+    let now_recorded: BTreeMap<PathBuf, String> = outputs
+        .iter()
+        .zip(&placements)
+        .filter_map(|(output, placement)| match placement {
+            Placement::Drifted => Some((output.out.clone(), recorded.get(&output.out)?.clone())),
+            _ => Some((output.out.clone(), output.hash.clone())),
+        })
+        .collect();
+    if now_recorded != recorded {
+        save_json(&recorded_file, &now_recorded)?;
+    }
+    Ok(placements)
+}
+
 // shipped registry plus maw.nix path answers, each evaluated only when its file changed
-fn load_registry(env: &Env, runner: &dyn Runner, repo: &Repo, inputs: &mut Inputs, maw_hash: &str) -> Result<Registry, BuildError> {
+pub fn load_registry(env: &Env, runner: &dyn Runner, repo: &Repo, inputs: &mut Inputs) -> Result<(Registry, MawState), BuildError> {
     let shipped_hash = inputs.hash(&env.registry_file())?;
     let shipped = eval::eval_file(runner, env, &env.registry_file(), "registry", &shipped_hash)?;
-    let state = eval::eval_file(runner, env, &repo.maw_file(), "maw", maw_hash)?;
-    Ok(Registry::new(&shipped, &state["paths"])?)
+    let maw_hash = inputs.hash(&repo.maw_file())?;
+    let state = eval::eval_file(runner, env, &repo.maw_file(), "maw", &maw_hash)?;
+    Ok((Registry::new(&shipped, &state["paths"])?, MawState::from_value(&state)?))
 }
 
 // where a rendered file lives in out/ and at its destination
@@ -114,6 +168,23 @@ fn to_output(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -
         executable: entry.executable || file.executable,
         hash: hash_bytes(file.content.as_bytes()),
     }
+}
+
+// writes one out/ file, unless it was edited since maw last wrote it; --force backs up the edit first
+fn place(env: &Env, output: &Output, content: &str, recorded: Option<&String>, force: bool) -> Result<Placement, BuildError> {
+    let current = fs::read(&output.out).ok().map(|bytes| hash_bytes(&bytes));
+    let edited = matches!((&current, recorded), (Some(current), Some(written)) if current != written && *current != output.hash);
+    if edited && !force {
+        return Ok(Placement::Drifted);
+    }
+
+    let backup = if edited { Some(backup::backup(env, &output.out).map_err(io(&output.out))?) } else { None };
+    let written = write_if_changed(&output.out, content, output.executable)?;
+    Ok(match (backup, written) {
+        (Some(backup), _) => Placement::Replaced(backup),
+        (None, true) => Placement::Written,
+        (None, false) => Placement::Unchanged,
+    })
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -211,23 +282,23 @@ mod tests {
     #[test]
     fn first_build_writes_and_second_is_a_no_op() {
         let fixture = fixture(&["foot", "scripts"]);
-        let first = build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        let first = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
         assert_eq!(first.evaluated, ["foot", "scripts"]);
         assert_eq!(fs::read_to_string(fixture.repo.out_dir().join("foot/foot.ini")).unwrap(), "foot v1\n");
 
         let calls_before = fixture.runner.calls.borrow().len();
-        let second = build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
-        assert!(second.evaluated.is_empty() && second.written.is_empty() && second.removed.is_empty());
+        let second = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        assert!(second.is_empty());
         assert_eq!(fixture.runner.calls.borrow().len(), calls_before);
     }
 
     #[test]
     fn config_change_reevaluates_every_module() {
         let fixture = fixture(&["foot", "scripts"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
 
         fs::write(fixture.repo.config_file(), "{ changed = true; }").unwrap();
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
         assert_eq!(report.evaluated.len(), 2);
         assert_eq!(module_evals(&fixture.runner), 4);
     }
@@ -235,19 +306,19 @@ mod tests {
     #[test]
     fn module_change_reevaluates_only_that_module() {
         let fixture = fixture(&["foot", "scripts"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
 
         fs::write(fixture.repo.module_file("foot"), "# edited").unwrap();
-        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo).unwrap().evaluated, ["foot"]);
+        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap().evaluated, ["foot"]);
     }
 
     #[test]
     fn deleted_module_is_pruned_from_out() {
         let fixture = fixture(&["foot", "scripts"]);
-        build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
 
         fs::remove_file(fixture.repo.module_file("foot")).unwrap();
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
         assert_eq!(report.removed, [fixture.repo.out_dir().join("foot/foot.ini")]);
         assert!(!fixture.repo.out_dir().join("foot").exists());
     }
@@ -255,11 +326,30 @@ mod tests {
     #[test]
     fn outputs_carry_destination_and_mode() {
         let fixture = fixture(&["foot", "scripts"]);
-        let report = build(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
 
         let scripts = report.outputs.iter().find(|output| output.name == "scripts").unwrap();
         assert_eq!(scripts.destination, fixture.env.home.join(".local/bin/config"));
         assert!(scripts.executable && is_executable(&scripts.out));
         assert_eq!(report.outputs[0].destination, fixture.env.home.join(".config/foot/foot.ini"));
+    }
+
+    #[test]
+    fn edited_out_file_is_drift_until_forced() {
+        let fixture = fixture(&["foot"]);
+        build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        let out = fixture.repo.out_dir().join("foot/foot.ini");
+        fs::write(&out, "edited through the link\n").unwrap();
+
+        // a module change would normally rewrite out/, but the edit is kept
+        fs::write(fixture.repo.config_file(), "{ changed = true; }").unwrap();
+        let report = build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap();
+        assert_eq!(report.drifted.len(), 1);
+        assert_eq!(fs::read_to_string(&out).unwrap(), "edited through the link\n");
+        assert_eq!(build(&fixture.env, &fixture.runner, &fixture.repo, false).unwrap().drifted.len(), 1);
+
+        let forced = build(&fixture.env, &fixture.runner, &fixture.repo, true).unwrap();
+        assert_eq!(fs::read_to_string(&out).unwrap(), "foot v1\n");
+        assert_eq!(fs::read_to_string(&forced.backups[0].1).unwrap(), "edited through the link\n");
     }
 }
