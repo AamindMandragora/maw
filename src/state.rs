@@ -29,6 +29,23 @@ pub struct MawState {
     pub services: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub paths: BTreeMap<String, PathAnswer>,
+    #[serde(default)]
+    pub ignored: Ignored,
+}
+
+// installed packages and enabled services maw.nix doesn't declare but was told to leave alone
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ignored {
+    #[serde(default)]
+    pub packages: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub services: BTreeMap<String, Vec<String>>,
+}
+
+impl Ignored {
+    pub fn is_empty(&self) -> bool {
+        self.packages.values().all(Vec::is_empty) && self.services.values().all(Vec::is_empty)
+    }
 }
 
 impl MawState {
@@ -37,15 +54,19 @@ impl MawState {
         serde_json::from_value(value.clone()).map_err(StateError::Shape)
     }
 
-    // the fixed-shape nix text: sorted, one entry per line
+    // the fixed-shape nix text: sorted, one entry per line; ignored only once something is
     pub fn to_nix(&self) -> String {
-        let lists = |map: &BTreeMap<String, Vec<String>>| attrs(map.iter().map(|(name, items)| (name, list(items))));
-        let answers = attrs(self.paths.iter().map(|(name, answer)| (name, answer_nix(answer))));
+        let answers = attrs(self.paths.iter().map(|(name, answer)| (name, answer_nix(answer))), 2);
+        let ignored = if self.ignored.is_empty() {
+            String::new()
+        } else {
+            let (packages, services) = (lists(&self.ignored.packages, 3), lists(&self.ignored.services, 3));
+            format!("  ignored = {{\n    packages = {packages};\n    services = {services};\n  }};\n")
+        };
         format!(
-            "{{\n  packages = {};\n  services = {};\n  paths = {};\n}}\n",
-            lists(&self.packages),
-            lists(&self.services),
-            answers
+            "{{\n  packages = {};\n  services = {};\n  paths = {answers};\n{ignored}}}\n",
+            lists(&self.packages, 2),
+            lists(&self.services, 2),
         )
     }
 
@@ -54,10 +75,16 @@ impl MawState {
     }
 }
 
-// a nested attrset, one entry per line, indented under a top-level key
-fn attrs<'a>(entries: impl Iterator<Item = (&'a String, String)>) -> String {
-    let lines: Vec<String> = entries.map(|(name, value)| format!("    {} = {value};\n", attr_name(name))).collect();
-    if lines.is_empty() { "{ }".into() } else { format!("{{\n{}  }}", lines.concat()) }
+// a nested attrset, one entry per line, its entries at the given depth
+fn attrs<'a>(entries: impl Iterator<Item = (&'a String, String)>, depth: usize) -> String {
+    let pad = "  ".repeat(depth);
+    let lines: Vec<String> = entries.map(|(name, value)| format!("{pad}{} = {value};\n", attr_name(name))).collect();
+    if lines.is_empty() { "{ }".into() } else { format!("{{\n{}{}}}", lines.concat(), "  ".repeat(depth - 1)) }
+}
+
+// name -> list of strings, empty lists left out
+fn lists(map: &BTreeMap<String, Vec<String>>, depth: usize) -> String {
+    attrs(map.iter().filter(|(_, items)| !items.is_empty()).map(|(name, items)| (name, list(items))), depth)
 }
 
 fn list(items: &[String]) -> String {
@@ -122,6 +149,15 @@ mod tests {
 }
 "#;
         assert_eq!(state.to_nix(), expected);
+    }
+
+    #[test]
+    fn ignored_is_written_only_when_used() {
+        let mut state = MawState::default();
+        state.ignored.packages.insert("xbps".into(), vec!["base-devel".into()]);
+        state.ignored.services.insert("system".into(), vec!["agetty-tty3".into()]);
+        let expected = "  ignored = {\n    packages = {\n      xbps = [ \"base-devel\" ];\n    };\n    services = {\n      system = [ \"agetty-tty3\" ];\n    };\n  };\n}\n";
+        assert!(state.to_nix().ends_with(expected), "{}", state.to_nix());
     }
 
     #[test]

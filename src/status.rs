@@ -1,9 +1,13 @@
 use crate::activate::{self, ActivateError, Options, Step, links_to};
+use crate::adopt::{self, AdoptError, Candidate};
+use crate::backend::{self, BackendError, NAMES};
+use crate::build::Report;
 use crate::env::Env;
 use crate::repo::Repo;
 use crate::runner::Runner;
 use similar::TextDiff;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::os::unix::fs::PermissionsExt;
 use std::fs;
 use std::path::PathBuf;
 
@@ -25,14 +29,76 @@ impl FileDiff {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum StatusError {
+    #[error(transparent)]
+    Activate(#[from] ActivateError),
+    #[error(transparent)]
+    Adopt(#[from] AdoptError),
+    #[error(transparent)]
+    Backend(#[from] BackendError),
+}
+
+// everything out of sync: pending steps, things maw.nix doesn't know about, and config for programs that aren't there
+#[derive(Debug, Default)]
+pub struct Full {
+    pub steps: Vec<Step>,
+    pub undeclared: Vec<Candidate>,
+    pub orphans: Vec<String>,
+}
+
+impl Full {
+    pub fn is_clean(&self) -> bool {
+        self.steps.is_empty() && self.undeclared.is_empty() && self.orphans.is_empty()
+    }
+}
+
+// the full drift report; path_var decides which commands count as installed
+pub fn report(env: &Env, runner: &dyn Runner, repo: &Repo, path_var: &str) -> Result<Full, StatusError> {
+    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
+    let orphans = orphans(env, runner, repo, &planned.build, path_var)?;
+    let undeclared = adopt::candidates(env, runner, repo)?;
+    Ok(Full { steps: pending(planned), undeclared, orphans })
+}
+
+// modules and static dirs whose program isn't there: no installed package by that name, and no such command on PATH
+fn orphans(env: &Env, runner: &dyn Runner, repo: &Repo, build: &Report, path_var: &str) -> Result<Vec<String>, BackendError> {
+    let installed: HashSet<String> = NAMES
+        .iter()
+        .filter_map(|name| backend::for_name(name, runner, env))
+        .map(|backend| Ok(backend.list()?.into_iter().flat_map(|pkg| [pkg.name.to_lowercase(), pkg.source.to_lowercase()])))
+        .collect::<Result<Vec<_>, BackendError>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    let on_path = |name: &str| std::env::split_paths(path_var).any(|dir| fs::metadata(dir.join(name)).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0));
+
+    // programs rendered by modules plus static/<name>/ dirs, minus data dirs like fonts and wallpapers
+    let rendered = build.outputs.iter().filter(|output| output.service.is_none()).map(|output| output.name.clone());
+    let static_dirs = fs::read_dir(repo.static_dir()).into_iter().flatten().filter_map(|entry| {
+        let entry = entry.ok()?;
+        entry.file_type().ok()?.is_dir().then(|| entry.file_name().to_string_lossy().into_owned())
+    });
+    let is_data = |name: &str| {
+        let entry = build.registry.entry(name);
+        entry.dir.is_some() && entry.files.is_empty()
+    };
+    let names: BTreeSet<String> = rendered.chain(static_dirs).filter(|name| !is_data(name)).collect();
+    Ok(names.into_iter().filter(|name| !installed.contains(&name.to_lowercase()) && !on_path(name)).collect())
+}
+
 // every pending step, planned without building out/ or touching links
 pub fn status(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Step>, ActivateError> {
-    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
+    Ok(pending(activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?))
+}
+
+// a plan's steps, minus updates that are already live
+fn pending(planned: activate::Planned) -> Vec<Step> {
     let sources: HashMap<&PathBuf, &PathBuf> = planned.wanted.iter().map(|file| (&file.destination, &file.source)).collect();
 
     // an update is pending only while out/ lags the module; static edits are live through the link already
-    let pending = |destination: &PathBuf| sources.get(destination).is_some_and(|source| planned.build.written.contains(source));
-    Ok(planned.steps.into_iter().filter(|step| !matches!(step, Step::Update { destination } if !pending(destination))).collect())
+    let lagging = |destination: &PathBuf| sources.get(destination).is_some_and(|source| planned.build.written.contains(source));
+    planned.steps.iter().filter(|step| !matches!(step, Step::Update { destination } if !lagging(destination))).cloned().collect()
 }
 
 // what `activate --force` would change in each live file, including links it would remove
@@ -96,6 +162,20 @@ mod tests {
         assert!(status(&fixture.env, &fixture.runner, &fixture.repo).unwrap().is_empty());
         fs::write(fixture.repo.out_dir().join("foot/foot.ini"), "stale\n").unwrap();
         assert_eq!(status(&fixture.env, &fixture.runner, &fixture.repo).unwrap(), [Step::Edited { destination: foot }]);
+    }
+
+    #[test]
+    fn orphans_are_programs_with_neither_a_package_nor_a_command() {
+        let fixture = fixture(&["foot", "bash", "tool"]);
+        write(&fixture.repo.static_dir().join("wallpapers/sunset.png"), "");
+        let bin = fixture.dir.path().join("bin");
+        write(&bin.join("tool"), "");
+        fs::set_permissions(bin.join("tool"), fs::Permissions::from_mode(0o755)).unwrap();
+
+        // bash is an installed package, tool a command on PATH, wallpapers a data dir; foot is nowhere
+        let full = report(&fixture.env, &fixture.runner, &fixture.repo, &bin.display().to_string()).unwrap();
+        assert_eq!(full.orphans, ["foot"]);
+        assert_eq!(full.undeclared.len(), 1);
     }
 
     #[test]

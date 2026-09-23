@@ -1,4 +1,5 @@
 use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
+use crate::adopt::{self, Candidate};
 use crate::backend::xbps::Xbps;
 use crate::backend::SystemBackend;
 use crate::build::{self, BuildError, Report};
@@ -71,8 +72,13 @@ enum Command {
     },
     #[command(about = "show what activating would change in each live file", after_help = "see: maw help checking")]
     Diff,
-    #[command(about = "list files out of sync with the repo", after_help = "see: maw help checking")]
+    #[command(about = "everything out of sync: files, packages, services, and config for missing programs", after_help = "see: maw help checking")]
     Status,
+    #[command(about = "record installed packages and enabled services maw.nix doesn't know about", after_help = "see: maw help adopting")]
+    Adopt {
+        #[arg(long, help = "print the checklist without opening it")]
+        dry_run: bool,
+    },
     #[command(about = "install packages, record them in maw.nix, scaffold their modules, then activate", after_help = "see: maw help installing")]
     Install {
         #[arg(required = true, help = "names, or cargo:<crate|git url>, go:<path>, xbps:<name>; @version pins")]
@@ -160,6 +166,7 @@ pub fn main() -> Result<()> {
         Command::Add { path, name, no_activate } => add(&env, &runner, &path, name.as_deref(), !no_activate),
         Command::Diff => diff(&env, &runner),
         Command::Status => status(&env, &runner),
+        Command::Adopt { dry_run } => adopt(&env, &runner, dry_run),
         Command::Install { packages, dry_run } => install(&env, &runner, &packages, dry_run),
         Command::Remove { packages, dry_run } => remove(&env, &runner, &packages, dry_run),
         Command::Query { package } => query(&env, &runner, package.as_deref()),
@@ -299,31 +306,77 @@ fn colorize(diff: &str) -> String {
 // one line per out-of-sync file, like git status --short
 fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let steps = status::status(env, runner, &repo)?;
-    let line = |label: &str, path: &PathBuf| println!("{label:<9}{}", env.pretty(path));
+    let report = status::report(env, runner, &repo, &std::env::var("PATH").unwrap_or_default())?;
+    let line = |label: &str, text: String| println!("{label:<11}{text}");
+    let path = |path: &PathBuf| env.pretty(path);
 
-    steps.iter().for_each(|step| match step {
-        Step::Install { backend, package } => println!("{:<9}{package} ({backend})", "missing"),
-        Step::Link { destination, backup: false } => line("new", destination),
-        Step::Link { destination, backup: true } => line("blocked", destination),
-        Step::Relink { destination } => line("moved", destination),
-        Step::Update { destination } => line("changed", destination),
-        Step::Unlink { destination } => line("stale", destination),
-        Step::Replaced { destination } => line("replaced", destination),
-        Step::Edited { destination } => line("edited", destination),
-        Step::Unplaced { file } => line("unplaced", &PathBuf::from("static").join(file)),
-        Step::Copy { destination, backup: true } => line("blocked", destination),
-        Step::Copy { destination, .. } if destination.exists() => line("changed", destination),
-        Step::Copy { destination, .. } => line("new", destination),
-        Step::Delete { destination } => line("stale", destination),
-        Step::Enable { scope, name } => println!("{:<9}{}", "disabled", service_label(*scope, name)),
-        Step::Disable { scope, name } => println!("{:<9}{}", "stale", service_label(*scope, name)),
-        Step::Purge { scope, name } => println!("{:<9}{}", "stale", env.pretty(&Runit.definition(env, *scope, name))),
-        Step::Restart { scope, name } => println!("{:<9}{}", "restart", service_label(*scope, name)),
+    report.steps.iter().for_each(|step| match step {
+        Step::Install { backend, package } => line("missing", packages::Target { backend: backend.clone(), spec: package.clone() }.to_string()),
+        Step::Link { destination, backup: false } => line("new", path(destination)),
+        Step::Link { destination, backup: true } => line("blocked", path(destination)),
+        Step::Relink { destination } => line("moved", path(destination)),
+        Step::Update { destination } => line("changed", path(destination)),
+        Step::Unlink { destination } => line("stale", path(destination)),
+        Step::Replaced { destination } => line("replaced", path(destination)),
+        Step::Edited { destination } => line("edited", path(destination)),
+        Step::Unplaced { file } => line("unplaced", format!("static/{}", file.display())),
+        Step::Copy { destination, backup: true } => line("blocked", path(destination)),
+        Step::Copy { destination, .. } if destination.exists() => line("changed", path(destination)),
+        Step::Copy { destination, .. } => line("new", path(destination)),
+        Step::Delete { destination } => line("stale", path(destination)),
+        Step::Enable { scope, name } => line("disabled", service_label(*scope, name)),
+        Step::Disable { scope, name } => line("stale", service_label(*scope, name)),
+        Step::Purge { scope, name } => line("stale", path(&Runit.definition(env, *scope, name))),
+        Step::Restart { scope, name } => line("restart", service_label(*scope, name)),
     });
-    if steps.is_empty() {
+
+    // things maw.nix doesn't know about, then config for programs that aren't installed
+    report.undeclared.iter().for_each(|candidate| line("undeclared", candidate_label(candidate)));
+    report.orphans.iter().for_each(|name| {
+        let module = repo.module_file(name);
+        let source = if module.exists() { relative(&repo, &module) } else { format!("static/{name}/") };
+        line("orphan", format!("{source} ({name} isn't installed)"));
+    });
+    if report.is_clean() {
         println!("clean");
     }
+    Ok(())
+}
+
+// packages the way maw install takes them, services with their scope
+fn candidate_label(candidate: &Candidate) -> String {
+    match candidate {
+        Candidate::Package { backend, spec } => packages::Target { backend: backend.clone(), spec: spec.clone() }.to_string(),
+        Candidate::Service { scope, name } => format!("{name} ({scope} service)"),
+    }
+}
+
+// lists everything unrecorded in the editor, then records what's kept and ignores the rest
+fn adopt(env: &Env, runner: &dyn Runner, dry_run: bool) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let candidates = adopt::candidates(env, runner, &repo)?;
+    if candidates.is_empty() {
+        println!("nothing to adopt");
+        return Ok(());
+    }
+    let checklist = adopt::checklist(&candidates);
+    if dry_run {
+        print!("{checklist}");
+        return Ok(());
+    }
+
+    // the checklist lives in maw's state dir while it's being edited
+    let file = env.state_dir.join("adopt");
+    std::fs::create_dir_all(&env.state_dir)?;
+    std::fs::write(&file, &checklist)?;
+    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
+    edit::open_editor(runner, &editor, &file)?;
+    let decisions = adopt::parse(&std::fs::read_to_string(&file)?, &candidates)?;
+    std::fs::remove_file(&file)?;
+
+    let (_, state) = edit::load(env, runner, &repo)?;
+    adopt::apply(&repo, state, &decisions)?;
+    decisions.iter().for_each(|(candidate, keep)| println!("{} {}", if *keep { "record" } else { "ignore" }, candidate_label(candidate)));
     Ok(())
 }
 

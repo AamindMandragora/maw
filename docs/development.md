@@ -23,6 +23,7 @@ src/
   init/           # InitBackend trait and runit.rs: service files, links, sv control
   system.rs       # activation's root half: sudo copies, service enable/disable/restart
   services.rs     # maw sv: list, enable, disable, status, restart, log
+  adopt.rs        # undeclared packages and services, the adopt checklist
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/

@@ -1,4 +1,5 @@
 pub mod activate;
+pub mod adopt;
 pub mod backend;
 pub mod backup;
 pub mod build;

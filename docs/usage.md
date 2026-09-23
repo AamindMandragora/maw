@@ -194,7 +194,7 @@ When the registry alone would put the copy somewhere else, the original path is 
 maw status
 ```
 
-One line per file that isn't in sync, or `clean`:
+The one report of everything out of sync, one line each, or `clean`. First what `maw activate` would change, then what `maw.nix` doesn't cover:
 
 | label | meaning |
 |---|---|
@@ -209,12 +209,55 @@ One line per file that isn't in sync, or `clean`:
 | `unplaced` | a loose static file with no destination yet |
 | `disabled` | a declared service isn't enabled |
 | `restart` | a running service's files changed |
+| `undeclared` | installed by hand or enabled, but not in `maw.nix`; see [adopting](#adopting) |
+| `orphan` | a module or `static/` dir for a program that isn't installed |
+
+A program counts as installed when any source has a package by that name or a command by that name is on your `PATH`, so `static/nvim/` is fine with the `neovim` package. Data dirs like `fonts` and `wallpapers` are never orphans.
 
 ```sh
 maw diff
 ```
 
 A unified diff of each live file against what maw would put there, the same as `maw activate --force` would leave. Removed links diff against nothing. Neither command writes anything.
+
+### Adopting
+
+```sh
+maw adopt
+maw adopt --dry-run    # print the checklist instead
+```
+
+Lists everything `status` calls `undeclared` in your editor, one line each, every line starting as `keep`:
+
+```
+# maw adopt: `keep` records it in maw.nix, `skip` (or deleting the line) ignores it from now on
+
+# packages (xbps)
+keep firefox
+skip base-devel
+
+# packages (cargo)
+keep https://github.com/vitali87/croft.git
+
+# services (system)
+keep NetworkManager
+skip agetty-tty3
+```
+
+Save and quit, and `keep` lines are recorded in `maw.nix` like `maw install` or `maw sv enable` would, while `skip` lines go under `ignored`:
+
+```nix
+ignored = {
+  packages = {
+    xbps = [ "base-devel" ];
+  };
+  services = {
+    system = [ "agetty-tty3" ];
+  };
+};
+```
+
+Ignored things stay installed and enabled; maw just stops mentioning them. Nothing is installed, removed, or restarted by `adopt`. Only packages you installed by hand are offered, never their dependencies.
 
 ## Packages
 

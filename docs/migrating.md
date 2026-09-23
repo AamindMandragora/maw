@@ -70,9 +70,10 @@ If you were using a bare git repo or stow, retire it now: the files it tracked a
 Record what's installed and enabled, so a fresh machine gets it too:
 
 ```sh
-maw install niri waybar fuzzel      # already installed: only recorded (plus a module, if the repo has none for it)
-maw sv enable NetworkManager        # already enabled: only recorded
+maw adopt
 ```
+
+It opens a checklist of every package you installed by hand and every enabled service; keep what the machine should have, skip the rest (maw remembers the skips). See `maw help adopting`. Afterwards `maw status` should print `clean`, apart from `orphan` lines for any config whose program you removed.
 
 ### Moving a service you wrote
 
