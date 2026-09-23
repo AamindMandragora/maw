@@ -56,6 +56,31 @@ lib.program "waybar" {
 
 A plain string or `lib.raw` as a file's settings is written verbatim, whatever the format.
 
+## `lib.service name { ... }`
+
+Describes a runit service. maw writes its `run` and `log/run` files and enables it; see "Services" in `maw help usage`.
+
+| option | default | meaning |
+|---|---|---|
+| `scope` | `"system"` | `"system"` runs from boot as root, `"user"` runs as you from login |
+| `run` | | the script: shell text, or a whole script with its own `#!` line |
+| `log` | `true` | log through svlogd to `/var/log/<name>/` or `~/.local/state/log/<name>/` |
+| `enable` | `true` | link it into place; `false` writes the definition but leaves it off |
+| `env` | `{ }` | variables exported before `run`, literally: no `$` expansion |
+
+```nix
+{ config, lib, ... }:
+lib.service "rclone" {
+  scope = "user";
+  env.RCLONE_VFS_CACHE_MODE = "full";
+  run = ''
+    exec rclone --config "$HOME/.config/rclone/rclone.conf" mount "Google Drive:" "$HOME/Google Drive"
+  '';
+}
+```
+
+The run script gets `exec 2>&1` first, so errors reach the log, then the `env` exports. It should end by `exec`ing the long-running program, which runit supervises and restarts when it exits. A module can return a service alongside program files as a list: `[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]`.
+
 ## Verbatim text
 
 `lib.raw ''...''` is accepted anywhere a value is. Use it where Nix syntax doesn't reach, and mix it freely with Nix in one file:

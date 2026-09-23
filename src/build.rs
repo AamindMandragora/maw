@@ -1,6 +1,8 @@
 use crate::backup;
 use crate::env::Env;
 use crate::eval::{self, EvalError, RenderedFile};
+use crate::init::runit::Runit;
+use crate::init::{InitBackend, Scope};
 use crate::inputs::{Inputs, InputsError, combine, hash_bytes, load_json, save_json};
 use crate::registry::{self, Registry, RegistryError};
 use crate::repo::{Repo, RepoError};
@@ -42,6 +44,15 @@ pub struct Output {
     pub executable: bool,
     pub hash: String,
     pub content: String,
+    pub service: Option<ServiceRef>,
+}
+
+// the service a file belongs to, so activation can enable and restart it
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ServiceRef {
+    pub name: String,
+    pub scope: Scope,
+    pub enable: bool,
 }
 
 // dry_run writes nothing to out/; force overwrites files edited in place
@@ -106,7 +117,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         .collect::<Result<Vec<_>, BuildError>>()?;
 
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
-    let outputs: Vec<Output> = files.iter().map(|file| to_output(env, repo, &registry, file)).collect();
+    let outputs: Vec<Output> = files.iter().flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
     let placements = place_all(env, &outputs, options)?;
 
     // sort each file into the report by what happened to it
@@ -165,6 +176,34 @@ pub fn load_registry(env: &Env, runner: &dyn Runner, repo: &Repo, inputs: &mut I
     Ok((Registry::new(&shipped, &state["paths"])?, MawState::from_value(&state)?))
 }
 
+// the out/ files a rendered file becomes: itself, or a service's files from the init backend
+fn to_outputs(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -> Vec<Output> {
+    match &file.service {
+        Some(service) => service_outputs(env, repo, &file.name, Scope::parse(&file.scope), service),
+        None => vec![to_output(env, repo, registry, file)],
+    }
+}
+
+// a service's files under out/sv/<name>/, headed for its definition dir
+fn service_outputs(env: &Env, repo: &Repo, name: &str, scope: Scope, service: &crate::init::ServiceDef) -> Vec<Output> {
+    let service_ref = ServiceRef { name: name.into(), scope, enable: service.enable };
+    Runit
+        .render(name, scope, service)
+        .into_iter()
+        .map(|(path, content, executable)| Output {
+            name: name.into(),
+            key: path.clone(),
+            out: repo.out_dir().join("sv").join(name).join(&path),
+            destination: Runit.definition(env, scope, name).join(&path),
+            root: scope == Scope::System,
+            executable,
+            hash: hash_bytes(content.as_bytes()),
+            content,
+            service: Some(service_ref.clone()),
+        })
+        .collect()
+}
+
 // where a rendered file lives in out/ and at its destination
 fn to_output(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -> Output {
     let entry = registry.entry(&file.name);
@@ -177,6 +216,7 @@ fn to_output(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -
         executable: entry.executable || file.executable,
         hash: hash_bytes(file.content.as_bytes()),
         content: file.content.clone(),
+        service: None,
     }
 }
 

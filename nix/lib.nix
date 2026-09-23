@@ -294,6 +294,29 @@ let
       # format may be one string or an attrset keyed like files
       content = renderFile (if isAttrs format then format.${key} else format) fileSettings;
     }) files;
+
+  # a supervised service, described abstractly; maw's init backend writes its run and log files
+  service =
+    name:
+    {
+      scope ? "system",
+      run,
+      log ? true,
+      enable ? true,
+      env ? { },
+    }:
+    [
+      {
+        inherit name scope;
+        key = "service";
+        content = "";
+        executable = false;
+        service = {
+          inherit run log enable;
+          env = builtins.mapAttrs (_: toString) env;
+        };
+      }
+    ];
 in
 nixpkgs
 // {
@@ -301,6 +324,7 @@ nixpkgs
     raw
     isRaw
     program
+    service
     toCSS
     toINI
     toJSON

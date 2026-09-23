@@ -6,13 +6,16 @@ pub mod edit;
 pub mod cli;
 pub mod env;
 pub mod help;
+pub mod init;
 pub mod packages;
 pub mod eval;
 pub mod inputs;
 pub mod registry;
 pub mod repo;
 pub mod runner;
+pub mod services;
 pub mod state;
 pub mod status;
+pub mod system;
 #[cfg(test)]
 pub mod testing;

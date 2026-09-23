@@ -5,9 +5,12 @@ use crate::build::{self, BuildError, Report};
 use crate::edit;
 use crate::env::Env;
 use crate::help;
+use crate::init::runit::Runit;
+use crate::init::{InitBackend, Scope};
 use crate::packages::{self, Change};
 use crate::registry;
 use crate::repo::Repo;
+use crate::services;
 use crate::runner::{Runner, SystemRunner};
 use crate::status;
 use anyhow::Result;
@@ -95,11 +98,52 @@ enum Command {
     Info { package: String },
     #[command(about = "upgrade the system, then every unpinned cargo and go package", after_help = "see: maw help updating")]
     Sync,
+    #[command(about = "services: list, enable, disable, status, restart, log", after_help = "see: maw help services")]
+    Sv {
+        #[command(subcommand)]
+        action: SvAction,
+    },
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
         #[arg(help = "usage, modules, formats, a command, or a heading like `drift`")]
         query: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum SvAction {
+    #[command(about = "declared and enabled services, and whether they run")]
+    List,
+    #[command(about = "record a service in maw.nix and link it into place")]
+    Enable(ServiceName),
+    #[command(about = "stop and unlink a service, and drop it from maw.nix")]
+    Disable(ServiceName),
+    #[command(about = "sv status")]
+    Status(ServiceName),
+    #[command(about = "sv restart")]
+    Restart(ServiceName),
+    #[command(about = "follow a service's log")]
+    Log(ServiceName),
+}
+
+#[derive(clap::Args)]
+struct ServiceName {
+    name: String,
+    #[arg(long, conflicts_with = "system", help = "the user service run by your session")]
+    user: bool,
+    #[arg(long, help = "the system service run from boot")]
+    system: bool,
+}
+
+impl ServiceName {
+    // --user or --system picks the scope; otherwise maw works it out
+    fn scope(&self) -> Option<Scope> {
+        match (self.user, self.system) {
+            (true, _) => Some(Scope::User),
+            (_, true) => Some(Scope::System),
+            _ => None,
+        }
+    }
 }
 
 pub fn main() -> Result<()> {
@@ -122,6 +166,7 @@ pub fn main() -> Result<()> {
         Command::Search { term } => search(&env, &runner, &term),
         Command::Info { package } => info(&env, &runner, &package),
         Command::Sync => sync(&env, &runner),
+        Command::Sv { action } => sv(&env, &runner, action),
         Command::Help { query } => show_help(&runner, &query.join(" ")),
     }
 }
@@ -267,6 +312,14 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
         Step::Replaced { destination } => line("replaced", destination),
         Step::Edited { destination } => line("edited", destination),
         Step::Unplaced { file } => line("unplaced", &PathBuf::from("static").join(file)),
+        Step::Copy { destination, backup: true } => line("blocked", destination),
+        Step::Copy { destination, .. } if destination.exists() => line("changed", destination),
+        Step::Copy { destination, .. } => line("new", destination),
+        Step::Delete { destination } => line("stale", destination),
+        Step::Enable { scope, name } => println!("{:<9}{}", "disabled", service_label(*scope, name)),
+        Step::Disable { scope, name } => println!("{:<9}{}", "stale", service_label(*scope, name)),
+        Step::Purge { scope, name } => println!("{:<9}{}", "stale", env.pretty(&Runit.definition(env, *scope, name))),
+        Step::Restart { scope, name } => println!("{:<9}{}", "restart", service_label(*scope, name)),
     });
     if steps.is_empty() {
         println!("clean");
@@ -403,7 +456,7 @@ fn show_help(runner: &dyn Runner, query: &str) -> Result<()> {
 // the topic list for no query, else the first of: topic, command, section
 fn help_text(query: &str, color: bool) -> Option<String> {
     if query.is_empty() {
-        let topics: String = help::TOPICS.iter().map(|topic| format!("  {:<9}{}\n", topic.name, topic.summary)).collect();
+        let topics: String = help::TOPICS.iter().map(|topic| format!("  {:<11}{}\n", topic.name, topic.summary)).collect();
         return Some(format!("topics:\n{topics}\nmaw help <topic | command | heading>, e.g. `maw help drift`\n"));
     }
     let render = |markdown: String| help::render(&markdown, color);
@@ -417,6 +470,51 @@ fn help_text(query: &str, color: bool) -> Option<String> {
         Some(subcommand) => Some(subcommand.render_long_help().to_string()),
         None => help::find(query).map(render),
     }
+}
+
+// runs one sv subcommand
+fn sv(env: &Env, runner: &dyn Runner, action: SvAction) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    match action {
+        SvAction::List => sv_list(env, runner, &repo),
+        SvAction::Enable(service) => {
+            let scope = services::enable(env, runner, &repo, &service.name, service.scope())?;
+            println!("record {} in maw.nix", service_label(scope, &service.name));
+            let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
+            print_activation(env, &repo, &activation, false);
+            Ok(())
+        }
+        SvAction::Disable(service) => {
+            let (scope, dropped) = services::disable(env, runner, &repo, &service.name, service.scope())?;
+            println!("disable {}", service_label(scope, &service.name));
+            if dropped {
+                println!("drop {} from maw.nix", service_label(scope, &service.name));
+            }
+            Ok(())
+        }
+        SvAction::Status(service) => Ok(services::control(env, runner, &repo, &service.name, service.scope(), "status")?),
+        SvAction::Restart(service) => Ok(services::control(env, runner, &repo, &service.name, service.scope(), "restart")?),
+        SvAction::Log(service) => Ok(services::log(env, runner, &repo, &service.name, service.scope())?),
+    }
+}
+
+// one line per service: name, scope, state, and whether maw.nix and the system disagree
+fn sv_list(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
+    services::list(env, runner, repo)?.iter().for_each(|row| {
+        let note = match (row.declared, row.enabled) {
+            (true, false) => "  (disabled)",
+            (false, true) => "  (undeclared)",
+            _ => "",
+        };
+        let state = row.state.as_deref().unwrap_or(if row.enabled { "?" } else { "-" });
+        println!("{:<24}{:<8}{state}{note}", row.name, row.scope);
+    });
+    Ok(())
+}
+
+// system services by name, user ones marked
+fn service_label(scope: Scope, name: &str) -> String {
+    if scope == Scope::User { format!("{name} (user)") } else { name.to_string() }
 }
 
 fn relative(repo: &Repo, path: &Path) -> String {
@@ -451,6 +549,17 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
         Step::Replaced { destination } => println!("drift {}: replaced by another file; --force to relink", env.pretty(destination)),
         Step::Edited { destination } => println!("drift {}: edited in place; --force to overwrite", env.pretty(destination)),
         Step::Unplaced { file } => println!("skip static/{}: no destination; activate in a terminal to choose one", file.display()),
+        Step::Copy { destination, backup: true } => {
+            let target = moved_to(destination).map(|moved| format!(" -> {moved}")).unwrap_or_default();
+            println!("backup {}{target}", env.pretty(destination));
+            println!("copy {}", env.pretty(destination));
+        }
+        Step::Copy { destination, .. } => println!("copy {}", env.pretty(destination)),
+        Step::Delete { destination } => println!("delete {}", env.pretty(destination)),
+        Step::Enable { scope, name } => println!("enable {}", service_label(*scope, name)),
+        Step::Disable { scope, name } => println!("disable {}", service_label(*scope, name)),
+        Step::Purge { scope, name } => println!("remove {}", env.pretty(&Runit.definition(env, *scope, name))),
+        Step::Restart { scope, name } => println!("restart {}", service_label(*scope, name)),
     });
 
     if dry_run && !activation.steps.is_empty() {

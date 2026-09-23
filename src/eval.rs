@@ -1,4 +1,5 @@
 use crate::env::Env;
+use crate::init::ServiceDef;
 use crate::runner::{RunError, Runner};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,6 +26,9 @@ pub struct RenderedFile {
     pub content: String,
     pub executable: bool,
     pub scope: String,
+    // set by lib.service; the init backend renders the actual files
+    #[serde(default)]
+    pub service: Option<ServiceDef>,
 }
 
 // a cached evaluation, valid while its key matches

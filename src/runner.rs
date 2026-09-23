@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::Path;
 use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
@@ -18,6 +19,16 @@ pub trait Runner {
 
     // runs a command on the user's terminal with text on its stdin, like a pager
     fn pipe(&self, program: &str, args: &[String], input: &str) -> Result<(), RunError>;
+}
+
+// runs a command as root on the terminal: through sudo on the real system, directly on a scratch root
+pub fn as_root(runner: &dyn Runner, sysroot: &Path, program: &str, args: &[String]) -> Result<(), RunError> {
+    if sysroot == Path::new("/") {
+        let with_program: Vec<String> = std::iter::once(program.to_string()).chain(args.iter().cloned()).collect();
+        runner.interactive("sudo", &with_program)
+    } else {
+        runner.interactive(program, args)
+    }
 }
 
 pub struct SystemRunner;

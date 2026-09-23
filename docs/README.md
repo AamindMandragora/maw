@@ -6,7 +6,8 @@ maw only uses Nix as a config language. It never builds or installs anything fro
 
 ## Pages
 
-- [usage.md](usage.md): setting up a repo, building, where files go
+- [usage.md](usage.md): setting up a repo, building, activating, packages, services
+- [migrating.md](migrating.md): moving an existing setup into maw, step by step
 - [modules.md](modules.md): writing a module for a program
 - [formats.md](formats.md): every output format and how Nix values map to it
 - [development.md](development.md): repo layout, tests, the pinned nixpkgs lib

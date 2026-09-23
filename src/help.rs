@@ -5,8 +5,9 @@ pub struct Topic {
     pub text: &'static str,
 }
 
-pub const TOPICS: [Topic; 3] = [
+pub const TOPICS: [Topic; 4] = [
     Topic { name: "usage", summary: "setting up, building, activating, day-to-day commands", text: include_str!("../docs/usage.md") },
+    Topic { name: "migrating", summary: "moving an existing setup into maw, step by step", text: include_str!("../docs/migrating.md") },
     Topic { name: "modules", summary: "writing modules: lib.program, lib.raw, config.nix", text: include_str!("../docs/modules.md") },
     Topic { name: "formats", summary: "every output format and how nix values map to it", text: include_str!("../docs/formats.md") },
 ];

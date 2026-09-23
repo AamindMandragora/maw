@@ -34,7 +34,8 @@ fn fake(program: &str, args: &[String]) -> Result<String, RunError> {
         "xbps-query" => fake_xbps(program, &args),
         "cargo" => Ok(fake_cargo(&args)),
         "curl" => Ok(fake_crates_io(&args)),
-        "go" | "xbps-install" | "xbps-remove" => Ok(String::new()),
+        "go" | "xbps-install" | "xbps-remove" | "sv" | "tail" => Ok(String::new()),
+        "install" | "cp" | "ln" | "rm" | "mkdir" => real(program, &args),
         _ => Ok(fake_nix(&args)),
     }
 }
@@ -74,19 +75,28 @@ fn fake_nix(args: &[&str]) -> String {
             "foot": { "format": "ini", "files": { "main": "foot/foot.ini" } },
             "scripts": { "dir": "~/.local/bin", "executable": true },
             "wallpapers": { "dir": "~/.local/share/wallpapers" },
+            "greetd": { "format": "toml", "files": { "main": "/etc/greetd/config.toml" }, "root": true },
             "waybar": { "format": "json", "files": { "main": "waybar/config.jsonc", "style": "waybar/style.css" } },
         })
         .to_string();
     }
     if target.ends_with("maw.nix") {
-        let packages: serde_json::Map<String, serde_json::Value> = ["xbps", "cargo", "go"]
-            .iter()
-            .map(|backend| (backend.to_string(), json!(declared(Path::new(target), backend))))
-            .filter(|(_, specs)| specs.as_array().is_some_and(|specs| !specs.is_empty()))
-            .collect();
-        return json!({ "packages": packages, "paths": {} }).to_string();
+        let lists = |keys: &[&str]| -> serde_json::Map<String, serde_json::Value> {
+            keys.iter()
+                .map(|key| (key.to_string(), json!(declared(Path::new(target), key))))
+                .filter(|(_, names)| names.as_array().is_some_and(|names| !names.is_empty()))
+                .collect()
+        };
+        return json!({ "packages": lists(&["xbps", "cargo", "go"]), "services": lists(&["system", "user"]), "paths": {} }).to_string();
     }
     let name = args[args.len() - 2].trim_start_matches("modules.");
+
+    // usersvc and syssvc are services whose run line carries the module's text, so editing the module changes them
+    if let Some(scope) = [("usersvc", "user"), ("syssvc", "system")].iter().find_map(|(module, scope)| (name == *module).then_some(scope)) {
+        let text = fs::read_to_string(Path::new(target).join("modules").join(format!("{name}.nix"))).unwrap_or_default();
+        let service = json!({ "run": format!("exec sleep 1000 # {}", text.trim()), "log": true, "enable": true, "env": {} });
+        return json!([{ "name": name, "key": "service", "content": "", "executable": false, "scope": scope, "service": service }]).to_string();
+    }
     json!([{ "name": name, "key": "main", "content": format!("{name} v1\n"), "executable": false, "scope": "user" }]).to_string()
 }
 
@@ -95,6 +105,12 @@ fn declared(maw_file: &Path, backend: &str) -> Vec<String> {
     let text = fs::read_to_string(maw_file).unwrap_or_default();
     let line = text.lines().find(|line| line.trim_start().starts_with(&format!("{backend} = ["))).unwrap_or("");
     line.split('"').skip(1).step_by(2).map(String::from).collect()
+}
+
+// file commands really run, confined to the fixture's tempdir, so root copies land on disk
+fn real(program: &str, args: &[&str]) -> Result<String, RunError> {
+    let status = std::process::Command::new(program).args(args).status().unwrap();
+    if status.success() { Ok(String::new()) } else { Err(RunError::Failed { program: program.into(), stderr: status.to_string() }) }
 }
 
 pub fn write(path: &Path, content: &str) {

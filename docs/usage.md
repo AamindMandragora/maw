@@ -31,6 +31,8 @@ This creates the repo, or fills in whatever an existing one is missing, and reco
 
 Every other command finds the repo through that recorded path, so it works from any directory.
 
+Moving an existing setup in? Follow [migrating.md](migrating.md) instead.
+
 ## Building
 
 ```sh
@@ -79,6 +81,21 @@ unlink ~/.config/foot/foot.ini
 - `unlink`: a module or static file was removed, so its link is too. A backup made when it was first linked stays in the backups dir.
 
 Since everything is a link, a change reaches the live file as soon as it's in `out/` or `static/`. Running `maw activate` twice in a row does nothing the second time.
+
+### System files
+
+Files under `/` (a registry entry with `root = true`, like greetd's `/etc/greetd/config.toml`) are copied with `sudo` instead of linked, since `/home` may not be mounted when the system reads them at boot:
+
+```
+backup /etc/greetd/config.toml -> ~/.local/state/maw/backups/system/etc/greetd/config.toml
+copy /etc/greetd/config.toml
+delete /etc/old/thing.conf
+```
+
+- `copy`: the file is new, or changed in the repo. The first time maw replaces a file it didn't write, the original is saved first (`backup`).
+- `delete`: nothing declares it anymore. A file someone edited since maw copied it is left alone.
+
+A copy edited by hand is [drift](#drift), like an edited link: reported as `edited`, left alone, and overwritten (after a backup) only with `--force`.
 
 `maw activate --dry-run` prints the plan and changes nothing, not even `out/`.
 
@@ -186,10 +203,12 @@ One line per file that isn't in sync, or `clean`:
 | `blocked` | a file maw doesn't manage is in the way; activating backs it up |
 | `changed` | a module changed and `out/` hasn't caught up |
 | `moved` | the file now comes from somewhere else |
-| `stale` | no longer declared; activating unlinks it |
+| `stale` | no longer declared; activating unlinks, deletes, or disables it |
 | `replaced` | [drift](#drift): the link was replaced |
 | `edited` | [drift](#drift): edited through the link |
 | `unplaced` | a loose static file with no destination yet |
+| `disabled` | a declared service isn't enabled |
+| `restart` | a running service's files changed |
 
 ```sh
 maw diff
@@ -270,6 +289,51 @@ maw sync
 
 Upgrades the system (`xbps-install -Su`), then every crate and go program that isn't pinned to a version. Pinned ones stay put until you install a different version.
 
+## Services
+
+Services are supervised by runit. There are two kinds:
+
+- **system** services run from boot as root. Definitions live in `/etc/sv/<name>/`, enabled by a link in `/var/service/`.
+- **user** services run as you, in your session, started by turnstile at login. Definitions live in `~/.config/sv/<name>/`, enabled by a link in `~/.config/service/`.
+
+A service is enabled when `maw.nix` lists it, or when a module defines it with `lib.service` (see `maw help lib.service`):
+
+```nix
+services = {
+  system = [ "NetworkManager" "dbus" ];
+  user = [ "pipewire" ];
+};
+```
+
+`maw activate` enables what's declared, disables what maw enabled that no longer is (`sv down` first), and restarts running services whose files changed:
+
+```
+copy /etc/sv/backup/run
+enable backup
+restart rclone (user)
+```
+
+Services maw didn't enable are never touched by activation.
+
+### Service commands
+
+```sh
+maw sv list                   # declared and enabled services, and their state
+maw sv enable NetworkManager  # record in maw.nix, then activate
+maw sv disable bluetoothd     # stop and unlink now, drop from maw.nix
+maw sv status greetd
+maw sv restart greetd
+maw sv log rclone             # follow its log
+```
+
+A name is looked up in maw.nix and modules first, then among enabled services, then among definitions; `--user` or `--system` picks one when a name exists in both, e.g. while moving a system service to your session. `enable` works for any service with a definition, like the ones Void packages install into `/etc/sv`. A service a module enables can't be disabled from here: set `enable = false` in its `lib.service`.
+
+`sv list` flags `(disabled)` for declared but not enabled and `(undeclared)` for enabled but not declared. Reading a system service's state needs root, so it shows `?` unless `sudo` needs no password.
+
+### Logs
+
+Services maw writes log through `svlogd`: system ones to `/var/log/<name>/`, user ones to `~/.local/state/log/<name>/`, rotated automatically. `maw sv log <name>` follows the `current` file.
+
 ## Where files go
 
 You never write destination paths. Each program name maps to destinations through the registry, checked in this order:
@@ -301,7 +365,7 @@ maw keeps its own bookkeeping outside the repo:
 ~/.local/state/maw/inputs    # stamps of input files, to skip re-reading unchanged ones
 ~/.local/state/maw/cache/    # evaluated modules, reused while their inputs are unchanged
 ~/.local/state/maw/outputs   # hash of each out/ file as maw last wrote it
-~/.local/state/maw/manifest  # every link the last activation made, with content hashes
+~/.local/state/maw/manifest  # every link and root copy the last activation made, with content hashes, and the services it enabled
 ~/.local/state/maw/backups/  # files moved aside, mirrored by path under home (system/ for the rest)
 ```
 

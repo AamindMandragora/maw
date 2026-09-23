@@ -3,11 +3,13 @@ use crate::backup;
 use crate::build::{self, BuildError, Report};
 pub use crate::build::Options;
 use crate::env::Env;
+use crate::init::Scope;
 use crate::inputs::{Inputs, InputsError, load_json, save_json};
 use crate::registry::{self, Registry};
 use crate::repo::Repo;
-use crate::runner::Runner;
+use crate::runner::{RunError, Runner};
 use crate::state::{MawState, PathAnswer, StateError};
+use crate::system;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -26,6 +28,10 @@ pub enum ActivateError {
     Backend(#[from] BackendError),
     #[error("maw.nix declares packages for {0}, which maw has no backend for")]
     UnknownBackend(String),
+    #[error(transparent)]
+    Run(#[from] RunError),
+    #[error("no {scope} service {name}: nothing in its definition dir and no module defines it")]
+    UnknownService { scope: Scope, name: String },
     #[error("{destination} comes from both {first} and {second}")]
     Conflict { destination: PathBuf, first: PathBuf, second: PathBuf },
     #[error("{path}: {source}")]
@@ -48,18 +54,21 @@ struct Linked {
     hash: String,
 }
 
-// what the last activation placed, keyed by destination
+// what the last activation placed: links keyed by destination, plus root copies and services
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Manifest {
     files: BTreeMap<PathBuf, Linked>,
+    #[serde(default)]
+    system: system::Record,
 }
 
-// a file that should be linked into place
+// a file that should be in place: linked, or copied as root when root is set
 #[derive(Debug, Clone)]
 pub struct Wanted {
     pub destination: PathBuf,
     pub source: PathBuf,
     pub hash: String,
+    pub root: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,6 +88,17 @@ pub enum Step {
     Edited { destination: PathBuf },
     // a loose static/ file with no known destination
     Unplaced { file: PathBuf },
+    // a root file written with sudo; backup: what's there now is saved first
+    Copy { destination: PathBuf, backup: bool },
+    // a root file maw copied that nothing declares anymore
+    Delete { destination: PathBuf },
+    Enable { scope: Scope, name: String },
+    // stopped with sv down, then unlinked
+    Disable { scope: Scope, name: String },
+    // the definition dir of a service maw wrote and nothing declares anymore, supervise state and all
+    Purge { scope: Scope, name: String },
+    // a running service whose files changed
+    Restart { scope: Scope, name: String },
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +115,7 @@ pub struct Activation {
 pub struct Planned {
     pub build: Report,
     pub wanted: Vec<Wanted>,
+    pub copies: Vec<Wanted>,
     pub steps: Vec<Step>,
     manifest: Manifest,
     next: Manifest,
@@ -109,7 +130,8 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
     }
 
     install_missing(env, runner, &planned.steps)?;
-    let backups = apply(env, &planned.steps, &planned.wanted)?;
+    let mut backups = apply(env, &planned.steps, &planned.wanted)?;
+    backups.extend(system::apply(env, runner, &planned.steps, &planned.copies)?);
     if planned.next != planned.manifest {
         save_json(&env.state_dir.join("manifest"), &planned.next)?;
     }
@@ -125,15 +147,30 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
     let (statics, unplaced) = static_files(env, repo, &build.registry, &mut inputs)?;
     inputs.save(&inputs_file)?;
 
-    let wanted = wanted(&build, statics)?;
+    let (copies, wanted): (Vec<Wanted>, Vec<Wanted>) = wanted(&build, statics)?.into_iter().partition(|file| file.root);
     let edited: HashSet<PathBuf> = build.drifted.iter().map(|output| output.out.clone()).collect();
     let manifest: Manifest = load_json(&env.state_dir.join("manifest"))?;
-    let (links, next) = plan(&manifest, &wanted, &edited, options.force);
+    let (links, mut next) = plan(&manifest, &wanted, &edited, options.force);
+    let (copy_steps, copied) = system::plan_copies(&manifest.system, &copies, options.force);
 
-    // packages first, then links, then loose files nobody placed
+    // services restart when any file they're made of is written or changes behind its link
+    let changed: HashSet<PathBuf> = links.iter().chain(&copy_steps).filter_map(written).cloned().collect();
+    let placed: HashSet<PathBuf> = manifest.files.keys().chain(manifest.system.copied.keys()).cloned().collect();
+    let (service_steps, services) = system::plan_services(env, &build, &manifest.system, &changed, &placed)?;
+    next.system = system::Record { copied, services };
+
+    // packages, links, root copies, services, then loose files nobody placed
     let unplaced = unplaced.into_iter().map(|file| Step::Unplaced { file });
-    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(unplaced).collect();
-    Ok(Planned { build, wanted, steps, manifest, next })
+    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(unplaced).collect();
+    Ok(Planned { build, wanted, copies, steps, manifest, next })
+}
+
+// the destination a step writes new content to, if any
+fn written(step: &Step) -> Option<&PathBuf> {
+    match step {
+        Step::Link { destination, .. } | Step::Relink { destination } | Step::Update { destination } | Step::Copy { destination, .. } => Some(destination),
+        _ => None,
+    }
 }
 
 // declared packages their backend doesn't have installed; backends with nothing declared aren't asked
@@ -194,7 +231,7 @@ fn plan(manifest: &Manifest, wanted: &[Wanted], edited: &HashSet<PathBuf>, force
         .collect();
 
     let steps = removals.chain(decisions.into_iter().filter_map(|(step, _)| step)).collect();
-    (steps, Manifest { files })
+    (steps, Manifest { files, system: system::Record::default() })
 }
 
 // the step one wanted file needs, judged from the manifest and what's on disk
@@ -251,12 +288,13 @@ fn apply(env: &Env, steps: &[Step], wanted: &[Wanted]) -> Result<Vec<(PathBuf, P
     Ok(backups.into_iter().flatten().collect())
 }
 
-// every user-scope file to link: rendered outputs and static files, one source per destination
+// every file to place, rendered or static, one source per destination
 fn wanted(build: &Report, statics: Vec<Wanted>) -> Result<Vec<Wanted>, ActivateError> {
-    let rendered = build.outputs.iter().filter(|output| !output.root).map(|output| Wanted {
+    let rendered = build.outputs.iter().map(|output| Wanted {
         destination: output.destination.clone(),
         source: output.out.clone(),
         hash: output.hash.clone(),
+        root: output.root,
     });
 
     // keyed by destination, failing on the first destination claimed twice
@@ -296,13 +334,12 @@ fn static_files(env: &Env, repo: &Repo, registry: &Registry, inputs: &mut Inputs
         })
         .collect();
 
-    // root-scope names are copied, not linked, so they're left out here
+    // root-scope names are copied rather than linked
     let wanted = named
         .into_iter()
-        .filter(|(name, _, _)| !registry.entry(name).root)
         .map(|(name, key, path)| {
             let destination = registry::resolve(env, &registry.spec(&name, &key));
-            Ok(Wanted { destination, hash: inputs.hash(&path)?, source: path })
+            Ok(Wanted { destination, hash: inputs.hash(&path)?, source: path, root: registry.entry(&name).root })
         })
         .collect::<Result<Vec<_>, ActivateError>>()?;
     Ok((wanted, unplaced))

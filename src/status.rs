@@ -42,12 +42,12 @@ pub fn diff(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<FileDiff>
     let read = |path: &PathBuf| fs::read(path).unwrap_or_default();
 
     let removals = planned.steps.iter().filter_map(|step| match step {
-        Step::Unlink { destination } => Some(FileDiff { destination: destination.clone(), live: read(destination), wanted: Vec::new() }),
+        Step::Unlink { destination } | Step::Delete { destination } => Some(FileDiff { destination: destination.clone(), live: read(destination), wanted: Vec::new() }),
         _ => None,
     });
 
     // a static file behind its own link is the same file, so it's skipped unread
-    let changes = planned.wanted.iter().filter_map(|file| {
+    let changes = planned.wanted.iter().chain(&planned.copies).filter_map(|file| {
         let render = rendered.get(&file.source);
         if render.is_none() && links_to(&file.destination, &file.source) {
             return None;

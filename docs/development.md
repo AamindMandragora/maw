@@ -20,6 +20,9 @@ src/
   help.rs         # maw help: the user docs, compiled in and rendered for the terminal
   packages.rs     # install and remove: plan, run the backend, record in maw.nix, scaffold modules
   backend/        # Backend and SystemBackend traits; xbps.rs, cargo.rs, go.rs
+  init/           # InitBackend trait and runit.rs: service files, links, sv control
+  system.rs       # activation's root half: sudo copies, service enable/disable/restart
+  services.rs     # maw sv: list, enable, disable, status, restart, log
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/
@@ -53,7 +56,7 @@ cp /var/db/xbps/keys/* $R/var/db/xbps/keys/; cp /etc/xbps.d/*.conf /usr/share/xb
 MAW_SYSROOT=$R maw install tzdata
 ```
 
-A root without `var/db/xbps` counts as having nothing installed.
+A root without `var/db/xbps` counts as having nothing installed. Root copies and system services work the same way: with `MAW_SYSROOT` set, `install`, `ln`, and `sv` run without `sudo` inside the scratch root. To watch services really run there, start a supervisor over each dir yourself: `runsvdir $R/var/service &` and `runsvdir $HOME/.config/service &`.
 
 cargo and go follow `HOME`, so a scratch `HOME` keeps their installs out of your real `~/.cargo` and go dir. rustup reads `HOME` too; point it back at your toolchains and unset any `GOPATH` from your shell:
 
@@ -90,7 +93,7 @@ After blessing, check the golden diff before committing.
 
 ## Docs
 
-`docs/usage.md`, `docs/modules.md`, and `docs/formats.md` are compiled into the binary and served by `maw help`, so they're user-facing twice: keep them readable as plain text, with headings that make sense as `maw help <heading>`. Link between them as `[formats.md](formats.md)`; the terminal renders that as `maw help formats`. A test checks that every command's `see:` line names a real heading. This file isn't compiled in.
+`docs/usage.md`, `docs/migrating.md`, `docs/modules.md`, and `docs/formats.md` are compiled into the binary and served by `maw help`, so they're user-facing twice: keep them readable as plain text, with headings that make sense as `maw help <heading>`. Link between them as `[formats.md](formats.md)`; the terminal renders that as `maw help formats`. A test checks that every command's `see:` line names a real heading. This file isn't compiled in.
 
 ## Pinned nixpkgs lib
 

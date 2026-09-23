@@ -1,6 +1,6 @@
 use super::{Backend, BackendError, Pkg, SystemBackend, split_pkgver};
 use crate::env::Env;
-use crate::runner::{RunError, Runner};
+use crate::runner::{RunError, Runner, as_root};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -25,15 +25,10 @@ impl<'a> Xbps<'a> {
         self.runner.run("xbps-query", &args)
     }
 
-    // a root command on the terminal: through sudo on the real system, directly on a scratch root
+    // a root command on the terminal, pointed at the system root
     fn privileged(&self, program: &str, args: &[String]) -> Result<(), RunError> {
         let args: Vec<String> = self.root_args().into_iter().chain(args.iter().cloned()).collect();
-        if self.root_args().is_empty() {
-            let with_program: Vec<String> = std::iter::once(program.to_string()).chain(args).collect();
-            self.runner.interactive("sudo", &with_program)
-        } else {
-            self.runner.interactive(program, &args)
-        }
+        as_root(self.runner, &self.sysroot, program, &args)
     }
 
     fn parse_error(&self, line: &str) -> BackendError {

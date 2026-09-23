@@ -1,0 +1,1 @@
+[{"content":"","executable":false,"key":"service","name":"rclone","scope":"user","service":{"enable":true,"env":{"RCLONE_CONFIG":"/home/me/.config/rclone/rclone.conf"},"log":true,"run":"exec rclone mount drive: /home/me/drive"}}]
