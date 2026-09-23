@@ -50,7 +50,7 @@ impl<'a> Xbps<'a> {
                 let pkgver = words.nth(1).ok_or_else(|| self.parse_error(line))?;
                 let (name, version) = split_pkgver(pkgver).ok_or_else(|| self.parse_error(line))?;
                 let description = words.collect::<Vec<_>>().join(" ");
-                Ok(Pkg { manual: manual.contains(&name), name, version, description, ..Pkg::default() })
+                Ok(Pkg { manual: manual.contains(&name), source: name.clone(), name, version, description, ..Pkg::default() })
             })
             .collect()
     }
@@ -88,7 +88,7 @@ impl Backend for Xbps<'_> {
         };
         let (name, version) = split_pkgver(field(&output, "pkgver")).ok_or_else(|| self.parse_error(&output))?;
         let (description, homepage) = (field(&output, "short_desc").into(), field(&output, "homepage").into());
-        Ok(Some(Pkg { name, version, description, homepage, manual: false }))
+        Ok(Some(Pkg { source: name.clone(), name, version, description, homepage, ..Pkg::default() }))
     }
 
     fn install(&self, names: &[String]) -> Result<(), BackendError> {

@@ -27,23 +27,46 @@ pub fn fixture(modules: &[&str]) -> Fixture {
     Fixture { dir, env, repo, runner: FakeRunner::fallible(fake) }
 }
 
-// nix, plus xbps on a system where only bash is installed and the repo has bash, foot, and waybar
+// nix; xbps with only bash installed and bash, foot, waybar in the repo; crates.io with bat and ripgrep; nothing from go
 fn fake(program: &str, args: &[String]) -> Result<String, RunError> {
-    if program != "xbps-query" {
-        return Ok(fake_nix(args));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match program {
+        "xbps-query" => fake_xbps(program, &args),
+        "cargo" => Ok(fake_cargo(&args)),
+        "curl" => Ok(fake_crates_io(&args)),
+        "go" | "xbps-install" | "xbps-remove" => Ok(String::new()),
+        _ => Ok(fake_nix(&args)),
     }
+}
+
+// crates.io search results for the crates that exist: bat and ripgrep are programs, libfoo a library
+fn fake_cargo(args: &[&str]) -> String {
+    match args {
+        ["search", .., name] if ["bat", "ripgrep", "libfoo"].contains(name) => format!("{name} = \"1.0.0\"    # {name} crate\n"),
+        _ => String::new(),
+    }
+}
+
+// the crates.io api's list of programs a crate version builds
+fn fake_crates_io(args: &[&str]) -> String {
+    let programs = if args.last().is_some_and(|url| url.contains("/libfoo/")) { "[]" } else { r#"["bin"]"# };
+    format!(r#"{{"version":{{"bin_names":{programs}}}}}"#)
+}
+
+fn fake_xbps(program: &str, args: &[&str]) -> Result<String, RunError> {
     let failed = || RunError::Failed { program: program.into(), stderr: String::new() };
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args {
         [.., "-m"] => Ok("bash-5.2_1\n".into()),
         [.., "-l"] => Ok("ii bash-5.2_1  GNU shell\n".into()),
         [.., "-R", name] if ["bash", "foot", "waybar"].contains(name) => Ok(format!("pkgver: {name}-1.0_1\nshort_desc: {name}\n")),
         [.., "-R", _] => Err(failed()),
+        [.., "-Rs", term] if ["bash", "foot", "waybar"].contains(term) => Ok(format!("[-] {term}-1.0_1  {term}\n")),
         _ => Ok(String::new()),
     }
 }
 
 // answers registry.nix, maw.nix, and -A modules.<name> like nix-instantiate would
-fn fake_nix(args: &[String]) -> String {
+fn fake_nix(args: &[&str]) -> String {
     let target = args.last().unwrap();
     if target.ends_with("registry.nix") {
         return json!({
@@ -56,16 +79,21 @@ fn fake_nix(args: &[String]) -> String {
         .to_string();
     }
     if target.ends_with("maw.nix") {
-        return json!({ "packages": { "xbps": declared_xbps(Path::new(target)) }, "paths": {} }).to_string();
+        let packages: serde_json::Map<String, serde_json::Value> = ["xbps", "cargo", "go"]
+            .iter()
+            .map(|backend| (backend.to_string(), json!(declared(Path::new(target), backend))))
+            .filter(|(_, specs)| specs.as_array().is_some_and(|specs| !specs.is_empty()))
+            .collect();
+        return json!({ "packages": packages, "paths": {} }).to_string();
     }
     let name = args[args.len() - 2].trim_start_matches("modules.");
     json!([{ "name": name, "key": "main", "content": format!("{name} v1\n"), "executable": false, "scope": "user" }]).to_string()
 }
 
-// the quoted names on maw.nix's `xbps = [ ... ];` line, which maw always writes on one line
-fn declared_xbps(maw_file: &Path) -> Vec<String> {
+// the quoted names on maw.nix's `<backend> = [ ... ];` line, which maw always writes on one line
+fn declared(maw_file: &Path, backend: &str) -> Vec<String> {
     let text = fs::read_to_string(maw_file).unwrap_or_default();
-    let line = text.lines().find(|line| line.trim_start().starts_with("xbps = [")).unwrap_or("");
+    let line = text.lines().find(|line| line.trim_start().starts_with(&format!("{backend} = ["))).unwrap_or("");
     line.split('"').skip(1).step_by(2).map(String::from).collect()
 }
 

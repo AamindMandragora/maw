@@ -144,8 +144,8 @@ fn missing_packages(env: &Env, runner: &dyn Runner, state: &MawState) -> Result<
         .filter(|(_, names)| !names.is_empty())
         .map(|(name, names)| {
             let backend = backend::for_name(name, runner, env).ok_or_else(|| ActivateError::UnknownBackend(name.clone()))?;
-            let installed: HashSet<String> = backend.list()?.into_iter().map(|pkg| pkg.name).collect();
-            let missing = names.iter().filter(|package| !installed.contains(*package));
+            let installed: HashSet<String> = backend.list()?.into_iter().map(|pkg| pkg.source).collect();
+            let missing = names.iter().filter(|package| !installed.contains(backend::spec_base(package)));
             Ok(missing.map(|package| Step::Install { backend: name.clone(), package: package.clone() }).collect::<Vec<_>>())
         })
         .collect::<Result<Vec<_>, ActivateError>>()?;

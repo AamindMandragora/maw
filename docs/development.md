@@ -19,7 +19,7 @@ src/
   status.rs       # status and diff, planned without writing
   help.rs         # maw help: the user docs, compiled in and rendered for the terminal
   packages.rs     # install and remove: plan, run the backend, record in maw.nix, scaffold modules
-  backend/        # Backend and SystemBackend traits; xbps.rs runs xbps-query/-install/-remove
+  backend/        # Backend and SystemBackend traits; xbps.rs, cargo.rs, go.rs
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/
@@ -54,6 +54,13 @@ MAW_SYSROOT=$R maw install tzdata
 ```
 
 A root without `var/db/xbps` counts as having nothing installed.
+
+cargo and go follow `HOME`, so a scratch `HOME` keeps their installs out of your real `~/.cargo` and go dir. rustup reads `HOME` too; point it back at your toolchains and unset any `GOPATH` from your shell:
+
+```sh
+export HOME=/tmp/maw-home RUSTUP_HOME=$OLDHOME/.rustup CARGO_HOME=/tmp/maw-home/.cargo
+unset GOPATH GOBIN
+```
 
 Running the binary picks these up from the environment:
 

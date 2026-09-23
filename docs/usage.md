@@ -199,12 +199,26 @@ A unified diff of each live file against what maw would put there, the same as `
 
 ## Packages
 
-Packages you want on the machine are declared in `maw.nix`, under `packages.xbps`. maw writes that list; you change it with the commands below. `maw activate` installs anything declared but missing, before it links files. Nothing is ever removed just because it isn't declared.
+Packages you want on the machine are declared in `maw.nix`, one list per source:
+
+```nix
+packages = {
+  xbps = [ "foot" "niri" ];
+  cargo = [ "bat" "typos-cli@1.24" "https://github.com/vitali87/croft.git" ];
+  go = [ "github.com/jesseduffield/lazygit" ];
+};
+```
+
+maw writes those lists; you change them with the commands below. `maw activate` installs anything declared but missing, before it links files. Nothing is ever removed just because it isn't declared.
 
 ### Installing
 
 ```sh
-maw install foot
+maw install foot                                   # from the void repos
+maw install hello-cli                              # not in xbps: asks before using crates.io
+maw install cargo:bat@0.24                         # a crate, pinned to a version
+maw install cargo:https://github.com/user/tool.git # a crate from git
+maw install go:github.com/jesseduffield/lazygit    # a go program
 maw install foot --dry-run
 ```
 
@@ -214,26 +228,39 @@ record foot in maw.nix
 create modules/foot.nix
 ```
 
-Installs with `xbps-install` (through `sudo`), records the package in `maw.nix`, and, when the registry knows the program and the repo has no module or `static/` dir for it yet, creates its module the way `maw new` does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name the repos don't have is an error.
+A bare name goes to whichever source already declares it, else to xbps. If xbps doesn't have it but crates.io has a crate by that name, maw asks first:
+
+```
+hello-cli isn't in xbps; install crate hello-cli 0.2.2 from crates.io? [Y/n]
+```
+
+Without a terminal it stops and suggests `cargo:<name>` instead. Library crates, which build no program, are refused before any question, since there's nothing to install; add them to a project with `cargo add` instead. A `cargo:`, `go:`, or `xbps:` prefix skips all of that. `@version` pins a crate or go program to that version; without it you get the latest.
+
+Then maw installs (`sudo xbps-install`, `cargo install --locked`, or `go install`), records the package in `maw.nix`, and, when the registry knows the program and the repo has no module or `static/` dir for it yet, creates its module the way `maw new` does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+
+cargo installs into `~/.cargo/bin`, go into `$GOBIN` (or `$GOPATH/bin`, or `~/go/bin`). maw leaves your shell config alone, but warns after an install if that dir isn't on your `PATH`, naming the line to add.
 
 ### Removing
 
 ```sh
 maw remove foot
+maw remove bat          # a crate, found by name
+maw remove lazygit      # a go program, by its binary or path
 ```
 
-Removes the package, along with dependencies nothing else needs, and drops it from `maw.nix`. Its module stays, so reinstalling brings the config back; delete `modules/foot.nix` yourself if you're done with it. `--dry-run` prints the plan.
+Removes the package and drops it from `maw.nix`. xbps also removes dependencies nothing else needs; go programs are deleted from the bin dir. Its module stays, so reinstalling brings the config back; delete `modules/foot.nix` yourself if you're done with it. `--dry-run` prints the plan.
 
 ### Looking things up
 
 ```sh
-maw query           # packages you installed or declared
-maw query foot      # one of them
-maw search term     # the repos; [*] marks installed
-maw info foot       # details, plus whether maw manages it
+maw query           # packages you installed or declared, in every source
+maw query bat       # one of them
+maw search term     # xbps, or crates.io when xbps has nothing; [*] marks installed
+maw search cargo:term
+maw info bat        # details, plus whether maw manages it
 ```
 
-`query` lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: `(undeclared)` for installed but not in `maw.nix`, `(missing)` for declared but not installed. `info` shows the version, whether it's installed and declared, the module or `static/` dir holding its config, and where that config goes.
+`query` lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: `(undeclared)` for installed but not in `maw.nix`, `(missing)` for declared but not installed. Crates and go programs are marked with their source. `search` prints names the way `maw install` takes them. `info` shows the version, whether it's installed and declared, the module or `static/` dir holding its config, and where the registry puts that config.
 
 ### Updating
 
@@ -241,7 +268,7 @@ maw info foot       # details, plus whether maw manages it
 maw sync
 ```
 
-Refreshes the repo index and upgrades every package (`xbps-install -Su`).
+Upgrades the system (`xbps-install -Su`), then every crate and go program that isn't pinned to a version. Pinned ones stay put until you install a different version.
 
 ## Where files go
 

@@ -1,6 +1,6 @@
 use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
 use crate::backend::xbps::Xbps;
-use crate::backend::{Backend, SystemBackend};
+use crate::backend::SystemBackend;
 use crate::build::{self, BuildError, Report};
 use crate::edit;
 use crate::env::Env;
@@ -72,7 +72,7 @@ enum Command {
     Status,
     #[command(about = "install packages, record them in maw.nix, scaffold their modules, then activate", after_help = "see: maw help installing")]
     Install {
-        #[arg(required = true)]
+        #[arg(required = true, help = "names, or cargo:<crate|git url>, go:<path>, xbps:<name>; @version pins")]
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,
@@ -86,11 +86,14 @@ enum Command {
     },
     #[command(about = "list packages you installed, or show one", after_help = "see: maw help looking things up")]
     Query { package: Option<String> },
-    #[command(about = "search the repos", after_help = "see: maw help looking things up")]
-    Search { term: String },
+    #[command(about = "search xbps, or crates.io when xbps has nothing", after_help = "see: maw help looking things up")]
+    Search {
+        #[arg(help = "a term, or cargo:<term> to search crates.io directly")]
+        term: String,
+    },
     #[command(about = "a package's details, and whether maw manages it", after_help = "see: maw help looking things up")]
     Info { package: String },
-    #[command(about = "update the repo index and upgrade every package", after_help = "see: maw help updating")]
+    #[command(about = "upgrade the system, then every unpinned cargo and go package", after_help = "see: maw help updating")]
     Sync,
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
@@ -118,7 +121,7 @@ pub fn main() -> Result<()> {
         Command::Query { package } => query(&env, &runner, package.as_deref()),
         Command::Search { term } => search(&env, &runner, &term),
         Command::Info { package } => info(&env, &runner, &package),
-        Command::Sync => Ok(Xbps::new(&runner, &env).sync()?),
+        Command::Sync => sync(&env, &runner),
         Command::Help { query } => show_help(&runner, &query.join(" ")),
     }
 }
@@ -271,112 +274,111 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     Ok(())
 }
 
-// prints the plan, then installs, records, scaffolds, and activates
-fn install(env: &Env, runner: &dyn Runner, names: &[String], dry_run: bool) -> Result<()> {
+// prints the plan (asking before any crates.io fallback), then installs, records, scaffolds, and activates
+fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let xbps = Xbps::new(runner, env);
-    print_change(&packages::plan_install(env, runner, &repo, &xbps, names)?, "install", "record {} in maw.nix");
+    let ask: Option<&dyn Ask> = if dry_run { None } else { Some(&Terminal) };
+    let change = packages::plan_install(env, runner, &repo, requests, ask)?;
+    print_change(&change, "install", "record {} in maw.nix");
     if dry_run {
         println!("dry run, nothing changed");
         return Ok(());
     }
 
-    packages::install(env, runner, &repo, &xbps, names)?;
+    packages::install(env, runner, &repo, &change)?;
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    packages::off_path(env, runner, &change, &path_var).iter().for_each(|dir| {
+        let shown = env.pretty(dir).replacen('~', "$HOME", 1);
+        eprintln!("warning: {} isn't on PATH; add `export PATH=\"{shown}:$PATH\"` to your shell profile", env.pretty(dir));
+    });
     let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
     print_activation(env, &repo, &activation, false);
     Ok(())
 }
 
 // prints the plan, then removes and drops from maw.nix
-fn remove(env: &Env, runner: &dyn Runner, names: &[String], dry_run: bool) -> Result<()> {
+fn remove(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let xbps = Xbps::new(runner, env);
-    print_change(&packages::plan_remove(env, runner, &repo, &xbps, names)?, "remove", "drop {} from maw.nix");
-    if dry_run {
+    let change = packages::plan_remove(env, runner, &repo, requests)?;
+    print_change(&change, "remove", "drop {} from maw.nix");
+    if !dry_run {
+        packages::remove(env, runner, &repo, &change)?;
+    } else {
         println!("dry run, nothing changed");
-        return Ok(());
     }
-    packages::remove(env, runner, &repo, &xbps, names)?;
     Ok(())
 }
 
 // one line per package, maw.nix entry (record_line has a {} for the name), and new module
 fn print_change(change: &Change, verb: &str, record_line: &str) {
-    change.packages.iter().for_each(|name| println!("{verb} {name}"));
-    change.recorded.iter().for_each(|name| println!("{}", record_line.replace("{}", name)));
+    change.packages.iter().for_each(|target| println!("{verb} {target}"));
+    change.recorded.iter().for_each(|target| println!("{}", record_line.replace("{}", &target.to_string())));
     change.scaffolded.iter().for_each(|name| println!("create modules/{name}.nix"));
     if change.is_empty() {
         println!("nothing to do");
     }
 }
 
-// manually installed and declared packages, flagging any that disagree
+// installed-by-hand and declared packages across backends, flagging any that disagree
 fn query(env: &Env, runner: &dyn Runner, package: Option<&str>) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let xbps = Xbps::new(runner, env);
-    let (_, state) = edit::load(env, runner, &repo)?;
-    let declared = packages::declared(&state, "xbps");
-    let installed = xbps.list()?;
-
-    // (name, installed version, declared) for manual installs, declared packages, and the one asked about
-    let mut rows: Vec<(String, Option<String>, bool)> = installed
-        .iter()
-        .filter(|pkg| pkg.manual || declared.contains(&pkg.name) || package == Some(pkg.name.as_str()))
-        .map(|pkg| (pkg.name.clone(), Some(pkg.version.clone()), declared.contains(&pkg.name)))
-        .chain(declared.iter().filter(|name| !installed.iter().any(|pkg| &pkg.name == *name)).map(|name| (name.clone(), None, true)))
-        .filter(|(name, ..)| package.is_none_or(|wanted| wanted == name))
-        .collect();
-    rows.sort();
-
+    let mut rows = packages::overview(env, runner, &repo)?;
+    rows.retain(|row| package.is_none_or(|wanted| row.name == wanted || row.target.spec == wanted || row.target.to_string() == wanted));
+    rows.sort_by_key(|row| (row.target.backend != "xbps", row.name.to_lowercase()));
     if rows.is_empty() {
         anyhow::bail!("{} isn't installed", package.unwrap_or("nothing"));
     }
-    rows.iter().for_each(|(name, version, is_declared)| {
-        let note = match (version, is_declared) {
+
+    rows.iter().for_each(|row| {
+        let backend = if row.target.backend == "xbps" { String::new() } else { format!(" ({})", row.target.backend) };
+        let note = match (&row.version, row.declared) {
             (None, _) => "  (missing)",
             (Some(_), false) => "  (undeclared)",
             _ => "",
         };
-        println!("{name} {}{note}", version.as_deref().unwrap_or("-"));
+        println!("{} {}{backend}{note}", row.name, row.version.as_deref().unwrap_or("-"));
     });
     Ok(())
 }
 
-// repo matches, marked [*] when installed like xbps does
+// repo matches, marked [*] when installed like xbps does, named the way `maw install` takes them
 fn search(env: &Env, runner: &dyn Runner, term: &str) -> Result<()> {
-    let xbps = Xbps::new(runner, env);
-    let installed: std::collections::HashSet<String> = xbps.list()?.into_iter().map(|pkg| pkg.name).collect();
-    xbps.search(term)?.iter().for_each(|pkg| {
-        let mark = if installed.contains(&pkg.name) { "*" } else { "-" };
-        println!("[{mark}] {} {}  {}", pkg.name, pkg.version, pkg.description);
+    packages::search(env, runner, term)?.iter().for_each(|(target, pkg, installed)| {
+        let mark = if *installed { "*" } else { "-" };
+        println!("[{mark}] {target} {}  {}", pkg.version, pkg.description);
     });
     Ok(())
 }
 
 // the repo's description of a package plus what maw knows about it
-fn info(env: &Env, runner: &dyn Runner, name: &str) -> Result<()> {
+fn info(env: &Env, runner: &dyn Runner, request: &str) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let xbps = Xbps::new(runner, env);
-    let installed = xbps.list()?.into_iter().find(|pkg| pkg.name == name);
-    let Some(pkg) = xbps.info(name)?.or(installed.clone()) else {
-        anyhow::bail!("no package {name}; `maw search {name}` to look for it");
-    };
-    let (registry, state) = edit::load(env, runner, &repo)?;
-    let program = name.to_lowercase();
+    let description = packages::describe(env, runner, &repo, request)?;
+    let (registry, _) = edit::load(env, runner, &repo)?;
+    let (pkg, program) = (&description.pkg, crate::backend::spec_program(&description.target.spec));
 
-    println!("{} {}\n  {}", pkg.name, pkg.version, pkg.description);
-    if !pkg.homepage.is_empty() {
-        println!("  {}", pkg.homepage);
-    }
-    println!("{:<10}{}", "installed", installed.map_or("no".into(), |pkg| pkg.version));
-    println!("{:<10}{}", "declared", if packages::declared(&state, "xbps").contains(&name.to_string()) { "yes" } else { "no" });
+    println!("{} {} ({})", pkg.name, pkg.version, description.target.backend);
+    [&pkg.description, &pkg.homepage].iter().filter(|text| !text.is_empty()).for_each(|text| println!("  {text}"));
+    println!("{:<10}{}", "installed", description.installed.as_deref().unwrap_or("no"));
+    println!("{:<10}{}", "declared", if description.declared { description.target.to_string() } else { "no".into() });
 
     // where its config comes from in the repo, and where the registry puts it
     let config = [repo.module_file(&program), repo.static_dir().join(&program)].into_iter().find(|path| path.exists());
-    println!("{:<10}{}", "config", config.map_or("none".into(), |path| relative(&repo, &path)));
-    let entry = registry.entry(&program);
-    let specs: Vec<String> = if entry.files.is_empty() { vec![registry.spec(&program, "main")] } else { entry.files.values().cloned().collect() };
-    specs.iter().for_each(|spec| println!("{:<10}{}", "goes to", env.pretty(&registry::resolve(env, spec))));
+    println!("{:<10}{}", "config", config.as_ref().map_or("none".into(), |path| relative(&repo, path)));
+    // destinations only when the registry really knows the program, not its ~/.config guess
+    if registry.has(&program) || config.is_some() {
+        let entry = registry.entry(&program);
+        let specs: Vec<String> = if entry.files.is_empty() { vec![registry.spec(&program, "main")] } else { entry.files.values().cloned().collect() };
+        specs.iter().for_each(|spec| println!("{:<10}{}", "goes to", env.pretty(&registry::resolve(env, spec))));
+    }
+    Ok(())
+}
+
+// upgrades the system through xbps, then every unpinned cargo and go package
+fn sync(env: &Env, runner: &dyn Runner) -> Result<()> {
+    Xbps::new(runner, env).sync()?;
+    let repo = Repo::locate(env)?;
+    packages::upgrade(env, runner, &repo)?.iter().for_each(|target| println!("upgrade {target}"));
     Ok(())
 }
 
@@ -442,7 +444,7 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
             println!("link {}", env.pretty(destination));
         }
         Step::Link { destination, .. } => println!("link {}", env.pretty(destination)),
-        Step::Install { package, .. } => println!("install {package}"),
+        Step::Install { backend, package } => println!("install {}", packages::Target { backend: backend.clone(), spec: package.clone() }),
         Step::Relink { destination } => println!("relink {}", env.pretty(destination)),
         Step::Update { destination } => println!("update {}", env.pretty(destination)),
         Step::Unlink { destination } => println!("unlink {}", env.pretty(destination)),
