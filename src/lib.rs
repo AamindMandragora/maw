@@ -6,6 +6,7 @@ pub mod build;
 pub mod edit;
 pub mod cli;
 pub mod env;
+pub mod generations;
 pub mod help;
 pub mod init;
 pub mod packages;

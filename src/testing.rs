@@ -35,7 +35,8 @@ fn fake(program: &str, args: &[String]) -> Result<String, RunError> {
         "cargo" => Ok(fake_cargo(&args)),
         "curl" => Ok(fake_crates_io(&args)),
         "go" | "xbps-install" | "xbps-remove" | "sv" | "tail" => Ok(String::new()),
-        "install" | "cp" | "ln" | "rm" | "mkdir" => real(program, &args),
+        "install" | "cp" | "ln" | "rm" | "mkdir" | "git" => real(program, &args),
+        "date" => Ok("2026-09-23 12:00\n".into()),
         _ => Ok(fake_nix(&args)),
     }
 }
@@ -89,6 +90,9 @@ fn fake_nix(args: &[&str]) -> String {
         };
         return json!({ "packages": lists(&["xbps", "cargo", "go"]), "services": lists(&["system", "user"]), "paths": {} }).to_string();
     }
+    if args[args.len() - 2] == "settings" {
+        return "{}".into();
+    }
     let name = args[args.len() - 2].trim_start_matches("modules.");
 
     // usersvc and syssvc are services whose run line carries the module's text, so editing the module changes them
@@ -107,10 +111,14 @@ fn declared(maw_file: &Path, backend: &str) -> Vec<String> {
     line.split('"').skip(1).step_by(2).map(String::from).collect()
 }
 
-// file commands really run, confined to the fixture's tempdir, so root copies land on disk
+// file and git commands really run, confined to the fixture's tempdir, with a fixed git identity
 fn real(program: &str, args: &[&str]) -> Result<String, RunError> {
-    let status = std::process::Command::new(program).args(args).status().unwrap();
-    if status.success() { Ok(String::new()) } else { Err(RunError::Failed { program: program.into(), stderr: status.to_string() }) }
+    let identity = [("GIT_AUTHOR_NAME", "maw"), ("GIT_AUTHOR_EMAIL", "maw@test"), ("GIT_COMMITTER_NAME", "maw"), ("GIT_COMMITTER_EMAIL", "maw@test")];
+    let output = std::process::Command::new(program).args(args).envs(identity).output().unwrap();
+    match output.status.success() {
+        true => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
+        false => Err(RunError::Failed { program: program.into(), stderr: String::from_utf8_lossy(&output.stderr).into_owned() }),
+    }
 }
 
 pub fn write(path: &Path, content: &str) {

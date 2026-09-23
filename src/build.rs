@@ -74,6 +74,26 @@ pub struct Report {
     pub backups: Vec<(PathBuf, PathBuf)>,
     pub registry: Registry,
     pub state: MawState,
+    pub settings: Settings,
+}
+
+fn yes() -> bool {
+    true
+}
+
+// maw's settings, from `maw = { ... };` in config.nix
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Settings {
+    // commit the repo and record a generation after each activation that changes something
+    #[serde(default = "yes")]
+    pub auto_commit: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { auto_commit: true }
+    }
 }
 
 impl Report {
@@ -104,6 +124,8 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     ]);
     let shared_hash = combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash]);
     let (registry, state) = load_registry(env, runner, repo, &mut inputs)?;
+    let settings_value = eval::eval_settings(runner, env, &repo.root, &shared_hash)?;
+    let settings: Settings = serde_json::from_value(settings_value).map_err(|source| EvalError::Shape { what: "config.nix maw".into(), source })?;
 
     // evaluate each module, keyed by its own file plus the shared inputs
     let modules = repo
@@ -137,6 +159,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         outputs,
         registry,
         state,
+        settings,
     };
 
     inputs.save(&inputs_file)?;

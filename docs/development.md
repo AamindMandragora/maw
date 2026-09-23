@@ -24,6 +24,7 @@ src/
   system.rs       # activation's root half: sudo copies, service enable/disable/restart
   services.rs     # maw sv: list, enable, disable, status, restart, log
   adopt.rs        # undeclared packages and services, the adopt checklist
+  generations.rs  # auto-commit, the generations log, commit/push/pull
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/

@@ -88,6 +88,12 @@ pub fn eval_file(runner: &dyn Runner, env: &Env, file: &Path, cache_name: &str, 
     Ok(eval_cached(runner, &what, &env.cache_dir().join(format!("{cache_name}.json")), key, args)?.0)
 }
 
+// evaluates the settings attrset (config.nix's maw), cached like a module
+pub fn eval_settings(runner: &dyn Runner, env: &Env, repo_root: &Path, key: &str) -> Result<Value, EvalError> {
+    let args = nix_args(env, &["-A".into(), "settings".into(), repo_root.display().to_string()]);
+    Ok(eval_cached(runner, "config.nix maw settings", &env.cache_dir().join("settings.json"), key, args)?.0)
+}
+
 // evaluates modules.<name> of the dotfiles repo; true if nix actually ran
 pub fn eval_module(runner: &dyn Runner, env: &Env, repo_root: &Path, name: &str, key: &str) -> Result<(Vec<RenderedFile>, bool), EvalError> {
     let args = nix_args(env, &["-A".into(), format!("modules.{name}"), repo_root.display().to_string()]);

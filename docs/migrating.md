@@ -63,6 +63,8 @@ maw activate
 
 Each replaced file is moved to `~/.local/state/maw/backups/`, under the same path relative to your home (system files under `backups/system/`). A second `maw activate` should print `up to date`, and `maw status` should print `clean`.
 
+That activation is also your first generation: maw commits the repo and records it (see `maw help generations`). Add a remote and `maw push` to keep a copy off the machine.
+
 If you were using a bare git repo or stow, retire it now: the files it tracked are links into `~/dotfiles` from here on, so it will show them all as changed.
 
 ## 5. Packages and services

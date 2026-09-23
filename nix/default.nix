@@ -15,4 +15,7 @@ let
 in
 {
   modules = lib.mapAttrs' (file: _: lib.nameValuePair (lib.removeSuffix ".nix" file) (evalModule file)) moduleFiles;
+
+  # maw's own settings from config.nix, like maw.autoCommit
+  settings = config.maw or { };
 }

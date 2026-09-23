@@ -5,6 +5,7 @@ use crate::backend::SystemBackend;
 use crate::build::{self, BuildError, Report};
 use crate::edit;
 use crate::env::Env;
+use crate::generations;
 use crate::help;
 use crate::init::runit::Runit;
 use crate::init::{InitBackend, Scope};
@@ -44,6 +45,8 @@ enum Command {
         dry_run: bool,
         #[arg(long, help = "replace drifted files, backing them up")]
         force: bool,
+        #[arg(long, help = "don't commit or record a generation this time")]
+        no_commit: bool,
     },
     #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate", after_help = "see: maw help editing")]
     Edit {
@@ -109,6 +112,17 @@ enum Command {
         #[command(subcommand)]
         action: SvAction,
     },
+    #[command(about = "list generations: each activation that changed something", after_help = "see: maw help generations")]
+    Generations,
+    #[command(about = "commit every change in the repo", after_help = "see: maw help generations")]
+    Commit {
+        #[arg(short, long, help = "the message; without it git opens your editor")]
+        message: Option<String>,
+    },
+    #[command(about = "push the repo to its remote", after_help = "see: maw help sharing")]
+    Push,
+    #[command(about = "pull the repo from its remote, then activate", after_help = "see: maw help sharing")]
+    Pull,
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
         #[arg(help = "usage, modules, formats, a command, or a heading like `drift`")]
@@ -160,7 +174,21 @@ pub fn main() -> Result<()> {
     match cli.command {
         Command::Init { path } => init(&env, &runner, &path),
         Command::Build { force } => build(&env, &runner, force),
-        Command::Activate { dry_run, force } => activate(&env, &runner, Options { dry_run, force }),
+        Command::Activate { dry_run, force, no_commit } => activate(&env, &runner, Options { dry_run, force }, !no_commit),
+        Command::Generations => list_generations(&env),
+        Command::Commit { message } => {
+            let repo = Repo::locate(&env)?;
+            if !generations::commit(&runner, &repo, message.as_deref())? {
+                println!("nothing to commit");
+            }
+            Ok(())
+        }
+        Command::Push => Ok(generations::push(&runner, &Repo::locate(&env)?)?),
+        Command::Pull => {
+            let repo = Repo::locate(&env)?;
+            let moved = generations::pull(&runner, &repo)?;
+            activate_after(&env, &runner, &repo, if moved { vec!["pull".into()] } else { Vec::new() })
+        }
         Command::Edit { name, no_activate } => edit(&env, &runner, &name, !no_activate),
         Command::New { name, format, no_activate } => new(&env, &runner, &name, format.as_deref(), !no_activate),
         Command::Add { path, name, no_activate } => add(&env, &runner, &path, name.as_deref(), !no_activate),
@@ -216,17 +244,26 @@ fn build(env: &Env, runner: &dyn Runner, force: bool) -> Result<()> {
 }
 
 // activates and prints the build, then each step of the plan
-fn activate(env: &Env, runner: &dyn Runner, options: Options) -> Result<()> {
+fn activate(env: &Env, runner: &dyn Runner, options: Options, commit: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let activation = activate::activate(env, runner, &repo, &Terminal, options)?;
-    report_activation(env, &repo, &activation, options.dry_run)
+    finish(env, runner, &repo, &activation, options.dry_run, commit, &[])
 }
 
-fn report_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bool) -> Result<()> {
+// prints an activation, then commits and records a generation if anything changed and autoCommit is on;
+// done lists what the command did before activating, like `install foot`, which counts as a change
+fn finish(env: &Env, runner: &dyn Runner, repo: &Repo, activation: &Activation, dry_run: bool, commit: bool, done: &[String]) -> Result<()> {
     print_activation(env, repo, activation, dry_run);
-    if activation.build.is_empty() && activation.steps.is_empty() && activation.answered.is_empty() {
+    if activation.build.is_empty() && activation.steps.is_empty() && activation.answered.is_empty() && done.is_empty() {
         println!("up to date");
     }
+    if dry_run || !commit || !activation.build.settings.auto_commit || (!generations::changed(activation) && done.is_empty()) {
+        return Ok(());
+    }
+    let summary: Vec<String> = done.iter().cloned().chain(generations::summary(repo, activation)).collect();
+    let generation = generations::record(env, runner, repo, &summary, &Terminal)?;
+    let short = generation.commit.get(..7).unwrap_or(&generation.commit);
+    println!("generation {} ({short})", generation.number);
     Ok(())
 }
 
@@ -246,7 +283,7 @@ fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, 
                     return Err(error.into());
                 }
             }
-            result => return report_activation(env, repo, &result?, false),
+            result => return finish(env, runner, repo, &result?, false, true, &[]),
         }
     }
 }
@@ -274,7 +311,7 @@ fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>, activate
         return Ok(());
     }
     let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
-    report_activation(env, &repo, &activation, false)
+    finish(env, runner, &repo, &activation, false, true, &[])
 }
 
 // unified diffs per file, colored on a terminal
@@ -377,7 +414,21 @@ fn adopt(env: &Env, runner: &dyn Runner, dry_run: bool) -> Result<()> {
     let (_, state) = edit::load(env, runner, &repo)?;
     adopt::apply(&repo, state, &decisions)?;
     decisions.iter().for_each(|(candidate, keep)| println!("{} {}", if *keep { "record" } else { "ignore" }, candidate_label(candidate)));
-    Ok(())
+    let kept = decisions.iter().filter(|(_, keep)| *keep).count();
+    activate_after(env, runner, &repo, vec![format!("adopt {kept}, ignore {}", decisions.len() - kept)])
+}
+
+// activates after a command that already changed something, which the generation's summary starts with
+fn activate_after(env: &Env, runner: &dyn Runner, repo: &Repo, done: Vec<String>) -> Result<()> {
+    let activation = activate::activate(env, runner, repo, &Terminal, Options::default())?;
+    finish(env, runner, repo, &activation, false, true, &done)
+}
+
+// what an install or remove did, for a generation's summary: packages changed, then ones only (un)recorded
+fn change_summary(change: &Change, verb: &str, record_verb: &str) -> Vec<String> {
+    let changed = change.packages.iter().map(|target| format!("{verb} {target}"));
+    let only_recorded = change.recorded.iter().filter(|target| !change.packages.contains(target)).map(|target| format!("{record_verb} {target}"));
+    changed.chain(only_recorded).collect()
 }
 
 // prints the plan (asking before any crates.io fallback), then installs, records, scaffolds, and activates
@@ -397,9 +448,7 @@ fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -
         let shown = env.pretty(dir).replacen('~', "$HOME", 1);
         eprintln!("warning: {} isn't on PATH; add `export PATH=\"{shown}:$PATH\"` to your shell profile", env.pretty(dir));
     });
-    let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
-    print_activation(env, &repo, &activation, false);
-    Ok(())
+    activate_after(env, runner, &repo, change_summary(&change, "install", "record"))
 }
 
 // prints the plan, then removes and drops from maw.nix
@@ -407,12 +456,12 @@ fn remove(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) ->
     let repo = Repo::locate(env)?;
     let change = packages::plan_remove(env, runner, &repo, requests)?;
     print_change(&change, "remove", "drop {} from maw.nix");
-    if !dry_run {
-        packages::remove(env, runner, &repo, &change)?;
-    } else {
+    if dry_run {
         println!("dry run, nothing changed");
+        return Ok(());
     }
-    Ok(())
+    packages::remove(env, runner, &repo, &change)?;
+    activate_after(env, runner, &repo, change_summary(&change, "remove", "drop"))
 }
 
 // one line per package, maw.nix entry (record_line has a {} for the name), and new module
@@ -534,8 +583,7 @@ fn sv(env: &Env, runner: &dyn Runner, action: SvAction) -> Result<()> {
             let scope = services::enable(env, runner, &repo, &service.name, service.scope())?;
             println!("record {} in maw.nix", service_label(scope, &service.name));
             let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
-            print_activation(env, &repo, &activation, false);
-            Ok(())
+            finish(env, runner, &repo, &activation, false, true, &[])
         }
         SvAction::Disable(service) => {
             let (scope, dropped) = services::disable(env, runner, &repo, &service.name, service.scope())?;
@@ -543,7 +591,7 @@ fn sv(env: &Env, runner: &dyn Runner, action: SvAction) -> Result<()> {
             if dropped {
                 println!("drop {} from maw.nix", service_label(scope, &service.name));
             }
-            Ok(())
+            activate_after(env, runner, &repo, vec![format!("disable {}", service.name)])
         }
         SvAction::Status(service) => Ok(services::control(env, runner, &repo, &service.name, service.scope(), "status")?),
         SvAction::Restart(service) => Ok(services::control(env, runner, &repo, &service.name, service.scope(), "restart")?),
@@ -561,6 +609,19 @@ fn sv_list(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
         };
         let state = row.state.as_deref().unwrap_or(if row.enabled { "?" } else { "-" });
         println!("{:<24}{:<8}{state}{note}", row.name, row.scope);
+    });
+    Ok(())
+}
+
+// one line per generation, newest last: number, time, commit, message
+fn list_generations(env: &Env) -> Result<()> {
+    let all = generations::load(env)?;
+    if all.is_empty() {
+        println!("no generations yet");
+    }
+    all.iter().for_each(|generation| {
+        let short = generation.commit.get(..7).unwrap_or("-------");
+        println!("{:>4}  {}  {short}  {}", generation.number, generation.time, generation.message);
     });
     Ok(())
 }

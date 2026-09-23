@@ -377,6 +377,54 @@ A name is looked up in maw.nix and modules first, then among enabled services, t
 
 Services maw writes log through `svlogd`: system ones to `/var/log/<name>/`, user ones to `~/.local/state/log/<name>/`, rotated automatically. `maw sv log <name>` follows the `current` file.
 
+## Generations
+
+Every activation that changes something is a generation: maw commits your whole repo (modules, static files, `config.nix`, `maw.nix`, and `out/`) and records it. The same happens after `install`, `remove`, `sv enable`, `sv disable`, `adopt`, and `pull`, since each ends by activating.
+
+Before committing, maw asks for a message, offering a generated one:
+
+```
+commit message [generation 12: niri, waybar; 2 links; install foot]:
+generation 12 (3f9a2c1)
+```
+
+Press enter to take it. Without a terminal the generated one is used.
+
+```sh
+maw generations
+```
+
+```
+  11  2026-09-22 21:04  e761146  initial dotfiles
+  12  2026-09-23 14:02  3f9a2c1  generation 12: niri, waybar; 2 links; install foot
+```
+
+Each generation also records the exact version of every installed package in every source, in `~/.local/state/maw/generations`. That log belongs to the machine, not the repo: two machines sharing a repo each have their own.
+
+To skip committing once, `maw activate --no-commit`. To turn it off, in `config.nix`:
+
+```nix
+maw.autoCommit = false;
+```
+
+To commit by hand, e.g. edits you haven't activated yet:
+
+```sh
+maw commit -m "try a lighter bar"
+maw commit            # git opens your editor for the message
+```
+
+### Sharing
+
+```sh
+maw push      # to the repo's remote, setting it as upstream
+maw pull      # fast-forward only, then activate
+```
+
+Both need a remote: `git -C ~/dotfiles remote add origin <url>`. `pull` refuses to merge; if both sides changed, sort it out with git, then `maw activate`.
+
+Since `out/` is committed, push after activating rather than after editing: then the other machine pulls output that already matches the source, re-renders nothing, and makes no commit of its own. Pushing source that was never activated means the pulling machine renders and commits new `out/` itself, and the two sides diverge until one of them pulls the other's commit.
+
 ## Where files go
 
 You never write destination paths. Each program name maps to destinations through the registry, checked in this order:
@@ -410,6 +458,7 @@ maw keeps its own bookkeeping outside the repo:
 ~/.local/state/maw/outputs   # hash of each out/ file as maw last wrote it
 ~/.local/state/maw/manifest  # every link and root copy the last activation made, with content hashes, and the services it enabled
 ~/.local/state/maw/backups/  # files moved aside, mirrored by path under home (system/ for the rest)
+~/.local/state/maw/generations  # one line per generation: number, time, commit, message, package versions
 ```
 
 `inputs` and `cache/` are safe to delete. Deleting `outputs` or `manifest` makes maw forget what it wrote, so drift goes unnoticed until the next activation.
