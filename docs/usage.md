@@ -169,6 +169,8 @@ Copies into `static/` and activates, so the original is backed up and replaced b
 
 When the registry alone would put the copy somewhere else, the original path is recorded in `maw.nix` `paths`. Adding a file maw already links is an error.
 
+`edit`, `new`, and `add` all take `--no-activate`, to change several things and activate once at the end, e.g. when moving an existing setup into maw.
+
 ### Checking
 
 ```sh
@@ -179,6 +181,7 @@ One line per file that isn't in sync, or `clean`:
 
 | label | meaning |
 |---|---|
+| `missing` | a declared package isn't installed |
 | `new` | declared, not linked yet |
 | `blocked` | a file maw doesn't manage is in the way; activating backs it up |
 | `changed` | a module changed and `out/` hasn't caught up |
@@ -193,6 +196,52 @@ maw diff
 ```
 
 A unified diff of each live file against what maw would put there, the same as `maw activate --force` would leave. Removed links diff against nothing. Neither command writes anything.
+
+## Packages
+
+Packages you want on the machine are declared in `maw.nix`, under `packages.xbps`. maw writes that list; you change it with the commands below. `maw activate` installs anything declared but missing, before it links files. Nothing is ever removed just because it isn't declared.
+
+### Installing
+
+```sh
+maw install foot
+maw install foot --dry-run
+```
+
+```
+install foot
+record foot in maw.nix
+create modules/foot.nix
+```
+
+Installs with `xbps-install` (through `sudo`), records the package in `maw.nix`, and, when the registry knows the program and the repo has no module or `static/` dir for it yet, creates its module the way `maw new` does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name the repos don't have is an error.
+
+### Removing
+
+```sh
+maw remove foot
+```
+
+Removes the package, along with dependencies nothing else needs, and drops it from `maw.nix`. Its module stays, so reinstalling brings the config back; delete `modules/foot.nix` yourself if you're done with it. `--dry-run` prints the plan.
+
+### Looking things up
+
+```sh
+maw query           # packages you installed or declared
+maw query foot      # one of them
+maw search term     # the repos; [*] marks installed
+maw info foot       # details, plus whether maw manages it
+```
+
+`query` lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: `(undeclared)` for installed but not in `maw.nix`, `(missing)` for declared but not installed. `info` shows the version, whether it's installed and declared, the module or `static/` dir holding its config, and where that config goes.
+
+### Updating
+
+```sh
+maw sync
+```
+
+Refreshes the repo index and upgrades every package (`xbps-install -Su`).
 
 ## Where files go
 

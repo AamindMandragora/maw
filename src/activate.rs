@@ -1,3 +1,4 @@
+use crate::backend::{self, BackendError};
 use crate::backup;
 use crate::build::{self, BuildError, Report};
 pub use crate::build::Options;
@@ -6,7 +7,7 @@ use crate::inputs::{Inputs, InputsError, load_json, save_json};
 use crate::registry::{self, Registry};
 use crate::repo::Repo;
 use crate::runner::Runner;
-use crate::state::{PathAnswer, StateError};
+use crate::state::{MawState, PathAnswer, StateError};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -21,6 +22,10 @@ pub enum ActivateError {
     Inputs(#[from] InputsError),
     #[error(transparent)]
     State(#[from] StateError),
+    #[error(transparent)]
+    Backend(#[from] BackendError),
+    #[error("maw.nix declares packages for {0}, which maw has no backend for")]
+    UnknownBackend(String),
     #[error("{destination} comes from both {first} and {second}")]
     Conflict { destination: PathBuf, first: PathBuf, second: PathBuf },
     #[error("{path}: {source}")]
@@ -59,6 +64,8 @@ pub struct Wanted {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
+    // a declared package that isn't installed
+    Install { backend: String, package: String },
     // backup: an existing file or foreign link is moved aside first
     Link { destination: PathBuf, backup: bool },
     // our link, pointed at a new source
@@ -101,6 +108,7 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
         return Ok(Activation { build: planned.build, steps: planned.steps, backups: Vec::new(), answered });
     }
 
+    install_missing(env, runner, &planned.steps)?;
     let backups = apply(env, &planned.steps, &planned.wanted)?;
     if planned.next != planned.manifest {
         save_json(&env.state_dir.join("manifest"), &planned.next)?;
@@ -120,9 +128,47 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
     let wanted = wanted(&build, statics)?;
     let edited: HashSet<PathBuf> = build.drifted.iter().map(|output| output.out.clone()).collect();
     let manifest: Manifest = load_json(&env.state_dir.join("manifest"))?;
-    let (mut steps, next) = plan(&manifest, &wanted, &edited, options.force);
-    steps.extend(unplaced.into_iter().map(|file| Step::Unplaced { file }));
+    let (links, next) = plan(&manifest, &wanted, &edited, options.force);
+
+    // packages first, then links, then loose files nobody placed
+    let unplaced = unplaced.into_iter().map(|file| Step::Unplaced { file });
+    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(unplaced).collect();
     Ok(Planned { build, wanted, steps, manifest, next })
+}
+
+// declared packages their backend doesn't have installed; backends with nothing declared aren't asked
+fn missing_packages(env: &Env, runner: &dyn Runner, state: &MawState) -> Result<Vec<Step>, ActivateError> {
+    let per_backend = state
+        .packages
+        .iter()
+        .filter(|(_, names)| !names.is_empty())
+        .map(|(name, names)| {
+            let backend = backend::for_name(name, runner, env).ok_or_else(|| ActivateError::UnknownBackend(name.clone()))?;
+            let installed: HashSet<String> = backend.list()?.into_iter().map(|pkg| pkg.name).collect();
+            let missing = names.iter().filter(|package| !installed.contains(*package));
+            Ok(missing.map(|package| Step::Install { backend: name.clone(), package: package.clone() }).collect::<Vec<_>>())
+        })
+        .collect::<Result<Vec<_>, ActivateError>>()?;
+    Ok(per_backend.concat())
+}
+
+// installs every missing package, one call per backend
+fn install_missing(env: &Env, runner: &dyn Runner, steps: &[Step]) -> Result<(), ActivateError> {
+    let by_backend = steps
+        .iter()
+        .filter_map(|step| match step {
+            Step::Install { backend, package } => Some((backend, package)),
+            _ => None,
+        })
+        .fold(BTreeMap::<&String, Vec<String>>::new(), |mut by_backend, (backend, package)| {
+            by_backend.entry(backend).or_default().push(package.clone());
+            by_backend
+        });
+
+    by_backend.into_iter().try_for_each(|(name, packages)| {
+        let backend = backend::for_name(name, runner, env).ok_or_else(|| ActivateError::UnknownBackend(name.clone()))?;
+        Ok(backend.install(&packages)?)
+    })
 }
 
 // the plan, plus the manifest it leaves behind once applied
@@ -395,6 +441,25 @@ mod tests {
         let second = run(&fixture, Options::default());
         assert!(second.steps.is_empty() && second.build.is_empty());
         assert_eq!(snapshot(fixture.dir.path()), before);
+    }
+
+    #[test]
+    fn declared_packages_that_are_missing_get_installed_first() {
+        let fixture = fixture();
+        fs::write(fixture.repo.maw_file(), "{\n  packages = {\n    xbps = [ \"bash\" \"foot\" ];\n  };\n  services = { };\n  paths = { };\n}\n").unwrap();
+
+        let activation = run(&fixture, Options::default());
+        assert_eq!(activation.steps[0], Step::Install { backend: "xbps".into(), package: "foot".into() });
+        let calls = fixture.runner.calls.borrow();
+        let install = calls.iter().position(|call| call.starts_with("xbps-install")).unwrap();
+        assert!(calls[install].ends_with("-y foot"));
+    }
+
+    #[test]
+    fn nothing_declared_means_xbps_is_never_asked() {
+        let fixture = fixture();
+        run(&fixture, Options::default());
+        assert!(!fixture.runner.calls.borrow().iter().any(|call| call.starts_with("xbps")));
     }
 
     #[test]

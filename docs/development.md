@@ -18,6 +18,8 @@ src/
   edit.rs         # edit, new (with live-file import), add
   status.rs       # status and diff, planned without writing
   help.rs         # maw help: the user docs, compiled in and rendered for the terminal
+  packages.rs     # install and remove: plan, run the backend, record in maw.nix, scaffold modules
+  backend/        # Backend and SystemBackend traits; xbps.rs runs xbps-query/-install/-remove
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/
@@ -42,6 +44,16 @@ Two seams keep everything testable without touching the machine:
 - `Runner` runs every external command. Unit tests use `FakeRunner`, which records calls and answers with canned output.
 - `Ask` asks the user a question. The CLI asks on the terminal; tests answer with a fixed string or nothing.
 - `Runner::interactive` runs a command on the user's terminal, like the editor, and `Runner::pipe` feeds one text on stdin, like the pager. `FakeRunner` records both like any other call.
+
+Package commands run `xbps-*` through `sudo` on the real system. With `MAW_SYSROOT` set they skip `sudo` and pass `-r <root>` instead, so a scratch root works without root privileges once it has repos and keys:
+
+```sh
+R=/tmp/maw-root; mkdir -p $R/var/db/xbps/keys $R/etc/xbps.d
+cp /var/db/xbps/keys/* $R/var/db/xbps/keys/; cp /etc/xbps.d/*.conf /usr/share/xbps.d/*.conf $R/etc/xbps.d/
+MAW_SYSROOT=$R maw install tzdata
+```
+
+A root without `var/db/xbps` counts as having nothing installed.
 
 Running the binary picks these up from the environment:
 

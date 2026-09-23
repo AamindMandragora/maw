@@ -64,7 +64,7 @@ pub mod fake {
     use super::*;
     use std::cell::RefCell;
 
-    type Respond = Box<dyn Fn(&str, &[String]) -> String>;
+    type Respond = Box<dyn Fn(&str, &[String]) -> Result<String, RunError>>;
 
     // records every call as one "program arg arg" line and answers with a closure
     pub struct FakeRunner {
@@ -74,6 +74,11 @@ pub mod fake {
 
     impl FakeRunner {
         pub fn new(respond: impl Fn(&str, &[String]) -> String + 'static) -> Self {
+            FakeRunner::fallible(move |program, args| Ok(respond(program, args)))
+        }
+
+        // a fake whose answers can be failures, like a query for a missing package
+        pub fn fallible(respond: impl Fn(&str, &[String]) -> Result<String, RunError> + 'static) -> Self {
             FakeRunner { calls: RefCell::new(Vec::new()), respond: Box::new(respond) }
         }
     }
@@ -81,7 +86,7 @@ pub mod fake {
     impl Runner for FakeRunner {
         fn run(&self, program: &str, args: &[String]) -> Result<String, RunError> {
             self.calls.borrow_mut().push(format!("{program} {}", args.join(" ")));
-            Ok((self.respond)(program, args))
+            (self.respond)(program, args)
         }
 
         // recorded like run, with the answer ignored

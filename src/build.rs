@@ -62,6 +62,7 @@ pub struct Report {
     // edited out/ files moved aside by --force: (file, backup)
     pub backups: Vec<(PathBuf, PathBuf)>,
     pub registry: Registry,
+    pub state: MawState,
 }
 
 impl Report {
@@ -91,7 +92,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         env!("CARGO_PKG_VERSION"),
     ]);
     let shared_hash = combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash]);
-    let (registry, _) = load_registry(env, runner, repo, &mut inputs)?;
+    let (registry, state) = load_registry(env, runner, repo, &mut inputs)?;
 
     // evaluate each module, keyed by its own file plus the shared inputs
     let modules = repo
@@ -124,6 +125,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
             .collect(),
         outputs,
         registry,
+        state,
     };
 
     inputs.save(&inputs_file)?;

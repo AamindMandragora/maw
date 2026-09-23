@@ -2,6 +2,7 @@ use maw::activate::{Ask, Options, Step, activate};
 use maw::env::Env;
 use maw::repo::Repo;
 use maw::runner::SystemRunner;
+use maw::state::MawState;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -24,6 +25,9 @@ fn fixture_activates_then_no_ops() {
     let env = Env::new(&dir.path().join("home"), &dir.path().join("sys"), Path::new(env!("CARGO_MANIFEST_DIR")));
     let (repo, _) = Repo::init(&env, &SystemRunner, &dots).unwrap();
     fs::write(repo.static_dir().join("notes.txt"), "hi\n").unwrap();
+
+    // files only: the fixture's packages would be installed into the scratch root
+    fs::write(repo.maw_file(), MawState::default().to_nix()).unwrap();
 
     let first = activate(&env, &SystemRunner, &repo, &Answer("~/notes.txt"), Options::default()).unwrap();
     assert_eq!(first.answered, ["notes.txt"]);

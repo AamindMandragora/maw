@@ -2,6 +2,10 @@
 # paths are under ~/.config unless they start with ~/ (home) or / (system root)
 {
   # one destination per file role
+  alacritty = {
+    format = "toml";
+    files.main = "alacritty/alacritty.toml";
+  };
   bash = {
     format = "shell";
     files = {

@@ -1,8 +1,12 @@
 use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
+use crate::backend::xbps::Xbps;
+use crate::backend::{Backend, SystemBackend};
 use crate::build::{self, BuildError, Report};
 use crate::edit;
 use crate::env::Env;
 use crate::help;
+use crate::packages::{self, Change};
+use crate::registry;
 use crate::repo::Repo;
 use crate::runner::{Runner, SystemRunner};
 use crate::status;
@@ -41,6 +45,8 @@ enum Command {
     Edit {
         #[arg(help = "a module or static/ name, or `config`")]
         name: String,
+        #[arg(long, help = "only edit; activate later")]
+        no_activate: bool,
     },
     #[command(about = "create modules/<name>.nix, importing any live config, then edit it", after_help = "see: maw help writing a module")]
     New {
@@ -48,6 +54,8 @@ enum Command {
         name: String,
         #[arg(long, help = "css, ini, json, kdl, keyValue, raw, shell, or toml; defaults to the registry's")]
         format: Option<String>,
+        #[arg(long, help = "only create and edit; activate later")]
+        no_activate: bool,
     },
     #[command(about = "copy a file or dir into static/, then activate so it's linked back in place", after_help = "see: maw help adding verbatim files")]
     Add {
@@ -55,11 +63,35 @@ enum Command {
         path: PathBuf,
         #[arg(help = "registry name to file it under; inferred from the path when omitted")]
         name: Option<String>,
+        #[arg(long, help = "only copy; activate later")]
+        no_activate: bool,
     },
     #[command(about = "show what activating would change in each live file", after_help = "see: maw help checking")]
     Diff,
     #[command(about = "list files out of sync with the repo", after_help = "see: maw help checking")]
     Status,
+    #[command(about = "install packages, record them in maw.nix, scaffold their modules, then activate", after_help = "see: maw help installing")]
+    Install {
+        #[arg(required = true)]
+        packages: Vec<String>,
+        #[arg(long, help = "print what would change without changing anything")]
+        dry_run: bool,
+    },
+    #[command(about = "remove packages and drop them from maw.nix; their modules stay", after_help = "see: maw help removing")]
+    Remove {
+        #[arg(required = true)]
+        packages: Vec<String>,
+        #[arg(long, help = "print what would change without changing anything")]
+        dry_run: bool,
+    },
+    #[command(about = "list packages you installed, or show one", after_help = "see: maw help looking things up")]
+    Query { package: Option<String> },
+    #[command(about = "search the repos", after_help = "see: maw help looking things up")]
+    Search { term: String },
+    #[command(about = "a package's details, and whether maw manages it", after_help = "see: maw help looking things up")]
+    Info { package: String },
+    #[command(about = "update the repo index and upgrade every package", after_help = "see: maw help updating")]
+    Sync,
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
         #[arg(help = "usage, modules, formats, a command, or a heading like `drift`")]
@@ -76,11 +108,17 @@ pub fn main() -> Result<()> {
         Command::Init { path } => init(&env, &runner, &path),
         Command::Build { force } => build(&env, &runner, force),
         Command::Activate { dry_run, force } => activate(&env, &runner, Options { dry_run, force }),
-        Command::Edit { name } => edit(&env, &runner, &name),
-        Command::New { name, format } => new(&env, &runner, &name, format.as_deref()),
-        Command::Add { path, name } => add(&env, &runner, &path, name.as_deref()),
+        Command::Edit { name, no_activate } => edit(&env, &runner, &name, !no_activate),
+        Command::New { name, format, no_activate } => new(&env, &runner, &name, format.as_deref(), !no_activate),
+        Command::Add { path, name, no_activate } => add(&env, &runner, &path, name.as_deref(), !no_activate),
         Command::Diff => diff(&env, &runner),
         Command::Status => status(&env, &runner),
+        Command::Install { packages, dry_run } => install(&env, &runner, &packages, dry_run),
+        Command::Remove { packages, dry_run } => remove(&env, &runner, &packages, dry_run),
+        Command::Query { package } => query(&env, &runner, package.as_deref()),
+        Command::Search { term } => search(&env, &runner, &term),
+        Command::Info { package } => info(&env, &runner, &package),
+        Command::Sync => Ok(Xbps::new(&runner, &env).sync()?),
         Command::Help { query } => show_help(&runner, &query.join(" ")),
     }
 }
@@ -137,11 +175,14 @@ fn report_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: b
     Ok(())
 }
 
-// opens a file in the editor, then activates; on an evaluation error, offers to reopen it
-fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path) -> Result<()> {
+// opens a file in the editor, then activates if asked; on an evaluation error, offers to reopen it
+fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, activate: bool) -> Result<()> {
     let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
     loop {
         edit::open_editor(runner, &editor, path)?;
+        if !activate {
+            return Ok(());
+        }
         match activate::activate(env, runner, repo, &Terminal, Options::default()) {
             Err(ActivateError::Build(BuildError::Eval(error))) => {
                 eprintln!("error: {error}");
@@ -155,25 +196,28 @@ fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path) 
     }
 }
 
-fn edit(env: &Env, runner: &dyn Runner, name: &str) -> Result<()> {
+fn edit(env: &Env, runner: &dyn Runner, name: &str, activate: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let target = edit::edit_target(&repo, name)?;
-    edit_then_activate(env, runner, &repo, &target)
+    edit_then_activate(env, runner, &repo, &target, activate)
 }
 
 // scaffolds the module, then edits it like `maw edit`
-fn new(env: &Env, runner: &dyn Runner, name: &str, format: Option<&str>) -> Result<()> {
+fn new(env: &Env, runner: &dyn Runner, name: &str, format: Option<&str>, activate: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let module = edit::new_module(env, runner, &repo, name, format)?;
     println!("create {}", env.pretty(&module));
-    edit_then_activate(env, runner, &repo, &module)
+    edit_then_activate(env, runner, &repo, &module, activate)
 }
 
 // copies into static/, then activates so the original is backed up and linked
-fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>) -> Result<()> {
+fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>, activate: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let copies = edit::add(env, runner, &repo, path, name)?;
     copies.iter().for_each(|(file, copy)| println!("copy {} -> {}", env.pretty(file), relative(&repo, copy)));
+    if !activate {
+        return Ok(());
+    }
     let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
     report_activation(env, &repo, &activation, false)
 }
@@ -211,6 +255,7 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     let line = |label: &str, path: &PathBuf| println!("{label:<9}{}", env.pretty(path));
 
     steps.iter().for_each(|step| match step {
+        Step::Install { backend, package } => println!("{:<9}{package} ({backend})", "missing"),
         Step::Link { destination, backup: false } => line("new", destination),
         Step::Link { destination, backup: true } => line("blocked", destination),
         Step::Relink { destination } => line("moved", destination),
@@ -223,6 +268,115 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     if steps.is_empty() {
         println!("clean");
     }
+    Ok(())
+}
+
+// prints the plan, then installs, records, scaffolds, and activates
+fn install(env: &Env, runner: &dyn Runner, names: &[String], dry_run: bool) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let xbps = Xbps::new(runner, env);
+    print_change(&packages::plan_install(env, runner, &repo, &xbps, names)?, "install", "record {} in maw.nix");
+    if dry_run {
+        println!("dry run, nothing changed");
+        return Ok(());
+    }
+
+    packages::install(env, runner, &repo, &xbps, names)?;
+    let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
+    print_activation(env, &repo, &activation, false);
+    Ok(())
+}
+
+// prints the plan, then removes and drops from maw.nix
+fn remove(env: &Env, runner: &dyn Runner, names: &[String], dry_run: bool) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let xbps = Xbps::new(runner, env);
+    print_change(&packages::plan_remove(env, runner, &repo, &xbps, names)?, "remove", "drop {} from maw.nix");
+    if dry_run {
+        println!("dry run, nothing changed");
+        return Ok(());
+    }
+    packages::remove(env, runner, &repo, &xbps, names)?;
+    Ok(())
+}
+
+// one line per package, maw.nix entry (record_line has a {} for the name), and new module
+fn print_change(change: &Change, verb: &str, record_line: &str) {
+    change.packages.iter().for_each(|name| println!("{verb} {name}"));
+    change.recorded.iter().for_each(|name| println!("{}", record_line.replace("{}", name)));
+    change.scaffolded.iter().for_each(|name| println!("create modules/{name}.nix"));
+    if change.is_empty() {
+        println!("nothing to do");
+    }
+}
+
+// manually installed and declared packages, flagging any that disagree
+fn query(env: &Env, runner: &dyn Runner, package: Option<&str>) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let xbps = Xbps::new(runner, env);
+    let (_, state) = edit::load(env, runner, &repo)?;
+    let declared = packages::declared(&state, "xbps");
+    let installed = xbps.list()?;
+
+    // (name, installed version, declared) for manual installs, declared packages, and the one asked about
+    let mut rows: Vec<(String, Option<String>, bool)> = installed
+        .iter()
+        .filter(|pkg| pkg.manual || declared.contains(&pkg.name) || package == Some(pkg.name.as_str()))
+        .map(|pkg| (pkg.name.clone(), Some(pkg.version.clone()), declared.contains(&pkg.name)))
+        .chain(declared.iter().filter(|name| !installed.iter().any(|pkg| &pkg.name == *name)).map(|name| (name.clone(), None, true)))
+        .filter(|(name, ..)| package.is_none_or(|wanted| wanted == name))
+        .collect();
+    rows.sort();
+
+    if rows.is_empty() {
+        anyhow::bail!("{} isn't installed", package.unwrap_or("nothing"));
+    }
+    rows.iter().for_each(|(name, version, is_declared)| {
+        let note = match (version, is_declared) {
+            (None, _) => "  (missing)",
+            (Some(_), false) => "  (undeclared)",
+            _ => "",
+        };
+        println!("{name} {}{note}", version.as_deref().unwrap_or("-"));
+    });
+    Ok(())
+}
+
+// repo matches, marked [*] when installed like xbps does
+fn search(env: &Env, runner: &dyn Runner, term: &str) -> Result<()> {
+    let xbps = Xbps::new(runner, env);
+    let installed: std::collections::HashSet<String> = xbps.list()?.into_iter().map(|pkg| pkg.name).collect();
+    xbps.search(term)?.iter().for_each(|pkg| {
+        let mark = if installed.contains(&pkg.name) { "*" } else { "-" };
+        println!("[{mark}] {} {}  {}", pkg.name, pkg.version, pkg.description);
+    });
+    Ok(())
+}
+
+// the repo's description of a package plus what maw knows about it
+fn info(env: &Env, runner: &dyn Runner, name: &str) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let xbps = Xbps::new(runner, env);
+    let installed = xbps.list()?.into_iter().find(|pkg| pkg.name == name);
+    let Some(pkg) = xbps.info(name)?.or(installed.clone()) else {
+        anyhow::bail!("no package {name}; `maw search {name}` to look for it");
+    };
+    let (registry, state) = edit::load(env, runner, &repo)?;
+    let program = name.to_lowercase();
+
+    println!("{} {}\n  {}", pkg.name, pkg.version, pkg.description);
+    if !pkg.homepage.is_empty() {
+        println!("  {}", pkg.homepage);
+    }
+    println!("{:<10}{}", "installed", installed.map_or("no".into(), |pkg| pkg.version));
+    println!("{:<10}{}", "declared", if packages::declared(&state, "xbps").contains(&name.to_string()) { "yes" } else { "no" });
+
+    // where its config comes from in the repo, and where the registry puts it
+    let config = [repo.module_file(&program), repo.static_dir().join(&program)].into_iter().find(|path| path.exists());
+    println!("{:<10}{}", "config", config.map_or("none".into(), |path| relative(&repo, &path)));
+    let entry = registry.entry(&program);
+    let specs: Vec<String> = if entry.files.is_empty() { vec![registry.spec(&program, "main")] } else { entry.files.values().cloned().collect() };
+    specs.iter().for_each(|spec| println!("{:<10}{}", "goes to", env.pretty(&registry::resolve(env, spec))));
     Ok(())
 }
 
@@ -288,6 +442,7 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
             println!("link {}", env.pretty(destination));
         }
         Step::Link { destination, .. } => println!("link {}", env.pretty(destination)),
+        Step::Install { package, .. } => println!("install {package}"),
         Step::Relink { destination } => println!("relink {}", env.pretty(destination)),
         Step::Update { destination } => println!("update {}", env.pretty(destination)),
         Step::Unlink { destination } => println!("unlink {}", env.pretty(destination)),

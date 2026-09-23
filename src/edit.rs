@@ -74,7 +74,7 @@ pub fn open_editor(runner: &dyn Runner, editor: &str, path: &Path) -> Result<(),
 }
 
 // the registry and maw.nix state, stamping inputs along the way
-fn load(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<(Registry, MawState), EditError> {
+pub fn load(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<(Registry, MawState), EditError> {
     let inputs_file = env.state_dir.join("inputs");
     let mut inputs = Inputs::load(&inputs_file)?;
     let loaded = build::load_registry(env, runner, repo, &mut inputs)?;
