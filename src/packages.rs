@@ -193,7 +193,11 @@ pub fn install(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> 
 
 // installs targets per backend; xbps names with a srcpkgs template are built and installed from binpkgs instead
 pub fn install_targets(env: &Env, runner: &dyn Runner, repo: &Repo, targets: &[Target]) -> Result<(), PackagesError> {
-    let src = srcpkgs(env, runner, repo)?;
+    install_with(env, runner, &srcpkgs(env, runner, repo)?, targets)
+}
+
+// install_targets with the source builds already located, so nothing needs nix to find the clone
+pub fn install_with(env: &Env, runner: &dyn Runner, src: &SrcPkgs, targets: &[Target]) -> Result<(), PackagesError> {
     let (built, fetched): (Vec<Target>, Vec<Target>) = targets.iter().cloned().partition(|target| target.backend == "xbps" && src.has(&target.spec));
     if !built.is_empty() {
         src.install(&built.into_iter().map(|target| target.spec).collect::<Vec<_>>(), false)?;
@@ -556,6 +560,20 @@ mod tests {
         let root = fixture.env.sysroot.display();
         assert_eq!(calls(&fixture, "xbps-install"), [format!("xbps-install -r {root} -R {} -y hello", clone.join("hostdir/binpkgs").display())]);
         assert!(maw_nix(&fixture).contains(r#"xbps = [ "hello" ];"#));
+    }
+
+    #[test]
+    fn a_declared_source_package_registers_the_local_repo() {
+        let fixture = fixture(&[]);
+        let clone = template(&fixture, "hello", "0.1_1");
+        let conf = fixture.env.sysroot.join("etc/xbps.d/10-maw-local.conf");
+        apply(&fixture, &["foot"]);
+        crate::activate::activate(&fixture.env, &fixture.runner, &fixture.repo, &Answer("n"), Default::default()).unwrap();
+        assert!(!conf.exists());
+
+        apply(&fixture, &["hello"]);
+        crate::activate::activate(&fixture.env, &fixture.runner, &fixture.repo, &Answer("n"), Default::default()).unwrap();
+        assert_eq!(fs::read_to_string(&conf).unwrap(), format!("# written by maw: packages built from srcpkgs/\nrepository={}\n", clone.join("hostdir/binpkgs").display()));
     }
 
     #[test]

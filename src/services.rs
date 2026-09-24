@@ -38,7 +38,7 @@ pub struct Row {
 
 // modules and maw.nix, evaluated without writing out/
 fn load(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Report, ServicesError> {
-    Ok(build::build(env, runner, repo, Options { dry_run: true, force: false })?)
+    Ok(build::build(env, runner, repo, Options { dry_run: true, ..Options::default() })?)
 }
 
 // every service linked into a supervised dir

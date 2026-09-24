@@ -1,0 +1,20 @@
+# Template file for 'maw'
+pkgname=maw
+version=0.1.0
+revision=1
+build_style=cargo
+depends="nix git xbps"
+short_desc="Declarative system manager for Void Linux"
+maintainer="Advayth Pashupati <advaythp@gmail.com>"
+license="MIT"
+homepage="https://github.com/AamindMandragora/maw"
+distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"
+# tag does not exist yet
+checksum=CHANGEME
+
+# maw reads its nix lib and shipped registry from /usr/share/maw
+post_install() {
+	vmkdir usr/share/maw
+	vcopy nix usr/share/maw
+	vinstall registry.nix 644 usr/share/maw
+}

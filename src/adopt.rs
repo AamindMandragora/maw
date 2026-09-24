@@ -65,7 +65,7 @@ fn listed(lists: &BTreeMap<String, Vec<String>>, key: &str, name: &str) -> bool 
 
 // everything installed by hand or enabled that maw.nix neither declares nor ignores
 pub fn candidates(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Candidate>, AdoptError> {
-    let build = build::build(env, runner, repo, Options { dry_run: true, force: false })?;
+    let build = build::build(env, runner, repo, Options { dry_run: true, ..Options::default() })?;
     let state = &build.state;
 
     // packages installed by hand, per backend

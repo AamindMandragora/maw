@@ -26,6 +26,8 @@ src/
   adopt.rs        # undeclared packages and services, the adopt checklist
   generations.rs  # auto-commit, the generations log, commit/push/pull
   rollback.rs     # restore a generation: repo, package versions, holds
+  index.rs        # out/.maw/index.json: activating without nix
+srcpkgs/maw/      # maw's own xbps-src template
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/
@@ -95,6 +97,16 @@ MAW_BLESS=1 cargo test      # rewrite goldens from current output
 ```
 
 After blessing, check the golden diff before committing.
+
+## Releasing
+
+maw ships as an xbps package built from `srcpkgs/maw/template` (`build_style=cargo`). It installs the binary, plus `nix/` and `registry.nix` into `/usr/share/maw`, where the installed maw looks for them. To release a version:
+
+1. bump `version` in `Cargo.toml` and in the template, and `mawVersion` in `nix/lib.nix`
+2. tag the commit `v<version>` and push the tag
+3. `xgensum -i srcpkgs/maw/template` to fill in the checksum, and `xlint` it
+
+To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; from then on, updating the template's version there and running `maw sync` rebuilds and upgrades maw.
 
 ## Docs
 

@@ -32,8 +32,10 @@ struct Cli {
 enum Command {
     #[command(about = "create a dotfiles repo, or adopt an existing one", after_help = "see: maw help setting up")]
     Init {
-        #[arg(help = "where the repo is, or should be")]
-        path: PathBuf,
+        #[arg(help = "a path for a new or existing repo, or a git url to clone")]
+        target: String,
+        #[arg(help = "where to clone a url to; ~/dotfiles by default")]
+        path: Option<PathBuf>,
     },
     #[command(about = "render changed modules into out/", after_help = "see: maw help building")]
     Build {
@@ -48,6 +50,8 @@ enum Command {
         force: bool,
         #[arg(long, help = "don't commit or record a generation this time")]
         no_commit: bool,
+        #[arg(long, help = "skip nix: activate the committed out/ from its index, e.g. on a fresh machine")]
+        no_build: bool,
     },
     #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate", after_help = "see: maw help editing")]
     Edit {
@@ -196,9 +200,9 @@ pub fn main() -> Result<()> {
     let runner = SystemRunner;
 
     match cli.command {
-        Command::Init { path } => init(&env, &runner, &path),
+        Command::Init { target, path } => init(&env, &runner, &target, path.as_deref()),
         Command::Build { force } => build(&env, &runner, force),
-        Command::Activate { dry_run, force, no_commit } => activate(&env, &runner, Options { dry_run, force }, !no_commit),
+        Command::Activate { dry_run, force, no_commit, no_build } => activate(&env, &runner, Options { dry_run, force, no_build }, !no_commit),
         Command::Generations => list_generations(&env),
         Command::Commit { message } => {
             let repo = Repo::locate(&env)?;
@@ -248,18 +252,40 @@ impl Ask for Terminal {
     }
 }
 
-// scaffolds the repo and lists what it created
-fn init(env: &Env, runner: &dyn Runner, path: &Path) -> Result<()> {
-    let (repo, created) = Repo::init(env, runner, path)?;
+// scaffolds a repo at a path, or clones one from a url and offers to activate it
+fn init(env: &Env, runner: &dyn Runner, target: &str, clone_to: Option<&Path>) -> Result<()> {
+    let is_url = target.contains("://") || target.starts_with("git@") || target.ends_with(".git");
+    let (repo, created) = match is_url {
+        true => Repo::clone(env, runner, target, &clone_to.map_or_else(|| env.home.join("dotfiles"), Path::to_path_buf))?,
+        false => Repo::init(env, runner, Path::new(target))?,
+    };
     created.iter().for_each(|path| println!("create {}", env.pretty(path)));
     println!("dotfiles at {}", env.pretty(&repo.root));
-    Ok(())
+    if is_url { bootstrap(env, runner, &repo) } else { Ok(()) }
+}
+
+// on a freshly cloned repo: show the plan, then activate if asked; without nix, from the committed index
+fn bootstrap(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
+    let no_build = runner.run("nix-instantiate", &["--version".into()]).is_err();
+    if no_build {
+        println!("nix isn't installed; activating from the committed out/");
+    }
+    let plan = activate::activate(env, runner, repo, &Terminal, Options { dry_run: true, no_build, ..Options::default() })?;
+    print_activation(env, repo, &plan, true);
+
+    let yes = Terminal.ask("activate now? [Y/n] ").is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n'));
+    if !yes {
+        println!("run `maw activate{}` when ready", if no_build { " --no-build" } else { "" });
+        return Ok(());
+    }
+    let activation = activate::activate(env, runner, repo, &Terminal, Options { no_build, ..Options::default() })?;
+    finish(env, runner, repo, &activation, false, true, &["bootstrap".into()])
 }
 
 // builds and lists evaluated modules, changed out/ files, and drift
 fn build(env: &Env, runner: &dyn Runner, force: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let report = build::build(env, runner, &repo, build::Options { force, dry_run: false })?;
+    let report = build::build(env, runner, &repo, build::Options { force, ..build::Options::default() })?;
     print_build(env, &repo, &report);
     report.drifted.iter().for_each(|output| println!("drift {}: edited in place; --force to overwrite", env.pretty(&output.destination)));
 
@@ -566,6 +592,13 @@ fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
     Xbps::new(runner, env).sync()?;
     let repo = Repo::locate(env)?;
     packages::upgrade(env, runner, &repo)?.iter().for_each(|target| println!("upgrade {target}"));
+
+    // source packages whose templates moved ahead, maw's own included, are rebuilt
+    let (_, state) = edit::load(env, runner, &repo)?;
+    packages::outdated(env, runner, &repo, &state)?.into_iter().try_for_each(|(name, installed, template)| {
+        println!("rebuild {name} {installed} -> {template}");
+        packages::build_source(env, runner, &repo, &name).map(|_| ())
+    })?;
     Ok(())
 }
 

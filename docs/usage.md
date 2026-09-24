@@ -33,6 +33,17 @@ Every other command finds the repo through that recorded path, so it works from 
 
 Moving an existing setup in? Follow [migrating.md](migrating.md) instead.
 
+### On a new machine
+
+```sh
+maw init https://github.com/you/dotfiles          # clones to ~/dotfiles
+maw init git@github.com:you/dotfiles.git ~/dots   # or anywhere
+```
+
+Given a git url, `init` clones the repo, prints the plan of what activating would do, and asks `activate now? [Y/n]`. Saying yes installs every declared package, links and copies every file, and enables every service: the machine becomes the one the repo describes.
+
+Nix isn't needed for that. If it isn't installed, maw activates from the committed `out/` and its index, `out/.maw/index.json`, which every activation keeps up to date. To do the same by hand: `maw activate --no-build`. Install nix (`maw install nix`) before editing modules; without it maw can't render them.
+
 ## Building
 
 ```sh
@@ -97,7 +108,7 @@ delete /etc/old/thing.conf
 
 A copy edited by hand is [drift](#drift), like an edited link: reported as `edited`, left alone, and overwritten (after a backup) only with `--force`.
 
-`maw activate --dry-run` prints the plan and changes nothing, not even `out/`.
+`maw activate --dry-run` prints the plan and changes nothing, not even `out/`. `maw activate --no-build` skips nix and activates what's committed in `out/`; see [on a new machine](#on-a-new-machine).
 
 ### Loose static files
 
@@ -343,7 +354,9 @@ Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-pac
 maw.voidPackages = "~/void-packages";
 ```
 
-Activation builds and installs a declared source package that isn't installed at all. It doesn't rebuild on its own when you change a template: `maw status` shows `outdated hello 0.1_1 -> 0.2_1`, and `maw src build hello` rebuilds it and upgrades the installed package.
+Activation builds and installs a declared source package that isn't installed at all. It doesn't rebuild on its own when you change a template: `maw status` shows `outdated hello 0.1_1 -> 0.2_1`, and `maw src build hello` (or the next `maw sync`) rebuilds it and upgrades the installed package.
+
+While any source package is declared, maw also manages `/etc/xbps.d/10-maw-local.conf`, which adds the clone's `hostdir/binpkgs` to xbps's repositories, so `xbps-query`, `xbps-install`, and `xbps-install -Su` see your builds like any other package.
 
 ### Updating
 
@@ -351,7 +364,7 @@ Activation builds and installs a declared source package that isn't installed at
 maw sync
 ```
 
-Upgrades the system (`xbps-install -Su`), then every crate and go program that isn't pinned to a version. Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
+Upgrades the system (`xbps-install -Su`), then every crate and go program that isn't pinned to a version, then rebuilds every [source package](#source-packages) whose template is ahead of what's installed (this is how maw updates itself: bump `srcpkgs/maw/template`, then `maw sync`). Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
 
 ## Services
 

@@ -55,11 +55,12 @@ pub struct ServiceRef {
     pub enable: bool,
 }
 
-// dry_run writes nothing to out/; force overwrites files edited in place
+// dry_run writes nothing to out/; force overwrites files edited in place; no_build (activation only) skips nix and uses out/.maw/index.json
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Options {
     pub dry_run: bool,
     pub force: bool,
+    pub no_build: bool,
 }
 
 #[derive(Debug, Default)]
@@ -144,12 +145,14 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         .collect::<Result<Vec<_>, BuildError>>()?;
 
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
-    let outputs: Vec<Output> = files.iter().flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
+    let mut outputs: Vec<Output> = files.iter().flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
+    outputs.extend(local_repo(env, repo, &state, &settings));
     let placements = place_all(env, &outputs, options)?;
 
     // sort each file into the report by what happened to it
     let placed = || outputs.iter().zip(&placements);
-    let keep: HashSet<PathBuf> = outputs.iter().map(|output| output.out.clone()).collect();
+    // the activation index lives in out/ too, written by activate rather than build
+    let keep: HashSet<PathBuf> = outputs.iter().map(|output| output.out.clone()).chain([index_file(repo)]).collect();
     let report = Report {
         evaluated: modules.iter().filter(|(_, _, fresh)| *fresh).map(|(name, _, _)| name.clone()).collect(),
         written: placed().filter(|(_, placement)| !matches!(placement, Placement::Unchanged | Placement::Drifted)).map(|(output, _)| output.out.clone()).collect(),
@@ -193,6 +196,30 @@ fn place_all(env: &Env, outputs: &[Output], options: Options) -> Result<Vec<Plac
         save_json(&recorded_file, &now_recorded)?;
     }
     Ok(placements)
+}
+
+// where activate records every file's source and destination, for activating without nix
+pub fn index_file(repo: &Repo) -> PathBuf {
+    repo.out_dir().join(".maw/index.json")
+}
+
+// /etc/xbps.d/10-maw-local.conf, making the void-packages clone's builds a repo xbps always sees; only while a source package is declared
+fn local_repo(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> Option<Output> {
+    let declared = state.packages.get("xbps")?;
+    declared.iter().any(|name| repo.srcpkgs_dir().join(name).join("template").is_file()).then(|| {
+        let content = format!("# written by maw: packages built from srcpkgs/\nrepository={}\n", settings.void_packages(env).join("hostdir/binpkgs").display());
+        Output {
+            name: ".maw".into(),
+            key: "10-maw-local.conf".into(),
+            out: repo.out_dir().join(".maw/10-maw-local.conf"),
+            destination: env.sysroot.join("etc/xbps.d/10-maw-local.conf"),
+            root: true,
+            executable: false,
+            hash: hash_bytes(content.as_bytes()),
+            content,
+            service: None,
+        }
+    })
 }
 
 // what every module depends on: config.nix, maw.nix, and the maw lib

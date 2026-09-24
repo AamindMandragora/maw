@@ -8,6 +8,7 @@ pub mod cli;
 pub mod env;
 pub mod generations;
 pub mod help;
+pub mod index;
 pub mod init;
 pub mod packages;
 pub mod eval;

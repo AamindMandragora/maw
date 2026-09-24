@@ -213,7 +213,7 @@ mod tests {
     }
 
     fn run(fixture: &Fixture, force: bool) -> Activation {
-        activate(&fixture.env, &fixture.runner, &fixture.repo, &Nobody, Options { dry_run: false, force }).unwrap()
+        activate(&fixture.env, &fixture.runner, &fixture.repo, &Nobody, Options { force, ..Options::default() }).unwrap()
     }
 
     fn greetd(fixture: &Fixture) -> PathBuf {

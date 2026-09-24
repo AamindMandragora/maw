@@ -1,8 +1,10 @@
 use crate::backend::{self, BackendError};
+use crate::backend::srcpkgs::SrcPkgs;
 use crate::backup;
 use crate::build::{self, BuildError, Report};
 pub use crate::build::Options;
 use crate::env::Env;
+use crate::index::{self, IndexError};
 use crate::init::Scope;
 use crate::inputs::{Inputs, InputsError, load_json, save_json};
 use crate::registry::{self, Registry};
@@ -33,6 +35,8 @@ pub enum ActivateError {
     Run(#[from] RunError),
     #[error(transparent)]
     Packages(Box<PackagesError>),
+    #[error(transparent)]
+    Index(Box<IndexError>),
     #[error("no {scope} service {name}: nothing in its definition dir and no module defines it")]
     UnknownService { scope: Scope, name: String },
     #[error("{destination} comes from both {first} and {second}")]
@@ -126,29 +130,41 @@ pub struct Planned {
 
 // builds, plans links against the manifest and live files, and applies the plan unless dry_run
 pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, options: Options) -> Result<Activation, ActivateError> {
-    let answered = if options.dry_run { Vec::new() } else { place_loose(env, runner, repo, ask)? };
+    // placing loose files means asking the registry, which needs nix
+    let answered = if options.dry_run || options.no_build { Vec::new() } else { place_loose(env, runner, repo, ask)? };
     let planned = plan_activation(env, runner, repo, options)?;
     if options.dry_run {
         return Ok(Activation { build: planned.build, steps: planned.steps, backups: Vec::new(), answered });
     }
 
-    install_missing(env, runner, repo, &planned.steps)?;
+    install_missing(env, runner, repo, &planned.build.settings, &planned.steps)?;
     let mut backups = apply(env, &planned.steps, &planned.wanted)?;
     backups.extend(system::apply(env, runner, &planned.steps, &planned.copies)?);
     if planned.next != planned.manifest {
         save_json(&env.state_dir.join("manifest"), &planned.next)?;
     }
+
+    // a nix-free record of what was placed, committed with out/
+    if !options.no_build {
+        let placed: Vec<Wanted> = planned.wanted.iter().chain(&planned.copies).cloned().collect();
+        index::write(env, repo, &planned.build, &placed).map_err(|error| ActivateError::Index(Box::new(error)))?;
+    }
     Ok(Activation { build: planned.build, steps: planned.steps, backups, answered })
 }
 
-// builds (or with dry_run only renders), then plans every link without touching one
+// builds (or with dry_run only renders, or with no_build reads the index), then plans every link without touching one
 pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> Result<Planned, ActivateError> {
-    let build = build::build(env, runner, repo, options)?;
-
-    let inputs_file = env.state_dir.join("inputs");
-    let mut inputs = Inputs::load(&inputs_file)?;
-    let (statics, unplaced) = static_files(env, repo, &build.registry, &mut inputs)?;
-    inputs.save(&inputs_file)?;
+    let (build, statics, unplaced) = if options.no_build {
+        let (build, statics) = index::load(env, repo).map_err(|error| ActivateError::Index(Box::new(error)))?;
+        (build, statics, Vec::new())
+    } else {
+        let build = build::build(env, runner, repo, options)?;
+        let inputs_file = env.state_dir.join("inputs");
+        let mut inputs = Inputs::load(&inputs_file)?;
+        let (statics, unplaced) = static_files(env, repo, &build.registry, &mut inputs)?;
+        inputs.save(&inputs_file)?;
+        (build, statics, unplaced)
+    };
 
     let (copies, wanted): (Vec<Wanted>, Vec<Wanted>) = wanted(&build, statics)?.into_iter().partition(|file| file.root);
     let edited: HashSet<PathBuf> = build.drifted.iter().map(|output| output.out.clone()).collect();
@@ -192,8 +208,8 @@ fn missing_packages(env: &Env, runner: &dyn Runner, state: &MawState) -> Result<
     Ok(per_backend.concat())
 }
 
-// installs every missing package, building srcpkgs templates first
-fn install_missing(env: &Env, runner: &dyn Runner, repo: &Repo, steps: &[Step]) -> Result<(), ActivateError> {
+// installs every missing package, building srcpkgs templates first in the settings' clone
+fn install_missing(env: &Env, runner: &dyn Runner, repo: &Repo, settings: &build::Settings, steps: &[Step]) -> Result<(), ActivateError> {
     let targets: Vec<Target> = steps
         .iter()
         .filter_map(|step| match step {
@@ -204,7 +220,8 @@ fn install_missing(env: &Env, runner: &dyn Runner, repo: &Repo, steps: &[Step]) 
     if targets.is_empty() {
         return Ok(());
     }
-    packages::install_targets(env, runner, repo, &targets).map_err(|error| ActivateError::Packages(Box::new(error)))
+    let src = SrcPkgs::new(runner, env, &repo.srcpkgs_dir(), &settings.void_packages(env));
+    packages::install_with(env, runner, &src, &targets).map_err(|error| ActivateError::Packages(Box::new(error)))
 }
 
 // the plan, plus the manifest it leaves behind once applied

@@ -69,7 +69,11 @@ pub fn summary(repo: &Repo, activation: &Activation) -> Vec<String> {
             _ => None,
         });
         let first = parts.next()?;
-        if first == "sv" { parts.next() } else { Some(first) }
+        match first.as_str() {
+            "sv" => parts.next(),
+            name if name.starts_with('.') => None,
+            _ => Some(first),
+        }
     };
     let mut programs: Vec<String> = activation.build.written.iter().chain(&activation.build.removed).filter_map(program).collect();
     programs.dedup();

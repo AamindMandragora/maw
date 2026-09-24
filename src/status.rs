@@ -59,7 +59,7 @@ impl Full {
 
 // the full drift report; path_var decides which commands count as installed
 pub fn report(env: &Env, runner: &dyn Runner, repo: &Repo, path_var: &str) -> Result<Full, StatusError> {
-    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
+    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, ..Options::default() })?;
     let orphans = orphans(env, runner, repo, &planned.build, path_var)?;
     let undeclared = adopt::candidates(env, runner, repo)?;
     let outdated = crate::packages::outdated(env, runner, repo, &planned.build.state)?;
@@ -79,7 +79,7 @@ fn orphans(env: &Env, runner: &dyn Runner, repo: &Repo, build: &Report, path_var
     let on_path = |name: &str| std::env::split_paths(path_var).any(|dir| fs::metadata(dir.join(name)).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0));
 
     // programs rendered by modules plus static/<name>/ dirs, minus data dirs like fonts and wallpapers
-    let rendered = build.outputs.iter().filter(|output| output.service.is_none()).map(|output| output.name.clone());
+    let rendered = build.outputs.iter().filter(|output| output.service.is_none() && !output.name.starts_with('.')).map(|output| output.name.clone());
     let static_dirs = fs::read_dir(repo.static_dir()).into_iter().flatten().filter_map(|entry| {
         let entry = entry.ok()?;
         entry.file_type().ok()?.is_dir().then(|| entry.file_name().to_string_lossy().into_owned())
@@ -94,7 +94,7 @@ fn orphans(env: &Env, runner: &dyn Runner, repo: &Repo, build: &Report, path_var
 
 // every pending step, planned without building out/ or touching links
 pub fn status(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Step>, ActivateError> {
-    Ok(pending(activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?))
+    Ok(pending(activate::plan_activation(env, runner, repo, Options { dry_run: true, ..Options::default() })?))
 }
 
 // a plan's steps, minus updates that are already live
@@ -108,7 +108,7 @@ fn pending(planned: activate::Planned) -> Vec<Step> {
 
 // what `activate --force` would change in each live file, including links it would remove
 pub fn diff(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<FileDiff>, ActivateError> {
-    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
+    let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, ..Options::default() })?;
     let rendered: HashMap<&PathBuf, &String> = planned.build.outputs.iter().map(|output| (&output.out, &output.content)).collect();
     let read = |path: &PathBuf| fs::read(path).unwrap_or_default();
 

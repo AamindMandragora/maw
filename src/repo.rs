@@ -88,6 +88,14 @@ impl Repo {
         Ok((repo, created))
     }
 
+    // clones a repo from a git url, then scaffolds and records it like init
+    pub fn clone(env: &Env, runner: &dyn Runner, url: &str, path: &Path) -> Result<(Repo, Vec<PathBuf>), RepoError> {
+        if !path.exists() {
+            runner.interactive("git", &["clone".into(), url.into(), path.display().to_string()])?;
+        }
+        Repo::init(env, runner, path)
+    }
+
     pub fn config_file(&self) -> PathBuf {
         self.root.join("config.nix")
     }
@@ -163,6 +171,17 @@ mod tests {
         assert_eq!(fs::read_to_string(repo.config_file()).unwrap(), "{ mine = 1; }");
         assert!(!created.contains(&repo.config_file()));
         assert!(runner.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn clone_fetches_then_inits() {
+        let (dir, env) = setup();
+        let runner = FakeRunner::new(|_, _| String::new());
+        let path = dir.path().join("dots");
+        // the fake clone makes nothing, so init creates the dir and git-inits it
+        Repo::clone(&env, &runner, "https://example.org/dots.git", &path).unwrap();
+        assert_eq!(runner.calls.borrow()[0], format!("git clone https://example.org/dots.git {}", path.display()));
+        assert_eq!(Repo::locate(&env).unwrap().root, path);
     }
 
     #[test]
