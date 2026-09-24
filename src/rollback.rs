@@ -1,3 +1,4 @@
+use crate::backend::srcpkgs::SrcPkgs;
 use crate::backend::xbps::Xbps;
 use crate::backend::{self, Backend, BackendError, NAMES, SystemBackend, spec_base, split_pkgver};
 use crate::edit::{self, EditError};
@@ -5,7 +6,7 @@ use crate::env::Env;
 use crate::eval::{self, EvalError};
 use crate::generations::{self, Generation, GenerationsError};
 use crate::inputs::{InputsError, hash_bytes, load_json, save_json};
-use crate::packages::{Target, declared};
+use crate::packages::{self, PackagesError, Target, declared};
 use crate::repo::Repo;
 use crate::runner::{RunError, Runner};
 use crate::state::{MawState, StateError};
@@ -37,6 +38,8 @@ pub enum RollbackError {
     State(#[from] StateError),
     #[error(transparent)]
     Inputs(#[from] InputsError),
+    #[error(transparent)]
+    Packages(#[from] PackagesError),
     #[error("{path}: {source}")]
     Io { path: PathBuf, source: std::io::Error },
 }
@@ -95,7 +98,7 @@ fn pin_base(backend: &str, pin: &str) -> String {
 type BackendPlan = (Vec<Target>, Vec<Target>, Vec<(Target, String)>);
 
 // the packages part of a rollback for one backend
-fn plan_backend(env: &Env, runner: &dyn Runner, backend: &dyn Backend, generation: &Generation, then: &MawState, now: &MawState) -> Result<BackendPlan, RollbackError> {
+fn plan_backend(env: &Env, runner: &dyn Runner, src: &SrcPkgs, backend: &dyn Backend, generation: &Generation, then: &MawState, now: &MawState) -> Result<BackendPlan, RollbackError> {
     let name = backend.name();
     let target = |spec: &str| Target { backend: name.into(), spec: spec.into() };
     let installed = backend.list()?;
@@ -115,16 +118,16 @@ fn plan_backend(env: &Env, runner: &dyn Runner, backend: &dyn Backend, generatio
         .cloned()
         .collect();
 
-    // xbps versions come from the cache or the repo; cargo and go fetch any version themselves
-    let (versions, kept): (Vec<String>, Vec<String>) = wanted.into_iter().partition(|pin| name != "xbps" || available(env, runner, pin));
-    let kept = kept.into_iter().map(|pin| (target(&pin_base(name, &pin)), format!("{pin} isn't in the cache or the repo"))).collect();
+    // xbps versions come from the cache, an earlier source build, or the repo; cargo and go fetch any version themselves
+    let (versions, kept): (Vec<String>, Vec<String>) = wanted.into_iter().partition(|pin| name != "xbps" || available(env, runner, src, pin));
+    let kept = kept.into_iter().map(|pin| (target(&pin_base(name, &pin)), format!("{pin} isn't in the cache, binpkgs, or the repo"))).collect();
     Ok((versions.iter().map(|pin| target(pin)).collect(), removes, kept))
 }
 
-// an xbps version the cache kept, or the repo's current one
-fn available(env: &Env, runner: &dyn Runner, pkgver: &str) -> bool {
+// an xbps version the cache kept, xbps-src built earlier, or the repo's current one
+fn available(env: &Env, runner: &dyn Runner, src: &SrcPkgs, pkgver: &str) -> bool {
     let xbps = Xbps::new(runner, env);
-    xbps.cached(pkgver).is_some() || split_pkgver(pkgver).is_some_and(|(name, _)| xbps.info(&name).ok().flatten().is_some_and(|pkg| xbps.pin(&pkg) == pkgver))
+    xbps.cached(pkgver).is_some() || src.built(pkgver).is_some() || split_pkgver(pkgver).is_some_and(|(name, _)| xbps.info(&name).ok().flatten().is_some_and(|pkg| xbps.pin(&pkg) == pkgver))
 }
 
 // everything a rollback to a generation would change in packages, without changing it
@@ -132,12 +135,13 @@ pub fn plan(env: &Env, runner: &dyn Runner, repo: &Repo, number: Option<u32>) ->
     let generation = target(env, number)?;
     let then = state_at(env, runner, repo, &generation.commit)?;
     let (_, now) = edit::load(env, runner, repo)?;
+    let src = packages::srcpkgs(env, runner, repo)?;
 
     // every backend's plan, merged
     let per_backend = NAMES
         .iter()
         .filter_map(|name| backend::for_name(name, runner, env))
-        .map(|backend| plan_backend(env, runner, backend.as_ref(), &generation, &then, &now))
+        .map(|backend| plan_backend(env, runner, &src, backend.as_ref(), &generation, &then, &now))
         .collect::<Result<Vec<_>, _>>()?;
     let (mut versions, mut removes, mut kept) = (Vec::new(), Vec::new(), Vec::new());
     per_backend.into_iter().for_each(|(backend_versions, backend_removes, backend_kept)| {
@@ -184,13 +188,26 @@ pub fn rollback(env: &Env, runner: &dyn Runner, repo: &Repo, plan: &Plan) -> Res
     // old holds come off first, since a held package can't change version
     let xbps = Xbps::new(runner, env);
     release(env, runner)?;
+    let src = packages::srcpkgs(env, runner, repo)?;
     by_backend(&plan.versions).into_iter().try_for_each(|(name, specs)| match name.as_str() {
-        "xbps" => xbps.install_versions(&specs),
+        "xbps" => install_xbps_versions(&xbps, &src, &specs),
         _ => backend::for_name(&name, runner, env).unwrap().install(&specs),
     })?;
     if !plan.holds.is_empty() {
         xbps.hold(&plan.holds, true)?;
         save_json(&held_file(env), &plan.holds)?;
+    }
+    Ok(())
+}
+
+// xbps versions that only an earlier source build has come from binpkgs; the rest from the cache or the repo
+fn install_xbps_versions(xbps: &Xbps, src: &SrcPkgs, pkgvers: &[String]) -> Result<(), BackendError> {
+    let (built, others): (Vec<String>, Vec<String>) = pkgvers.iter().cloned().partition(|pkgver| xbps.cached(pkgver).is_none() && src.built(pkgver).is_some());
+    if !built.is_empty() {
+        xbps.install_from(&src.binpkgs(), &built, true)?;
+    }
+    if !others.is_empty() {
+        xbps.install_versions(&others)?;
     }
     Ok(())
 }
@@ -258,7 +275,7 @@ mod tests {
 
         let plan = plan(&fixture.env, &fixture.runner, &fixture.repo, Some(1)).unwrap();
         assert!(plan.versions.is_empty());
-        assert_eq!(plan.kept, [(xbps("bash"), "bash-5.0_1 isn't in the cache or the repo".to_string())]);
+        assert_eq!(plan.kept, [(xbps("bash"), "bash-5.0_1 isn't in the cache, binpkgs, or the repo".to_string())]);
     }
 
     #[test]

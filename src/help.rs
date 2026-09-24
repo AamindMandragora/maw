@@ -121,7 +121,7 @@ fn styled_spans(text: &str, marker: &str, code: Option<&str>) -> String {
         .collect()
 }
 
-// [text](target): another doc becomes `maw help <name>`, anything else just its text
+// [text](target): another doc becomes `maw help <name>`, a web link keeps its address, an anchor is just its text
 fn links(line: &str) -> String {
     let Some(start) = line.find('[') else { return line.to_string() };
     let Some(middle) = line[start..].find("](").map(|offset| start + offset) else { return line.to_string() };
@@ -129,8 +129,9 @@ fn links(line: &str) -> String {
 
     let text = &line[start + 1..middle];
     let target = &line[middle + 2..end];
-    let replacement = match target.strip_suffix(".md") {
+    let replacement = match target.strip_suffix(".md").filter(|doc| !doc.contains('/')) {
         Some(doc) => format!("`maw help {doc}`"),
+        None if target.starts_with("http") => format!("{text} ({target})"),
         None => text.to_string(),
     };
     format!("{}{replacement}{}", &line[..start], links(&line[end + 1..]))
@@ -180,6 +181,11 @@ mod tests {
     }
 
     #[test]
+    fn web_links_keep_their_address() {
+        assert_eq!(links("see the [manual](https://example.org/Manual.md)."), "see the manual (https://example.org/Manual.md).");
+    }
+
+    #[test]
     fn color_render_styles_code_and_headings() {
         let rendered = render("## Title\n`x`\n", true);
         assert_eq!(rendered, "\x1b[1mTitle\x1b[0m\n\x1b[33mx\x1b[0m\n");
@@ -187,7 +193,8 @@ mod tests {
 
     #[test]
     fn every_doc_link_points_at_a_topic() {
-        TOPICS.iter().flat_map(|topic| topic.text.lines()).filter(|line| line.contains(".md)")).for_each(|line| {
+        let is_topic_link = |line: &&str| line.contains(".md)") && !line.contains("](http");
+        TOPICS.iter().flat_map(|topic| topic.text.lines()).filter(is_topic_link).for_each(|line| {
             let rendered = links(line);
             let doc = rendered.split("maw help ").nth(1).unwrap().split('`').next().unwrap();
             assert!(find(doc).is_some(), "{line}");

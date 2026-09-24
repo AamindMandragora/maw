@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub mod cargo;
 pub mod go;
+pub mod srcpkgs;
 pub mod xbps;
 
 // every backend, in the order a bare `maw install foo` tries them after xbps
@@ -17,6 +18,10 @@ pub enum BackendError {
     Parse { backend: String, line: String },
     #[error("{path}: {source}")]
     Io { path: PathBuf, source: std::io::Error },
+    #[error("void-packages already has a package named {0}; pick another name for your template")]
+    Taken(String),
+    #[error("srcpkgs/{0}/template already exists")]
+    TemplateExists(String),
 }
 
 // one package as a backend reports it; source is what maw.nix declares (crate name, git url, go path)

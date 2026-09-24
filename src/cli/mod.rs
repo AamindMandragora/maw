@@ -134,6 +134,11 @@ enum Command {
     Push,
     #[command(about = "pull the repo from its remote, then activate", after_help = "see: maw help sharing")]
     Pull,
+    #[command(about = "packages built from your own xbps-src templates in srcpkgs/", after_help = "see: maw help source packages")]
+    Src {
+        #[command(subcommand)]
+        action: SrcAction,
+    },
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
         #[arg(help = "usage, modules, formats, a command, or a heading like `drift`")]
@@ -155,6 +160,14 @@ enum SvAction {
     Restart(ServiceName),
     #[command(about = "follow a service's log")]
     Log(ServiceName),
+}
+
+#[derive(Subcommand)]
+enum SrcAction {
+    #[command(about = "write a blank srcpkgs/<name>/template and open it")]
+    New { name: String },
+    #[command(about = "build a template with xbps-src; an installed package is upgraded to the new build")]
+    Build { name: String },
 }
 
 #[derive(clap::Args)]
@@ -214,6 +227,7 @@ pub fn main() -> Result<()> {
         Command::Sync { release } => sync(&env, &runner, release),
         Command::Rollback { generation, dry_run } => rollback(&env, &runner, generation, dry_run),
         Command::Sv { action } => sv(&env, &runner, action),
+        Command::Src { action } => src(&env, &runner, action),
         Command::Help { query } => show_help(&runner, &query.join(" ")),
     }
 }
@@ -379,7 +393,8 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
         Step::Restart { scope, name } => line("restart", service_label(*scope, name)),
     });
 
-    // things maw.nix doesn't know about, then config for programs that aren't installed
+    // source packages behind their template, things maw.nix doesn't know about, then config for programs that aren't installed
+    report.outdated.iter().for_each(|(name, installed, template)| line("outdated", format!("{name} {installed} -> {template} (maw src build {name})")));
     report.undeclared.iter().for_each(|candidate| line("undeclared", candidate_label(candidate)));
     report.orphans.iter().for_each(|name| {
         let module = repo.module_file(name);
@@ -448,6 +463,8 @@ fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -
     let repo = Repo::locate(env)?;
     let ask: Option<&dyn Ask> = if dry_run { None } else { Some(&Terminal) };
     let change = packages::plan_install(env, runner, &repo, requests, ask)?;
+    let built = |target: &&packages::Target| target.backend == "xbps" && repo.srcpkgs_dir().join(&target.spec).join("template").is_file();
+    change.packages.iter().filter(built).for_each(|target| println!("build {}", target.spec));
     print_change(&change, "install", "record {} in maw.nix");
     if dry_run {
         println!("dry run, nothing changed");
@@ -586,6 +603,29 @@ fn help_text(query: &str, color: bool) -> Option<String> {
     match command.find_subcommand_mut(query) {
         Some(subcommand) => Some(subcommand.render_long_help().to_string()),
         None => help::find(query).map(render),
+    }
+}
+
+// runs one src subcommand
+fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    match action {
+        SrcAction::New { name } => {
+            let git = |key: &str| runner.run("git", &["-C".into(), repo.root.display().to_string(), "config".into(), key.into()]).unwrap_or_default().trim().to_string();
+            let maintainer = format!("{} <{}>", git("user.name"), git("user.email"));
+            let template = packages::srcpkgs(env, runner, &repo)?.new_template(&name, &maintainer)?;
+            println!("create {}", relative(&repo, &template));
+            let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
+            Ok(edit::open_editor(runner, &editor, &template)?)
+        }
+        SrcAction::Build { name } => {
+            let upgraded = packages::build_source(env, runner, &repo, &name)?;
+            println!("{} {name}", if upgraded { "build and upgrade" } else { "build" });
+            if upgraded {
+                activate_after(env, runner, &repo, vec![format!("rebuild {name}")])?;
+            }
+            Ok(())
+        }
     }
 }
 

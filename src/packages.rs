@@ -1,5 +1,7 @@
 use crate::activate::Ask;
 use crate::backend::cargo::Cargo;
+use crate::backend::srcpkgs::SrcPkgs;
+use crate::build::{self, BuildError};
 use crate::backend::xbps::Xbps;
 use crate::backend::{self, Backend, BackendError, NAMES, Pkg, spec_base, spec_program};
 use crate::edit::{self, EditError};
@@ -27,6 +29,16 @@ pub enum PackagesError {
     Edit(#[from] EditError),
     #[error(transparent)]
     State(#[from] StateError),
+    #[error(transparent)]
+    Build(#[from] BuildError),
+    #[error("no template srcpkgs/{0}/template; create one with `maw src new {0}`")]
+    NoTemplate(String),
+}
+
+// the source builds for this repo: its srcpkgs/ templates, built in the configured void-packages clone
+pub fn srcpkgs<'a>(env: &Env, runner: &'a dyn Runner, repo: &Repo) -> Result<SrcPkgs<'a>, PackagesError> {
+    let settings = build::settings(env, runner, repo)?;
+    Ok(SrcPkgs::new(runner, env, &repo.srcpkgs_dir(), &settings.void_packages(env)))
 }
 
 // a package in one backend, as maw.nix declares it: "foot", "bat@0.24", a git url, a go path
@@ -68,6 +80,7 @@ struct Context<'a> {
     state: MawState,
     registry: Registry,
     installed: BTreeMap<String, HashSet<String>>,
+    src: SrcPkgs<'a>,
 }
 
 impl<'a> Context<'a> {
@@ -79,7 +92,7 @@ impl<'a> Context<'a> {
             .iter()
             .map(|backend| Ok((backend.name().to_string(), backend.list()?.into_iter().flat_map(|pkg| [pkg.source, pkg.name]).collect())))
             .collect::<Result<_, BackendError>>()?;
-        Ok(Context { backends, state, registry, installed })
+        Ok(Context { backends, state, registry, installed, src: srcpkgs(env, runner, repo)? })
     }
 
     fn backend(&self, name: &str) -> &dyn Backend {
@@ -96,7 +109,7 @@ impl<'a> Context<'a> {
         declared(&self.state, backend).into_iter().find(|spec| spec_base(spec) == wanted || spec_program(spec) == wanted)
     }
 
-    // the backend a bare request belongs to: already declared, xbps, then crates.io once the user agrees
+    // the backend a bare request belongs to: already declared, a srcpkgs template (built for xbps), xbps, then crates.io once the user agrees
     fn resolve(&self, request: &str, ask: Option<&dyn Ask>) -> Result<Target, PackagesError> {
         let target = |backend: &str, spec: &str| Target { backend: backend.into(), spec: spec.into() };
         if let Some((backend, spec)) = request.split_once(':').filter(|(backend, _)| NAMES.contains(backend)) {
@@ -105,7 +118,7 @@ impl<'a> Context<'a> {
         if let Some((backend, spec)) = NAMES.iter().find_map(|backend| Some((*backend, self.declared_as(backend, request)?))) {
             return Ok(target(backend, &spec));
         }
-        if self.is_installed(&target("xbps", request)) || self.backend("xbps").info(request)?.is_some() {
+        if self.src.has(request) || self.is_installed(&target("xbps", request)) || self.backend("xbps").info(request)?.is_some() {
             return Ok(target("xbps", request));
         }
 
@@ -142,8 +155,9 @@ pub fn plan_install(env: &Env, runner: &dyn Runner, repo: &Repo, requests: &[Str
     let targets = requests.iter().map(|request| context.resolve(request, ask)).collect::<Result<Vec<_>, _>>()?;
     let packages: Vec<Target> = targets.iter().filter(|target| !context.is_installed(target)).cloned().collect();
 
-    // anything not installed yet has to exist where it's going to come from, and be a program
-    packages.iter().try_for_each(|target| match context.backend(&target.backend).info(&target.spec)? {
+    // anything not installed yet has to exist where it's going to come from, and be a program; a template is its own source
+    let from_repos = packages.iter().filter(|target| !(target.backend == "xbps" && context.src.has(&target.spec)));
+    from_repos.into_iter().try_for_each(|target| match context.backend(&target.backend).info(&target.spec)? {
         None => Err(PackagesError::NotFound(target.spec.clone())),
         Some(pkg) if is_library(&pkg) => Err(PackagesError::Library(target.spec.clone())),
         Some(_) => Ok(()),
@@ -164,12 +178,9 @@ fn is_library(pkg: &Pkg) -> bool {
     pkg.programs.as_ref().is_some_and(|programs| programs.is_empty())
 }
 
-// installs, records in maw.nix, and scaffolds modules, as planned; activating afterwards is up to the caller
+// installs (building srcpkgs templates first), records in maw.nix, and scaffolds modules, as planned; activating afterwards is up to the caller
 pub fn install(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> Result<(), PackagesError> {
-    grouped(&change.packages).into_iter().try_for_each(|(name, specs)| {
-        let backend = backend::for_name(&name, runner, env).unwrap();
-        backend.install(&specs)
-    })?;
+    install_targets(env, runner, repo, &change.packages)?;
 
     let (_, mut state) = edit::load(env, runner, repo)?;
     if !change.recorded.is_empty() {
@@ -178,6 +189,42 @@ pub fn install(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> 
     }
     change.scaffolded.iter().try_for_each(|program| edit::new_module(env, runner, repo, program, None).map(|_| ()))?;
     Ok(())
+}
+
+// installs targets per backend; xbps names with a srcpkgs template are built and installed from binpkgs instead
+pub fn install_targets(env: &Env, runner: &dyn Runner, repo: &Repo, targets: &[Target]) -> Result<(), PackagesError> {
+    let src = srcpkgs(env, runner, repo)?;
+    let (built, fetched): (Vec<Target>, Vec<Target>) = targets.iter().cloned().partition(|target| target.backend == "xbps" && src.has(&target.spec));
+    if !built.is_empty() {
+        src.install(&built.into_iter().map(|target| target.spec).collect::<Vec<_>>(), false)?;
+    }
+    Ok(grouped(&fetched).into_iter().try_for_each(|(name, specs)| backend::for_name(&name, runner, env).unwrap().install(&specs))?)
+}
+
+// rebuilds a srcpkgs template; an installed package is reinstalled at the new build. Returns whether it was
+pub fn build_source(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str) -> Result<bool, PackagesError> {
+    let src = srcpkgs(env, runner, repo)?;
+    if !src.has(name) {
+        return Err(PackagesError::NoTemplate(name.into()));
+    }
+    let installed = Xbps::new(runner, env).list()?.iter().any(|pkg| pkg.name == name);
+    match installed {
+        true => src.install(&[name.to_string()], true)?,
+        false => src.build(&[name.to_string()])?,
+    }
+    Ok(installed)
+}
+
+// declared source packages whose installed version isn't the template's, as (name, installed, template)
+pub fn outdated(env: &Env, runner: &dyn Runner, repo: &Repo, state: &MawState) -> Result<Vec<(String, String, String)>, PackagesError> {
+    let src = srcpkgs(env, runner, repo)?;
+    let installed = Xbps::new(runner, env).list()?;
+    let stale = declared(state, "xbps").into_iter().filter_map(|name| {
+        let template = src.version(&name)?;
+        let current = installed.iter().find(|pkg| pkg.name == name)?.version.clone();
+        (current != template).then_some((name, current, template))
+    });
+    Ok(stale.collect())
 }
 
 // specs per backend, in backend order
@@ -487,6 +534,50 @@ mod tests {
         assert_eq!(backends("foot"), ["foot"]);
         assert_eq!(backends("bat"), ["cargo:bat"]);
         assert_eq!(backends("cargo:ripgrep"), ["cargo:ripgrep"]);
+    }
+
+    // a srcpkgs template in the repo and a clone that's already set up, so nothing is ever really cloned
+    fn template(fixture: &Fixture, name: &str, version: &str) -> PathBuf {
+        let clone = fixture.env.home.join(".local/share/maw/void-packages");
+        crate::testing::write(&clone.join("xbps-src"), "");
+        let (version, revision) = version.split_once('_').unwrap();
+        crate::testing::write(&fixture.repo.srcpkgs_dir().join(name).join("template"), &format!("pkgname={name}\nversion={version}\nrevision={revision}\n"));
+        clone
+    }
+
+    #[test]
+    fn a_template_makes_a_bare_name_a_source_build() {
+        let fixture = fixture(&[]);
+        let clone = template(&fixture, "hello", "0.1_1");
+        apply(&fixture, &["hello"]);
+
+        let xbps_src = clone.join("xbps-src").display().to_string();
+        assert!(fixture.runner.calls.borrow().contains(&format!("{xbps_src} pkg hello")));
+        let root = fixture.env.sysroot.display();
+        assert_eq!(calls(&fixture, "xbps-install"), [format!("xbps-install -r {root} -R {} -y hello", clone.join("hostdir/binpkgs").display())]);
+        assert!(maw_nix(&fixture).contains(r#"xbps = [ "hello" ];"#));
+    }
+
+    #[test]
+    fn templates_ahead_of_what_is_installed_are_outdated() {
+        let fixture = fixture(&[]);
+        template(&fixture, "bash", "5.3_1");
+        apply(&fixture, &["bash"]);
+        let (_, state) = edit::load(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
+        let stale = outdated(&fixture.env, &fixture.runner, &fixture.repo, &state).unwrap();
+        assert_eq!(stale, [("bash".to_string(), "5.2_1".to_string(), "5.3_1".to_string())]);
+    }
+
+    #[test]
+    fn building_upgrades_only_what_is_installed() {
+        let fixture = fixture(&[]);
+        template(&fixture, "bash", "5.3_1");
+        template(&fixture, "hello", "0.1_1");
+        assert!(build_source(&fixture.env, &fixture.runner, &fixture.repo, "bash").unwrap());
+        assert!(!build_source(&fixture.env, &fixture.runner, &fixture.repo, "hello").unwrap());
+        assert_eq!(calls(&fixture, "xbps-install").len(), 1);
+        assert!(calls(&fixture, "xbps-install")[0].ends_with("-fy bash"));
+        assert!(matches!(build_source(&fixture.env, &fixture.runner, &fixture.repo, "nope"), Err(PackagesError::NoTemplate(_))));
     }
 
     #[test]

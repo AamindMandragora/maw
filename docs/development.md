@@ -19,7 +19,7 @@ src/
   status.rs       # status and diff, planned without writing
   help.rs         # maw help: the user docs, compiled in and rendered for the terminal
   packages.rs     # install and remove: plan, run the backend, record in maw.nix, scaffold modules
-  backend/        # Backend and SystemBackend traits; xbps.rs, cargo.rs, go.rs
+  backend/        # Backend and SystemBackend traits; xbps.rs, cargo.rs, go.rs, srcpkgs.rs (xbps-src builds)
   init/           # InitBackend trait and runit.rs: service files, links, sv control
   system.rs       # activation's root half: sudo copies, service enable/disable/restart
   services.rs     # maw sv: list, enable, disable, status, restart, log
@@ -60,6 +60,8 @@ MAW_SYSROOT=$R maw install tzdata
 ```
 
 A root without `var/db/xbps` counts as having nothing installed. Root copies and system services work the same way: with `MAW_SYSROOT` set, `install`, `ln`, and `sv` run without `sudo` inside the scratch root. To watch services really run there, start a supervisor over each dir yourself: `runsvdir $R/var/service &` and `runsvdir $HOME/.config/service &`.
+
+Source builds are only ever faked in tests: the fixture pre-creates the clone's `xbps-src`, so nothing is cloned, and `xbps-src` calls are recorded rather than run.
 
 cargo and go follow `HOME`, so a scratch `HOME` keeps their installs out of your real `~/.cargo` and go dir. rustup reads `HOME` too; point it back at your toolchains and unset any `GOPATH` from your shell:
 

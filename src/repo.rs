@@ -100,6 +100,10 @@ impl Repo {
         self.root.join("out")
     }
 
+    pub fn srcpkgs_dir(&self) -> PathBuf {
+        self.root.join("srcpkgs")
+    }
+
     pub fn static_dir(&self) -> PathBuf {
         self.root.join("static")
     }

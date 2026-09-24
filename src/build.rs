@@ -88,11 +88,23 @@ pub struct Settings {
     // commit the repo and record a generation after each activation that changes something
     #[serde(default = "yes")]
     pub auto_commit: bool,
+    // where maw keeps its void-packages clone for building srcpkgs; ~/ is home
+    pub void_packages: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_commit: true }
+        Settings { auto_commit: true, void_packages: None }
+    }
+}
+
+impl Settings {
+    // the void-packages clone: the configured path (~/ is home, relative is under home), else maw's own under ~/.local/share
+    pub fn void_packages(&self, env: &Env) -> PathBuf {
+        match self.void_packages.as_deref() {
+            Some(path) => env.home.join(path.strip_prefix("~/").unwrap_or(path)),
+            None => env.home.join(".local/share/maw/void-packages"),
+        }
     }
 }
 
@@ -116,16 +128,9 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let inputs_file = env.state_dir.join("inputs");
     let mut inputs = Inputs::load(&inputs_file)?;
 
-    // anything every module depends on: config.nix, maw.nix, the maw lib
-    let lib_hash = combine(&[
-        &inputs.hash(&env.nix_dir().join("lib.nix"))?,
-        &inputs.hash(&env.nix_dir().join("default.nix"))?,
-        env!("CARGO_PKG_VERSION"),
-    ]);
-    let shared_hash = combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash]);
+    let shared_hash = shared_hash(env, repo, &mut inputs)?;
     let (registry, state) = load_registry(env, runner, repo, &mut inputs)?;
-    let settings_value = eval::eval_settings(runner, env, &repo.root, &shared_hash)?;
-    let settings: Settings = serde_json::from_value(settings_value).map_err(|source| EvalError::Shape { what: "config.nix maw".into(), source })?;
+    let settings = eval_settings(env, runner, repo, &shared_hash)?;
 
     // evaluate each module, keyed by its own file plus the shared inputs
     let modules = repo
@@ -188,6 +193,30 @@ fn place_all(env: &Env, outputs: &[Output], options: Options) -> Result<Vec<Plac
         save_json(&recorded_file, &now_recorded)?;
     }
     Ok(placements)
+}
+
+// what every module depends on: config.nix, maw.nix, and the maw lib
+fn shared_hash(env: &Env, repo: &Repo, inputs: &mut Inputs) -> Result<String, BuildError> {
+    let lib_hash = combine(&[
+        &inputs.hash(&env.nix_dir().join("lib.nix"))?,
+        &inputs.hash(&env.nix_dir().join("default.nix"))?,
+        env!("CARGO_PKG_VERSION"),
+    ]);
+    Ok(combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash]))
+}
+
+fn eval_settings(env: &Env, runner: &dyn Runner, repo: &Repo, key: &str) -> Result<Settings, BuildError> {
+    let value = eval::eval_settings(runner, env, &repo.root, key)?;
+    Ok(serde_json::from_value(value).map_err(|source| EvalError::Shape { what: "config.nix maw".into(), source })?)
+}
+
+// maw's settings alone, without building any module
+pub fn settings(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Settings, BuildError> {
+    let inputs_file = env.state_dir.join("inputs");
+    let mut inputs = Inputs::load(&inputs_file)?;
+    let key = shared_hash(env, repo, &mut inputs)?;
+    inputs.save(&inputs_file)?;
+    eval_settings(env, runner, repo, &key)
 }
 
 // shipped registry plus maw.nix path answers, each evaluated only when its file changed
@@ -376,6 +405,15 @@ mod tests {
         assert_eq!(scripts.destination, fixture.env.home.join(".local/bin/config"));
         assert!(scripts.executable && is_executable(&scripts.out));
         assert_eq!(report.outputs[0].destination, fixture.env.home.join(".config/foot/foot.ini"));
+    }
+
+    #[test]
+    fn void_packages_defaults_to_maws_own_clone() {
+        let env = Env::new(Path::new("/h"), Path::new("/"), Path::new("/s"));
+        let settings = |path: Option<&str>| Settings { void_packages: path.map(String::from), ..Settings::default() };
+        assert_eq!(settings(None).void_packages(&env), PathBuf::from("/h/.local/share/maw/void-packages"));
+        assert_eq!(settings(Some("~/src/vp")).void_packages(&env), PathBuf::from("/h/src/vp"));
+        assert_eq!(settings(Some("/opt/vp")).void_packages(&env), PathBuf::from("/opt/vp"));
     }
 
     #[test]

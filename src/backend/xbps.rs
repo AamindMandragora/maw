@@ -32,6 +32,13 @@ impl<'a> Xbps<'a> {
         as_root(self.runner, &self.sysroot, program, &args)
     }
 
+    // installs names or exact versions with a local repo added, like xbps-src's hostdir/binpkgs; force allows downgrades
+    pub fn install_from(&self, repo: &Path, specs: &[String], force: bool) -> Result<(), BackendError> {
+        let flags = if force { "-fy" } else { "-y" };
+        let args: Vec<String> = ["-R".to_string(), repo.display().to_string(), flags.into()].into_iter().chain(specs.iter().cloned()).collect();
+        Ok(self.privileged("xbps-install", &args)?)
+    }
+
     // where xbps keeps every package it downloaded
     fn cache_dir(&self) -> PathBuf {
         self.sysroot.join("var/cache/xbps")
@@ -128,8 +135,7 @@ impl SystemBackend for Xbps<'_> {
         if !files.is_empty() {
             as_root(self.runner, &self.sysroot, "xbps-rindex", &["-a".to_string()].into_iter().chain(files).collect::<Vec<_>>())?;
         }
-        let args: Vec<String> = ["-R".to_string(), self.cache_dir().display().to_string(), "-fy".into()].into_iter().chain(pkgvers.iter().cloned()).collect();
-        Ok(self.privileged("xbps-install", &args)?)
+        self.install_from(&self.cache_dir(), pkgvers, true)
     }
 
     fn hold(&self, names: &[String], hold: bool) -> Result<(), BackendError> {

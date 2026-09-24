@@ -211,6 +211,7 @@ The one report of everything out of sync, one line each, or `clean`. First what 
 | `restart` | a running service's files changed |
 | `undeclared` | installed by hand or enabled, but not in `maw.nix`; see [adopting](#adopting) |
 | `orphan` | a module or `static/` dir for a program that isn't installed |
+| `outdated` | a source package whose template is at a newer version than what's installed; see [source packages](#source-packages) |
 
 A program counts as installed when any source has a package by that name or a command by that name is on your `PATH`, so `static/nvim/` is fine with the `neovim` package. Data dirs like `fonts` and `wallpapers` are never orphans.
 
@@ -324,6 +325,26 @@ maw info bat        # details, plus whether maw manages it
 
 `query` lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: `(undeclared)` for installed but not in `maw.nix`, `(missing)` for declared but not installed. Crates and go programs are marked with their source. `search` prints names the way `maw install` takes them. `info` shows the version, whether it's installed and declared, the module or `static/` dir holding its config, and where the registry puts that config.
 
+### Source packages
+
+Anything the Void repos don't have, you can build yourself with an xbps-src template in `srcpkgs/<name>/template`:
+
+```sh
+maw src new hello        # writes a blank template and opens it
+maw install hello        # builds it with xbps-src, installs it, records it
+maw src build hello      # rebuilds after you change the template
+```
+
+A name with a template in `srcpkgs/` is always a source build, and it's recorded under `packages.xbps` like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the [Void manual on templates](https://github.com/void-linux/void-packages/blob/master/Manual.md).
+
+Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-packages`. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is linked into the clone's `srcpkgs/` and built with `xbps-src pkg <name>`, and the package is installed from the clone's `hostdir/binpkgs`. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in `config.nix`:
+
+```nix
+maw.voidPackages = "~/void-packages";
+```
+
+Activation builds and installs a declared source package that isn't installed at all. It doesn't rebuild on its own when you change a template: `maw status` shows `outdated hello 0.1_1 -> 0.2_1`, and `maw src build hello` rebuilds it and upgrades the installed package.
+
 ### Updating
 
 ```sh
@@ -436,7 +457,7 @@ A rollback is itself a new generation, so history only moves forward and you can
 2. removes packages declared now but not then, and puts every package declared then back at the version that generation recorded,
 3. activates, which relinks config and re-enables services the way they were.
 
-Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. crates and go programs are reinstalled at their recorded version.
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's `hostdir/binpkgs`, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. crates and go programs are reinstalled at their recorded version.
 
 xbps packages left behind the repo's newest version are held, so `maw sync` doesn't undo the rollback. They stay held until `maw sync --release`, or until a later rollback puts them back at the newest version.
 

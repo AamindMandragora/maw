@@ -37,6 +37,8 @@ pub enum StatusError {
     Adopt(#[from] AdoptError),
     #[error(transparent)]
     Backend(#[from] BackendError),
+    #[error(transparent)]
+    Packages(#[from] crate::packages::PackagesError),
 }
 
 // everything out of sync: pending steps, things maw.nix doesn't know about, and config for programs that aren't there
@@ -45,11 +47,13 @@ pub struct Full {
     pub steps: Vec<Step>,
     pub undeclared: Vec<Candidate>,
     pub orphans: Vec<String>,
+    // source packages behind their template, as (name, installed, template)
+    pub outdated: Vec<(String, String, String)>,
 }
 
 impl Full {
     pub fn is_clean(&self) -> bool {
-        self.steps.is_empty() && self.undeclared.is_empty() && self.orphans.is_empty()
+        self.steps.is_empty() && self.undeclared.is_empty() && self.orphans.is_empty() && self.outdated.is_empty()
     }
 }
 
@@ -58,7 +62,8 @@ pub fn report(env: &Env, runner: &dyn Runner, repo: &Repo, path_var: &str) -> Re
     let planned = activate::plan_activation(env, runner, repo, Options { dry_run: true, force: false })?;
     let orphans = orphans(env, runner, repo, &planned.build, path_var)?;
     let undeclared = adopt::candidates(env, runner, repo)?;
-    Ok(Full { steps: pending(planned), undeclared, orphans })
+    let outdated = crate::packages::outdated(env, runner, repo, &planned.build.state)?;
+    Ok(Full { steps: pending(planned), undeclared, orphans, outdated })
 }
 
 // modules and static dirs whose program isn't there: no installed package by that name, and no such command on PATH

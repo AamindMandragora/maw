@@ -6,6 +6,7 @@ use crate::env::Env;
 use crate::init::Scope;
 use crate::inputs::{Inputs, InputsError, load_json, save_json};
 use crate::registry::{self, Registry};
+use crate::packages::{self, PackagesError, Target};
 use crate::repo::Repo;
 use crate::runner::{RunError, Runner};
 use crate::state::{MawState, PathAnswer, StateError};
@@ -30,6 +31,8 @@ pub enum ActivateError {
     UnknownBackend(String),
     #[error(transparent)]
     Run(#[from] RunError),
+    #[error(transparent)]
+    Packages(Box<PackagesError>),
     #[error("no {scope} service {name}: nothing in its definition dir and no module defines it")]
     UnknownService { scope: Scope, name: String },
     #[error("{destination} comes from both {first} and {second}")]
@@ -129,7 +132,7 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
         return Ok(Activation { build: planned.build, steps: planned.steps, backups: Vec::new(), answered });
     }
 
-    install_missing(env, runner, &planned.steps)?;
+    install_missing(env, runner, repo, &planned.steps)?;
     let mut backups = apply(env, &planned.steps, &planned.wanted)?;
     backups.extend(system::apply(env, runner, &planned.steps, &planned.copies)?);
     if planned.next != planned.manifest {
@@ -189,23 +192,19 @@ fn missing_packages(env: &Env, runner: &dyn Runner, state: &MawState) -> Result<
     Ok(per_backend.concat())
 }
 
-// installs every missing package, one call per backend
-fn install_missing(env: &Env, runner: &dyn Runner, steps: &[Step]) -> Result<(), ActivateError> {
-    let by_backend = steps
+// installs every missing package, building srcpkgs templates first
+fn install_missing(env: &Env, runner: &dyn Runner, repo: &Repo, steps: &[Step]) -> Result<(), ActivateError> {
+    let targets: Vec<Target> = steps
         .iter()
         .filter_map(|step| match step {
-            Step::Install { backend, package } => Some((backend, package)),
+            Step::Install { backend, package } => Some(Target { backend: backend.clone(), spec: package.clone() }),
             _ => None,
         })
-        .fold(BTreeMap::<&String, Vec<String>>::new(), |mut by_backend, (backend, package)| {
-            by_backend.entry(backend).or_default().push(package.clone());
-            by_backend
-        });
-
-    by_backend.into_iter().try_for_each(|(name, packages)| {
-        let backend = backend::for_name(name, runner, env).ok_or_else(|| ActivateError::UnknownBackend(name.clone()))?;
-        Ok(backend.install(&packages)?)
-    })
+        .collect();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    packages::install_targets(env, runner, repo, &targets).map_err(|error| ActivateError::Packages(Box::new(error)))
 }
 
 // the plan, plus the manifest it leaves behind once applied
