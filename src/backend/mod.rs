@@ -62,6 +62,15 @@ pub trait Backend {
 pub trait SystemBackend: Backend {
     // refreshes the repo index and upgrades everything
     fn sync(&self) -> Result<(), BackendError>;
+
+    // the cached package file of an exact version, if the local cache kept it
+    fn cached(&self, pkgver: &str) -> Option<PathBuf>;
+
+    // installs exact versions, downgrading if needed; cached ones come from the cache
+    fn install_versions(&self, pkgvers: &[String]) -> Result<(), BackendError>;
+
+    // holds packages so upgrades skip them, or releases them
+    fn hold(&self, names: &[String], hold: bool) -> Result<(), BackendError>;
 }
 
 // the backend a maw.nix packages key names

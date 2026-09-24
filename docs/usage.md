@@ -330,7 +330,7 @@ maw info bat        # details, plus whether maw manages it
 maw sync
 ```
 
-Upgrades the system (`xbps-install -Su`), then every crate and go program that isn't pinned to a version. Pinned ones stay put until you install a different version.
+Upgrades the system (`xbps-install -Su`), then every crate and go program that isn't pinned to a version. Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
 
 ## Services
 
@@ -414,6 +414,32 @@ maw commit -m "try a lighter bar"
 maw commit            # git opens your editor for the message
 ```
 
+### Rolling back
+
+```sh
+maw rollback            # to the generation before the latest
+maw rollback 11         # to generation 11
+maw rollback --dry-run
+```
+
+```
+restore generation 11 (e761146)
+remove cargo:bat
+install libportal-0.10.0_1
+keep firefox: firefox-150.0_1 isn't in the cache or the repo
+hold libportal
+```
+
+A rollback is itself a new generation, so history only moves forward and you can roll back a rollback. It:
+
+1. restores the repo to that generation's commit (it needs no uncommitted changes, so `maw commit` first),
+2. removes packages declared now but not then, and puts every package declared then back at the version that generation recorded,
+3. activates, which relinks config and re-enables services the way they were.
+
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. crates and go programs are reinstalled at their recorded version.
+
+xbps packages left behind the repo's newest version are held, so `maw sync` doesn't undo the rollback. They stay held until `maw sync --release`, or until a later rollback puts them back at the newest version.
+
 ### Sharing
 
 ```sh
@@ -459,6 +485,7 @@ maw keeps its own bookkeeping outside the repo:
 ~/.local/state/maw/manifest  # every link and root copy the last activation made, with content hashes, and the services it enabled
 ~/.local/state/maw/backups/  # files moved aside, mirrored by path under home (system/ for the rest)
 ~/.local/state/maw/generations  # one line per generation: number, time, commit, message, package versions
+~/.local/state/maw/held      # xbps packages a rollback is holding back
 ```
 
 `inputs` and `cache/` are safe to delete. Deleting `outputs` or `manifest` makes maw forget what it wrote, so drift goes unnoticed until the next activation.

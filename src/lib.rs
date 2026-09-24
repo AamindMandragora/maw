@@ -14,6 +14,7 @@ pub mod eval;
 pub mod inputs;
 pub mod registry;
 pub mod repo;
+pub mod rollback;
 pub mod runner;
 pub mod services;
 pub mod state;

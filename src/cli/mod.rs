@@ -12,6 +12,7 @@ use crate::init::{InitBackend, Scope};
 use crate::packages::{self, Change};
 use crate::registry;
 use crate::repo::Repo;
+use crate::rollback;
 use crate::services;
 use crate::runner::{Runner, SystemRunner};
 use crate::status;
@@ -106,7 +107,17 @@ enum Command {
     #[command(about = "a package's details, and whether maw manages it", after_help = "see: maw help looking things up")]
     Info { package: String },
     #[command(about = "upgrade the system, then every unpinned cargo and go package", after_help = "see: maw help updating")]
-    Sync,
+    Sync {
+        #[arg(long, help = "first release the packages a rollback held back")]
+        release: bool,
+    },
+    #[command(about = "restore a generation's repo and package versions, as a new generation", after_help = "see: maw help rolling back")]
+    Rollback {
+        #[arg(help = "the generation number from `maw generations`; the one before the latest if left out")]
+        generation: Option<u32>,
+        #[arg(long, help = "print what would change without changing anything")]
+        dry_run: bool,
+    },
     #[command(about = "services: list, enable, disable, status, restart, log", after_help = "see: maw help services")]
     Sv {
         #[command(subcommand)]
@@ -200,7 +211,8 @@ pub fn main() -> Result<()> {
         Command::Query { package } => query(&env, &runner, package.as_deref()),
         Command::Search { term } => search(&env, &runner, &term),
         Command::Info { package } => info(&env, &runner, &package),
-        Command::Sync => sync(&env, &runner),
+        Command::Sync { release } => sync(&env, &runner, release),
+        Command::Rollback { generation, dry_run } => rollback(&env, &runner, generation, dry_run),
         Command::Sv { action } => sv(&env, &runner, action),
         Command::Help { query } => show_help(&runner, &query.join(" ")),
     }
@@ -530,7 +542,10 @@ fn info(env: &Env, runner: &dyn Runner, request: &str) -> Result<()> {
 }
 
 // upgrades the system through xbps, then every unpinned cargo and go package
-fn sync(env: &Env, runner: &dyn Runner) -> Result<()> {
+fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
+    if release {
+        rollback::release(env, runner)?.iter().for_each(|name| println!("release {name}"));
+    }
     Xbps::new(runner, env).sync()?;
     let repo = Repo::locate(env)?;
     packages::upgrade(env, runner, &repo)?.iter().for_each(|target| println!("upgrade {target}"));
@@ -611,6 +626,25 @@ fn sv_list(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
         println!("{:<24}{:<8}{state}{note}", row.name, row.scope);
     });
     Ok(())
+}
+
+// prints the rollback plan, then restores the repo, changes package versions, activates, and records a generation
+fn rollback(env: &Env, runner: &dyn Runner, number: Option<u32>, dry_run: bool) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let plan = rollback::plan(env, runner, &repo, number)?;
+    let generation = &plan.generation;
+    println!("restore generation {} ({})", generation.number, generation.commit.get(..7).unwrap_or(&generation.commit));
+    plan.removes.iter().for_each(|target| println!("remove {target}"));
+    plan.versions.iter().for_each(|target| println!("install {target}"));
+    plan.kept.iter().for_each(|(target, why)| println!("keep {target}: {why}"));
+    plan.holds.iter().for_each(|name| println!("hold {name}"));
+    if dry_run {
+        println!("dry run, nothing changed");
+        return Ok(());
+    }
+
+    rollback::rollback(env, runner, &repo, &plan)?;
+    activate_after(env, runner, &repo, vec![format!("rollback to generation {}", generation.number)])
 }
 
 // one line per generation, newest last: number, time, commit, message

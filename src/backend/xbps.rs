@@ -2,6 +2,7 @@ use super::{Backend, BackendError, Pkg, SystemBackend, split_pkgver};
 use crate::env::Env;
 use crate::runner::{RunError, Runner, as_root};
 use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 // void's package manager; a sysroot other than / is used directly instead of through sudo
@@ -29,6 +30,11 @@ impl<'a> Xbps<'a> {
     fn privileged(&self, program: &str, args: &[String]) -> Result<(), RunError> {
         let args: Vec<String> = self.root_args().into_iter().chain(args.iter().cloned()).collect();
         as_root(self.runner, &self.sysroot, program, &args)
+    }
+
+    // where xbps keeps every package it downloaded
+    fn cache_dir(&self) -> PathBuf {
+        self.sysroot.join("var/cache/xbps")
     }
 
     fn parse_error(&self, line: &str) -> BackendError {
@@ -106,6 +112,31 @@ impl SystemBackend for Xbps<'_> {
     fn sync(&self) -> Result<(), BackendError> {
         Ok(self.privileged("xbps-install", &["-Suy".into()])?)
     }
+
+    // <pkgver>.<arch>.xbps in the cache
+    fn cached(&self, pkgver: &str) -> Option<PathBuf> {
+        let prefix = format!("{pkgver}.");
+        fs::read_dir(self.cache_dir())
+            .ok()?
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&prefix)) && path.extension().is_some_and(|ext| ext == "xbps"))
+    }
+
+    // the cache isn't a repo until indexed, so only the files needed are added to its index first; -f allows downgrades
+    fn install_versions(&self, pkgvers: &[String]) -> Result<(), BackendError> {
+        let files: Vec<String> = pkgvers.iter().filter_map(|pkgver| self.cached(pkgver)).map(|file| file.display().to_string()).collect();
+        if !files.is_empty() {
+            as_root(self.runner, &self.sysroot, "xbps-rindex", &["-a".to_string()].into_iter().chain(files).collect::<Vec<_>>())?;
+        }
+        let args: Vec<String> = ["-R".to_string(), self.cache_dir().display().to_string(), "-fy".into()].into_iter().chain(pkgvers.iter().cloned()).collect();
+        Ok(self.privileged("xbps-install", &args)?)
+    }
+
+    fn hold(&self, names: &[String], hold: bool) -> Result<(), BackendError> {
+        let mode = if hold { "hold" } else { "unhold" };
+        let args: Vec<String> = ["-m".to_string(), mode.into()].into_iter().chain(names.iter().cloned()).collect();
+        Ok(self.privileged("xbps-pkgdb", &args)?)
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +187,29 @@ mod tests {
         let runner = FakeRunner::new(fake);
         let names: Vec<String> = Xbps::new(&runner, &env("/")).search("foot").unwrap().into_iter().map(|pkg| pkg.name).collect();
         assert_eq!(names, ["foot", "footclient"]);
+    }
+
+    #[test]
+    fn versions_come_from_the_indexed_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("var/cache/xbps");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("foot-1.20_1.x86_64.xbps"), "").unwrap();
+        fs::write(cache.join("foot-1.20_1.x86_64.xbps.sig2"), "").unwrap();
+
+        let runner = FakeRunner::new(fake);
+        let xbps = Xbps::new(&runner, &Env::new(Path::new("/h"), dir.path(), Path::new("/s")));
+        assert_eq!(xbps.cached("foot-1.20_1"), Some(cache.join("foot-1.20_1.x86_64.xbps")));
+        assert_eq!(xbps.cached("foot-1.19_1"), None);
+
+        xbps.install_versions(&["foot-1.20_1".into(), "bash-5.1_1".into()]).unwrap();
+        xbps.hold(&["foot".into()], true).unwrap();
+        let root = dir.path().display();
+        assert_eq!(*runner.calls.borrow(), [
+            format!("xbps-rindex -a {}", cache.join("foot-1.20_1.x86_64.xbps").display()),
+            format!("xbps-install -r {root} -R {} -fy foot-1.20_1 bash-5.1_1", cache.display()),
+            format!("xbps-pkgdb -r {root} -m hold foot"),
+        ]);
     }
 
     #[test]
