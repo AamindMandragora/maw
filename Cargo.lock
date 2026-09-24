@@ -304,6 +304,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "scrape-registry"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -17,4 +17,5 @@ post_install() {
 	vmkdir usr/share/maw
 	vcopy nix usr/share/maw
 	vinstall registry.nix 644 usr/share/maw
+	vlicense LICENSE
 }

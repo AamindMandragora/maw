@@ -28,6 +28,7 @@ src/
   rollback.rs     # restore a generation: repo, package versions, holds
   index.rs        # out/.maw/index.json: activating without nix
 srcpkgs/maw/      # maw's own xbps-src template
+tools/scrape-registry/   # grows registry.nix from home-manager (a separate crate in the workspace)
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
 registry.nix      # shipped registry
 nix/
@@ -97,6 +98,17 @@ MAW_BLESS=1 cargo test      # rewrite goldens from current output
 ```
 
 After blessing, check the golden diff before committing.
+
+## The registry
+
+`registry.nix` is hand-maintained, grown by a scraper over home-manager, which knows where hundreds of programs keep their config:
+
+```sh
+git clone --depth 1 https://github.com/nix-community/home-manager /tmp/hm
+cargo run -p scrape-registry -- /tmp/hm registry.nix
+```
+
+It reads each module in `modules/programs/` for literal `xdg.configFile."..."` (under `~/.config`) and `home.file."..."` (under `~/`) paths, skipping interpolated and macOS paths. It keeps programs Void packages (by name, from `xbps-query -Rs ""`) that the registry doesn't have yet (asked of nix, never parsed), picks the most config-like file as `main`, guesses `format` from its extension, and appends them under a `# from home-manager` marker. Existing entries are never touched, so hand fixes stay; move or fix appended ones freely, and rerunning only adds what's still missing. Modules whose literal paths aren't the program's own config are listed in `SKIP` in `tools/scrape-registry/src/main.rs`, with the reason.
 
 ## Releasing
 
