@@ -39,6 +39,11 @@ impl<'a> Xbps<'a> {
         Ok(self.privileged("xbps-install", &args)?)
     }
 
+    // every package name the repos have, for telling which names void uses
+    pub fn repo_names(&self) -> Result<HashSet<String>, BackendError> {
+        Ok(self.parse_listing(&self.query(&["-Rs", ""])?, &HashSet::new())?.into_iter().map(|pkg| pkg.name).collect())
+    }
+
     // where xbps keeps every package it downloaded
     fn cache_dir(&self) -> PathBuf {
         self.sysroot.join("var/cache/xbps")

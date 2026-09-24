@@ -1,0 +1,13 @@
+cairo-devel
+fcft-devel
+libpng-devel
+libresvg-devel
+libxkbcommon-devel
+pcre2
+pcre2-devel
+pixman-devel
+pkg-config
+scdoc
+tllist
+wayland-devel
+wayland-protocols

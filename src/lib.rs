@@ -17,6 +17,7 @@ pub mod registry;
 pub mod repo;
 pub mod rollback;
 pub mod runner;
+pub mod scaffold;
 pub mod services;
 pub mod state;
 pub mod status;

@@ -1,0 +1,13 @@
+# Template file for 'lazygit'
+# scaffolded by maw from nixpkgs 'lazygit' at test
+pkgname=lazygit
+version=0.65.1
+revision=1
+build_style=go
+go_import_path="github.com/jesseduffield/lazygit"
+short_desc="Simple terminal UI for git commands"
+maintainer="Maw Test <maw@test>"
+license="MIT"
+homepage="https://github.com/jesseduffield/lazygit"
+distfiles="https://github.com/jesseduffield/lazygit/archive/refs/tags/v${version}.tar.gz"
+checksum=CHECKSUM

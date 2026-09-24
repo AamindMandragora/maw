@@ -346,6 +346,32 @@ maw install hello        # builds it with xbps-src, installs it, records it
 maw src build hello      # rebuilds after you change the template
 ```
 
+To draft a template from nixpkgs instead of writing one:
+
+```sh
+maw src new lazygit --from-nix           # from nixpkgs' lazygit
+maw src new rg --from-nix ripgrep        # a different name than nixpkgs uses
+maw src update lazygit                   # later: move it to nixpkgs' current version, then rebuild
+```
+
+maw reads the package's metadata from nixpkgs (it never builds with nix) and fills in the version, description, license, homepage, source url and its checksum, the build style (go, cargo, meson, cmake, python, or configure), and the dependencies, using Void's names:
+
+```
+# scaffolded by maw from nixpkgs 'ripgrep' at 4975466d3247
+pkgname=ripgrep
+version=15.2.0
+revision=1
+build_style=cargo
+hostmakedepends="pkg-config"
+makedepends="pcre2-devel"
+# TODO: nix had 'libfoo'
+...
+```
+
+A dependency maw can't match to a Void package is left as a `# TODO` line. Fix it by hand; when you close the editor, maw asks whether to remember what you replaced it with (`record libfoo -> foo-devel in depmap? [Y/n]`) and saves it to `depmap.nix` in your repo, so the next scaffold gets it right. Nix-only build helpers are dropped on their own. Check a draft before building: nixpkgs sometimes patches or configures a package in ways a template needs spelled out, like ripgrep's `configure_args="--features=pcre2"`.
+
+The nixpkgs checkout lives at `~/.local/share/maw/nixpkgs` (a shallow nixos-unstable clone, about 400MB), made on first use; `maw.nixpkgs` in `config.nix` points elsewhere. `src update` works on templates `--from-nix` wrote, which it recognizes by their `# scaffolded by maw` line; it touches only `version`, `revision`, `distfiles`, and `checksum`, so your other edits stay.
+
 A name with a template in `srcpkgs/` is always a source build, and it's recorded under `packages.xbps` like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the [Void manual on templates](https://github.com/void-linux/void-packages/blob/master/Manual.md).
 
 Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-packages`. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is linked into the clone's `srcpkgs/` and built with `xbps-src pkg <name>`, and the package is installed from the clone's `hostdir/binpkgs`. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in `config.nix`:

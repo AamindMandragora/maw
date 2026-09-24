@@ -27,6 +27,9 @@ src/
   generations.rs  # auto-commit, the generations log, commit/push/pull
   rollback.rs     # restore a generation: repo, package versions, holds
   index.rs        # out/.maw/index.json: activating without nix
+  scaffold/       # src new --from-nix: nixpkgs metadata -> SourcePkg -> xbps-src template (SourceEmitter)
+nix/nixpkgs-meta.nix   # one nixpkgs package's metadata as plain data
+depmap.nix        # shipped nixpkgs -> void dependency names, installed to /usr/share/maw
 srcpkgs/maw/      # maw's own xbps-src template
 tools/scrape-registry/   # grows registry.nix from home-manager (a separate crate in the workspace)
   testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
@@ -40,6 +43,8 @@ tests/
   build.rs        # end-to-end build of the fixture repo with real nix
   activate.rs     # end-to-end activate of the fixture repo, then a no-op rerun
   edit.rs         # imported configs render unchanged; added files link back in place
+  scaffold.rs     # templates from real nixpkgs metadata (go, rust, meson) against goldens
+  scaffold/       # the metadata fixtures, void names, and expected templates
   fixtures/dotfiles/   # example dotfiles repo
   golden/<module>/<key>   # expected output per fixture module file
   generators/<name>.nix   # generator fixture, expected output in <name>.out
@@ -118,7 +123,7 @@ maw ships as an xbps package built from `srcpkgs/maw/template` (`build_style=car
 2. tag the commit `v<version>` and push the tag
 3. `xgensum -i srcpkgs/maw/template` to fill in the checksum, and `xlint` it
 
-To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; from then on, updating the template's version there and running `maw sync` rebuilds and upgrades maw.
+It also installs the shipped `depmap.nix`. To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; from then on, updating the template's version there and running `maw sync` rebuilds and upgrades maw.
 
 ## Docs
 

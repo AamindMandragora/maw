@@ -91,11 +91,13 @@ pub struct Settings {
     pub auto_commit: bool,
     // where maw keeps its void-packages clone for building srcpkgs; ~/ is home
     pub void_packages: Option<String>,
+    // where maw keeps its nixpkgs clone for `src new --from-nix`; ~/ is home
+    pub nixpkgs: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_commit: true, void_packages: None }
+        Settings { auto_commit: true, void_packages: None, nixpkgs: None }
     }
 }
 
@@ -105,6 +107,14 @@ impl Settings {
         match self.void_packages.as_deref() {
             Some(path) => env.home.join(path.strip_prefix("~/").unwrap_or(path)),
             None => env.home.join(".local/share/maw/void-packages"),
+        }
+    }
+
+    // the nixpkgs clone, configured or maw's own
+    pub fn nixpkgs(&self, env: &Env) -> PathBuf {
+        match self.nixpkgs.as_deref() {
+            Some(path) => env.home.join(path.strip_prefix("~/").unwrap_or(path)),
+            None => env.home.join(".local/share/maw/nixpkgs"),
         }
     }
 }

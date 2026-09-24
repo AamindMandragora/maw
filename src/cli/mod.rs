@@ -13,6 +13,7 @@ use crate::packages::{self, Change};
 use crate::registry;
 use crate::repo::Repo;
 use crate::rollback;
+use crate::scaffold;
 use crate::services;
 use crate::runner::{Runner, SystemRunner};
 use crate::status;
@@ -168,8 +169,14 @@ enum SvAction {
 
 #[derive(Subcommand)]
 enum SrcAction {
-    #[command(about = "write a blank srcpkgs/<name>/template and open it")]
-    New { name: String },
+    #[command(about = "write a srcpkgs/<name>/template, blank or drafted from nixpkgs, and open it")]
+    New {
+        name: String,
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "ATTR", help = "draft it from a nixpkgs package; the attribute defaults to the name")]
+        from_nix: Option<String>,
+    },
+    #[command(about = "move a template drafted from nixpkgs to nixpkgs' current version, then rebuild")]
+    Update { name: String },
     #[command(about = "build a template with xbps-src; an installed package is upgraded to the new build")]
     Build { name: String },
 }
@@ -643,14 +650,30 @@ fn help_text(query: &str, color: bool) -> Option<String> {
 fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
     let repo = Repo::locate(env)?;
     match action {
-        SrcAction::New { name } => {
+        SrcAction::New { name, from_nix } => {
             let git = |key: &str| runner.run("git", &["-C".into(), repo.root.display().to_string(), "config".into(), key.into()]).unwrap_or_default().trim().to_string();
             let maintainer = format!("{} <{}>", git("user.name"), git("user.email"));
-            let template = packages::srcpkgs(env, runner, &repo)?.new_template(&name, &maintainer)?;
-            println!("create {}", relative(&repo, &template));
             let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
-            Ok(edit::open_editor(runner, &editor, &template)?)
+            let Some(attr) = from_nix else {
+                let template = packages::srcpkgs(env, runner, &repo)?.new_template(&name, &maintainer)?;
+                println!("create {}", relative(&repo, &template));
+                return Ok(edit::open_editor(runner, &editor, &template)?);
+            };
+            let attr = if attr.is_empty() { name.clone() } else { attr };
+            scaffold_from_nix(env, runner, &repo, &name, &attr, &maintainer, &editor)
         }
+        SrcAction::Update { name } => match scaffold::update(env, runner, &repo, &name)? {
+            None => {
+                println!("{name} is at nixpkgs' version already");
+                Ok(())
+            }
+            Some((old, new)) => {
+                println!("update {name} {old} -> {new}");
+                let upgraded = packages::build_source(env, runner, &repo, &name)?;
+                println!("{} {name}", if upgraded { "build and upgrade" } else { "build" });
+                activate_after(env, runner, &repo, vec![format!("update {name} to {new}")])
+            }
+        },
         SrcAction::Build { name } => {
             let upgraded = packages::build_source(env, runner, &repo, &name)?;
             println!("{} {name}", if upgraded { "build and upgrade" } else { "build" });
@@ -660,6 +683,25 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// drafts a template from nixpkgs, opens it, and offers to remember the dependency names the user fixed
+fn scaffold_from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, attr: &str, maintainer: &str, editor: &str) -> Result<()> {
+    let (template, emitted) = scaffold::from_nix(env, runner, repo, name, attr, maintainer)?;
+    println!("create {}", relative(repo, &template));
+    emitted.todos.iter().for_each(|todo| println!("todo {todo}: no void package found"));
+    edit::open_editor(runner, editor, &template)?;
+
+    let after = std::fs::read_to_string(&template)?;
+    let confirmed: Vec<(String, String)> = scaffold::learned(&emitted.text, &after, &emitted.todos)
+        .into_iter()
+        .filter(|(nix, void)| Terminal.ask(&format!("record {nix} -> {void} in depmap? [Y/n] ")).is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n')))
+        .collect();
+    if !confirmed.is_empty() {
+        scaffold::record(env, runner, repo, &confirmed)?;
+        confirmed.iter().for_each(|(nix, void)| println!("record {nix} -> {void} in depmap.nix"));
+    }
+    Ok(())
 }
 
 // runs one sv subcommand

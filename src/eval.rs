@@ -94,6 +94,14 @@ pub fn eval_settings(runner: &dyn Runner, env: &Env, repo_root: &Path, key: &str
     Ok(eval_cached(runner, "config.nix maw settings", &env.cache_dir().join("settings.json"), key, args)?.0)
 }
 
+// one nixpkgs package's metadata through nix/nixpkgs-meta.nix, cached per package and nixpkgs revision
+pub fn eval_nixpkgs_meta(runner: &dyn Runner, env: &Env, nixpkgs: &Path, attr: &str, revision: &str) -> Result<Value, EvalError> {
+    let expression = env.nix_dir().join("nixpkgs-meta.nix").display().to_string();
+    let args = nix_args(env, &[expression, "--arg".into(), "nixpkgs".into(), nixpkgs.display().to_string(), "--argstr".into(), "attr".into(), attr.into()]);
+    let cache_file = env.cache_dir().join("nixpkgs").join(format!("{attr}.json"));
+    Ok(eval_cached(runner, &format!("nixpkgs {attr}"), &cache_file, revision, args)?.0)
+}
+
 // evaluates modules.<name> of the dotfiles repo; true if nix actually ran
 pub fn eval_module(runner: &dyn Runner, env: &Env, repo_root: &Path, name: &str, key: &str) -> Result<(Vec<RenderedFile>, bool), EvalError> {
     let args = nix_args(env, &["-A".into(), format!("modules.{name}"), repo_root.display().to_string()]);

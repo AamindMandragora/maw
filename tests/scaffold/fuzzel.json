@@ -1,0 +1,33 @@
+{
+    "buildInputs": [
+        "wayland",
+        "pixman",
+        "wayland-protocols",
+        "libxkbcommon",
+        "tllist",
+        "fcft",
+        "cairo",
+        "libpng-apng",
+        "resvg"
+    ],
+    "builder": "meson",
+    "description": "Wayland-native application launcher, similar to rofi\u2019s drun mode",
+    "homepage": "https://codeberg.org/dnkl/fuzzel",
+    "licenses": [
+        "MIT",
+        "Zlib"
+    ],
+    "nativeBuildInputs": [
+        "pkg-config-wrapper",
+        "wayland-scanner",
+        "meson",
+        "ninja",
+        "scdoc"
+    ],
+    "pname": "fuzzel",
+    "subPackages": [],
+    "urls": [
+        "https://codeberg.org/dnkl/fuzzel/archive/1.14.1.tar.gz"
+    ],
+    "version": "1.14.1"
+}
