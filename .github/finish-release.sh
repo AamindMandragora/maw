@@ -13,8 +13,11 @@ if ! git show "$tag:Cargo.toml" | grep -qx "version = \"$version\""; then
 	exit 1
 fi
 
-# checksum the tarball xbps-src will fetch; github can take a moment to serve a new tag
-checksum=$(curl -fsSL --retry 5 --retry-all-errors "$url" | sha256sum | cut -d' ' -f1)
+# checksum the tarball xbps-src will fetch; github can take a moment to serve a new tag. downloaded to a file first,
+# since a failed curl in a pipe would checksum nothing
+tarball=$(mktemp)
+curl -fsSL --retry 5 --retry-all-errors -o "$tarball" "$url"
+checksum=$(sha256sum "$tarball" | cut -d' ' -f1)
 
 # point the template at the new version
 sed -i -e "s/^version=.*/version=$version/" -e "s/^revision=.*/revision=1/" -e "s/^checksum=.*/checksum=$checksum/" srcpkgs/maw/template

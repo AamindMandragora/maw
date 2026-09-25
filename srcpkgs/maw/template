@@ -9,7 +9,7 @@ maintainer="Advayth Pashupati <advaythp@gmail.com>"
 license="MIT"
 homepage="https://github.com/AamindMandragora/maw"
 distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"
-checksum=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+checksum=44cfc661d0d2450633dfb4320a83c8c17f4280b8ad3bbf96dbb3107298e6dd8f
 
 # maw reads its nix lib and shipped registry from /usr/share/maw
 post_install() {
