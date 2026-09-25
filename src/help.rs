@@ -1,3 +1,5 @@
+use crate::style::{Tone, paint};
+
 // one user doc, compiled in so help always matches the installed maw
 pub struct Topic {
     pub name: &'static str,
@@ -61,9 +63,9 @@ fn section(text: &str, index: usize) -> String {
     lines[index..end].join("\n") + "\n"
 }
 
-// markdown for a terminal: styled headings, inline code, and code blocks when color is on; links as plain text either way
+// markdown for a terminal in maw's palette when color is on: accent headings and inline code, dim code blocks; links as plain text either way
 pub fn render(markdown: &str, color: bool) -> String {
-    let style = |code: &str, text: &str| if color { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() };
+    let style = |tone: Tone, bold: bool, text: &str| if color { paint(tone, text, bold) } else { text.to_string() };
     let mut in_code = false;
     let mut just_closed = false;
 
@@ -80,14 +82,13 @@ pub fn render(markdown: &str, color: bool) -> String {
             }
             just_closed = false;
             if in_code {
-                return Some(if line.is_empty() { "\n".into() } else { format!("    {}\n", style("2", line)) });
+                return Some(if line.is_empty() { "\n".into() } else { format!("    {}\n", style(Tone::Dim, false, line)) });
             }
             if line.starts_with("|-") || line.starts_with("|:") {
                 return None;
             }
-            // top-level headings are underlined as well as bold
             Some(match heading(line) {
-                Some((level, _)) => format!("{}\n", style(if level == 1 { "1;4" } else { "1" }, &inline(line.trim_start_matches('#').trim(), color))),
+                Some(_) => format!("{}\n", style(Tone::Accent, true, &line.trim_start_matches('#').trim().replace('`', ""))),
                 None => format!("{}\n", inline(line, color)),
             })
         })
@@ -97,12 +98,12 @@ pub fn render(markdown: &str, color: bool) -> String {
 // inline markup: `code` highlighted, **bold** styled, links reduced to their text
 fn inline(line: &str, color: bool) -> String {
     let linked = links(line);
-    let bolded = styled_spans(&linked, "**", if color { Some("1") } else { None });
-    styled_spans(&bolded, "`", if color { Some("33") } else { None })
+    let bolded = styled_spans(&linked, "**", color.then_some(&|part: &str| format!("\x1b[1m{part}\x1b[0m")));
+    styled_spans(&bolded, "`", color.then_some(&|part: &str| paint(Tone::Accent, part, false)))
 }
 
-// wraps text between pairs of marker in an ansi style, or leaves backticks and drops ** without color
-fn styled_spans(text: &str, marker: &str, code: Option<&str>) -> String {
+// styles text between pairs of marker, or without color leaves backticks and drops **
+fn styled_spans(text: &str, marker: &str, styled: Option<&dyn Fn(&str) -> String>) -> String {
     let parts: Vec<&str> = text.split(marker).collect();
     if parts.len().is_multiple_of(2) {
         return text.to_string();
@@ -112,9 +113,9 @@ fn styled_spans(text: &str, marker: &str, code: Option<&str>) -> String {
     parts
         .iter()
         .enumerate()
-        .map(|(index, part)| match (index % 2, code) {
+        .map(|(index, part)| match (index % 2, styled) {
             (0, _) => part.to_string(),
-            (_, Some(code)) => format!("\x1b[{code}m{part}\x1b[0m"),
+            (_, Some(styled)) => styled(part),
             (_, None) if marker == "`" => format!("`{part}`"),
             (_, None) => part.to_string(),
         })
@@ -122,7 +123,7 @@ fn styled_spans(text: &str, marker: &str, code: Option<&str>) -> String {
 }
 
 // [text](target): another doc becomes `maw help <name>`, a web link keeps its address, an anchor is just its text
-fn links(line: &str) -> String {
+pub(crate) fn links(line: &str) -> String {
     let Some(start) = line.find('[') else { return line.to_string() };
     let Some(middle) = line[start..].find("](").map(|offset| start + offset) else { return line.to_string() };
     let Some(end) = line[middle..].find(')').map(|offset| middle + offset) else { return line.to_string() };
@@ -188,7 +189,7 @@ mod tests {
     #[test]
     fn color_render_styles_code_and_headings() {
         let rendered = render("## Title\n`x`\n", true);
-        assert_eq!(rendered, "\x1b[1mTitle\x1b[0m\n\x1b[33mx\x1b[0m\n");
+        assert_eq!(rendered, format!("{}\n{}\n", paint(Tone::Accent, "Title", true), paint(Tone::Accent, "x", false)));
     }
 
     #[test]

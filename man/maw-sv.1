@@ -1,0 +1,34 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-sv 1  "maw-sv " 
+.SH NAME
+maw\-sv \- services: list, enable, disable, status, restart, log
+.SH SYNOPSIS
+\fBmaw sv\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+services: list, enable, disable, status, restart, log
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+maw\-sv\-list(1)
+declared and enabled services, and whether they run
+.TP
+maw\-sv\-enable(1)
+record a service in maw.nix and link it into place
+.TP
+maw\-sv\-disable(1)
+stop and unlink a service, and drop it from maw.nix
+.TP
+maw\-sv\-status(1)
+sv status
+.TP
+maw\-sv\-restart(1)
+sv restart
+.TP
+maw\-sv\-log(1)
+follow a service\*(Aqs log
+.SH EXTRA
+see: maw help services

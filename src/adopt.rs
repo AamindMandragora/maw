@@ -12,7 +12,7 @@ use std::fs;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdoptError {
-    #[error("adopt checklist, line {line}: expected `keep <name>` or `skip <name>`, got `{text}`")]
+    #[error("adopt checklist, line {line}: not keep or skip: {text}")]
     Line { line: usize, text: String },
     #[error(transparent)]
     Backend(#[from] BackendError),

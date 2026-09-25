@@ -7,9 +7,9 @@ use std::time::UNIX_EPOCH;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InputsError {
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Json { path: PathBuf, source: serde_json::Error },
 }
 

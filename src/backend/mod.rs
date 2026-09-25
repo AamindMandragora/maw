@@ -16,9 +16,9 @@ pub enum BackendError {
     Run(#[from] RunError),
     #[error("{backend}: unexpected output `{line}`")]
     Parse { backend: String, line: String },
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
-    #[error("void-packages already has a package named {0}; pick another name for your template")]
+    #[error("void-packages already has {0}; pick another name for your template")]
     Taken(String),
     #[error("srcpkgs/{0}/template already exists")]
     TemplateExists(String),

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
-    #[error("no module or static files named {0}; create one with `maw new {0}`")]
+    #[error("no module or static dir {0}; create one with `maw new {0}`")]
     NoSuch(String),
     #[error("{0} already exists")]
     Exists(String),
@@ -30,7 +30,7 @@ pub enum EditError {
     State(#[from] StateError),
     #[error(transparent)]
     Run(#[from] RunError),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

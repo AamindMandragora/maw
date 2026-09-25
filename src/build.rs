@@ -25,7 +25,7 @@ pub enum BuildError {
     Repo(#[from] RepoError),
     #[error(transparent)]
     State(#[from] StateError),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

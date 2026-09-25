@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-src 1  "maw-src " 
+.SH NAME
+maw\-src \- packages built from your own xbps\-src templates in srcpkgs/
+.SH SYNOPSIS
+\fBmaw src\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+packages built from your own xbps\-src templates in srcpkgs/
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+maw\-src\-new(1)
+write a srcpkgs/<name>/template, blank or drafted from nixpkgs, and open it
+.TP
+maw\-src\-update(1)
+move a template drafted from nixpkgs to nixpkgs\*(Aq current version, then rebuild
+.TP
+maw\-src\-build(1)
+build a template with xbps\-src; an installed package is upgraded to the new build
+.SH EXTRA
+see: maw help source packages

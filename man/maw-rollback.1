@@ -1,0 +1,21 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-rollback 1  "maw-rollback " 
+.SH NAME
+maw\-rollback \- restore a generation\*(Aqs repo and package versions, as a new generation
+.SH SYNOPSIS
+\fBmaw rollback\fR [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIGENERATION\fR] 
+.SH DESCRIPTION
+restore a generation\*(Aqs repo and package versions, as a new generation
+.SH OPTIONS
+.TP
+\fB\-\-dry\-run\fR
+print what would change without changing anything
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fIGENERATION\fR]
+the generation number from `maw generations`; the one before the latest if left out
+.SH EXTRA
+see: maw help rolling back

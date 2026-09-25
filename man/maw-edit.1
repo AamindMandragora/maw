@@ -1,0 +1,21 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-edit 1  "maw-edit " 
+.SH NAME
+maw\-edit \- open a module, static dir, or config.nix (`config`) in $EDITOR, then activate
+.SH SYNOPSIS
+\fBmaw edit\fR [\fB\-\-no\-activate\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
+.SH DESCRIPTION
+open a module, static dir, or config.nix (`config`) in $EDITOR, then activate
+.SH OPTIONS
+.TP
+\fB\-\-no\-activate\fR
+only edit; activate later
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fINAME\fR>
+a module or static/ name, or `config`
+.SH EXTRA
+see: maw help editing

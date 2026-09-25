@@ -29,7 +29,7 @@ pub enum ActivateError {
     State(#[from] StateError),
     #[error(transparent)]
     Backend(#[from] BackendError),
-    #[error("maw.nix declares packages for {0}, which maw has no backend for")]
+    #[error("maw.nix: no package backend {0}")]
     UnknownBackend(String),
     #[error(transparent)]
     Run(#[from] RunError),
@@ -37,11 +37,11 @@ pub enum ActivateError {
     Packages(Box<PackagesError>),
     #[error(transparent)]
     Index(Box<IndexError>),
-    #[error("no {scope} service {name}: nothing in its definition dir and no module defines it")]
+    #[error("no {scope} service {name}")]
     UnknownService { scope: Scope, name: String },
     #[error("{destination} comes from both {first} and {second}")]
     Conflict { destination: PathBuf, first: PathBuf, second: PathBuf },
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

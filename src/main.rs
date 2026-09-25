@@ -5,7 +5,7 @@ fn main() {
     }
 
     if let Err(error) = maw::cli::main() {
-        eprintln!("error: {error:#}");
+        eprintln!("{} {error:#}", maw::cli::prefix(maw::style::Tone::Bad, "error:"));
         std::process::exit(1);
     }
 }

@@ -4,7 +4,7 @@ use std::process::Command;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
-    #[error("{program}: {source}")]
+    #[error("{program}")]
     Spawn { program: String, source: std::io::Error },
     #[error("{program} failed:\n{stderr}")]
     Failed { program: String, stderr: String },

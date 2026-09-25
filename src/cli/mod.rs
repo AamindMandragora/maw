@@ -3,6 +3,7 @@ use crate::adopt::{self, Candidate};
 use crate::backend::xbps::Xbps;
 use crate::backend::SystemBackend;
 use crate::build::{self, BuildError, Report};
+use crate::complete;
 use crate::edit;
 use crate::env::Env;
 use crate::generations;
@@ -17,8 +18,10 @@ use crate::scaffold;
 use crate::services;
 use crate::runner::{Runner, SystemRunner};
 use crate::status;
+use crate::style::{self, Tone};
 use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::ArgValueCompleter;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -56,7 +59,7 @@ pub enum Command {
     },
     #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate", after_help = "see: maw help editing")]
     Edit {
-        #[arg(help = "a module or static/ name, or `config`")]
+        #[arg(help = "a module or static/ name, or `config`", add = ArgValueCompleter::new(complete::modules))]
         name: String,
         #[arg(long, help = "only edit; activate later")]
         no_activate: bool,
@@ -97,20 +100,26 @@ pub enum Command {
     },
     #[command(about = "remove packages and drop them from maw.nix; their modules stay", after_help = "see: maw help removing")]
     Remove {
-        #[arg(required = true)]
+        #[arg(required = true, add = ArgValueCompleter::new(complete::packages))]
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,
     },
     #[command(about = "list packages you installed, or show one", after_help = "see: maw help looking things up")]
-    Query { package: Option<String> },
+    Query {
+        #[arg(add = ArgValueCompleter::new(complete::packages))]
+        package: Option<String>,
+    },
     #[command(about = "search xbps, or crates.io when xbps has nothing", after_help = "see: maw help looking things up")]
     Search {
         #[arg(help = "a term, or cargo:<term> to search crates.io directly")]
         term: String,
     },
     #[command(about = "a package's details, and whether maw manages it", after_help = "see: maw help looking things up")]
-    Info { package: String },
+    Info {
+        #[arg(add = ArgValueCompleter::new(complete::packages))]
+        package: String,
+    },
     #[command(about = "upgrade the system, then every unpinned cargo and go package", after_help = "see: maw help updating")]
     Sync {
         #[arg(long, help = "first release the packages a rollback held back")]
@@ -118,7 +127,7 @@ pub enum Command {
     },
     #[command(about = "restore a generation's repo and package versions, as a new generation", after_help = "see: maw help rolling back")]
     Rollback {
-        #[arg(help = "the generation number from `maw generations`; the one before the latest if left out")]
+        #[arg(help = "the generation number from `maw generations`; the one before the latest if left out", add = ArgValueCompleter::new(complete::generations))]
         generation: Option<u32>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,
@@ -146,7 +155,7 @@ pub enum Command {
     },
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
-        #[arg(help = "usage, modules, formats, a command, or a heading like `drift`")]
+        #[arg(help = "usage, modules, formats, a command, or a heading like `drift`", add = ArgValueCompleter::new(complete::topics))]
         query: Vec<String>,
     },
 }
@@ -176,13 +185,20 @@ pub enum SrcAction {
         from_nix: Option<String>,
     },
     #[command(about = "move a template drafted from nixpkgs to nixpkgs' current version, then rebuild")]
-    Update { name: String },
+    Update {
+        #[arg(add = ArgValueCompleter::new(complete::templates))]
+        name: String,
+    },
     #[command(about = "build a template with xbps-src; an installed package is upgraded to the new build")]
-    Build { name: String },
+    Build {
+        #[arg(add = ArgValueCompleter::new(complete::templates))]
+        name: String,
+    },
 }
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct ServiceName {
+    #[arg(add = ArgValueCompleter::new(complete::services))]
     pub name: String,
     #[arg(long, conflicts_with = "system", help = "the user service run by your session")]
     pub user: bool,
@@ -203,6 +219,8 @@ impl ServiceName {
 
 // `maw` alone opens the tui; anything else is a command
 pub fn main() -> Result<()> {
+    // with COMPLETE set, the shell is asking what completes; this answers and exits
+    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
     let env = Env::from_process();
     match Cli::parse().command {
         Some(command) => run(&env, &SystemRunner, command),
@@ -215,6 +233,11 @@ pub type AskHook = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 // opens a file in the editor and waits for it to close
 pub type EditHook = Box<dyn Fn(&Path) -> Result<()> + Send + Sync>;
+
+// the whole command tree, for man pages
+pub fn command() -> clap::Command {
+    Cli::command()
+}
 
 // what the tui plugs into the cli while it's running: popups for questions, and stepping aside for the editor
 pub struct Hooks {
@@ -376,7 +399,7 @@ fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, 
         }
         match activate::activate(env, runner, repo, &Terminal, Options::default()) {
             Err(ActivateError::Build(BuildError::Eval(error))) => {
-                eprintln!("error: {error}");
+                eprintln!("{} {error}", prefix(Tone::Bad, "error:"));
                 let again = Terminal.ask("edit again? [Y/n] ").is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n'));
                 if !again {
                     return Err(error.into());
@@ -433,20 +456,24 @@ pub fn diff_text(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<String> 
 
 // + lines green, - lines red, hunk headers cyan
 fn colorize(diff: &str) -> String {
-    diff.lines()
-        .map(|line| match line.chars().next() {
-            Some('+') if !line.starts_with("+++") => format!("\x1b[32m{line}\x1b[0m\n"),
-            Some('-') if !line.starts_with("---") => format!("\x1b[31m{line}\x1b[0m\n"),
-            Some('@') => format!("\x1b[36m{line}\x1b[0m\n"),
-            _ => format!("{line}\n"),
-        })
-        .collect()
+    diff.lines().map(|line| format!("{}\n", painted(style::diff_tone(line), line))).collect()
+}
+
+// text in a tone, or plain when there's no tone
+fn painted(tone: Option<Tone>, text: &str) -> String {
+    tone.map_or(text.to_string(), |tone| style::paint(tone, text, false))
+}
+
+// the `error:` or `warning:` prefix, painted when stderr is a terminal
+pub fn prefix(tone: Tone, word: &str) -> String {
+    if std::io::stderr().is_terminal() { style::paint(tone, word, true) } else { word.to_string() }
 }
 
 // one line per out-of-sync file, like git status --short
 fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     let repo = Repo::locate(env)?;
-    status_lines(env, runner, &repo)?.iter().for_each(|line| println!("{line}"));
+    let color = std::io::stdout().is_terminal();
+    status_lines(env, runner, &repo)?.iter().for_each(|line| println!("{}", if color { painted(style::status_tone(line), line) } else { line.clone() }));
     Ok(())
 }
 
@@ -555,7 +582,7 @@ fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -
     let path_var = std::env::var("PATH").unwrap_or_default();
     packages::off_path(env, runner, &change, &path_var).iter().for_each(|dir| {
         let shown = env.pretty(dir).replacen('~', "$HOME", 1);
-        eprintln!("warning: {} isn't on PATH; add `export PATH=\"{shown}:$PATH\"` to your shell profile", env.pretty(dir));
+        eprintln!("{} {} isn't on PATH; add `export PATH=\"{shown}:$PATH\"` to your shell profile", prefix(Tone::Warn, "warning:"), env.pretty(dir));
     });
     activate_after(env, runner, &repo, change_summary(&change, "install", "record"))
 }
@@ -600,6 +627,7 @@ fn query(env: &Env, runner: &dyn Runner, package: Option<&str>) -> Result<()> {
             (Some(_), false) => "  (undeclared)",
             _ => "",
         };
+        let note = if std::io::stdout().is_terminal() { painted(style::note_tone(note), note) } else { note.to_string() };
         println!("{} {}{backend}{note}", row.name, row.version.as_deref().unwrap_or("-"));
     });
     Ok(())
@@ -710,7 +738,7 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
         }
         SrcAction::Update { name } => match scaffold::update(env, runner, &repo, &name)? {
             None => {
-                println!("{name} is at nixpkgs' version already");
+                println!("{name} is up to date");
                 Ok(())
             }
             Some((old, new)) => {
@@ -735,7 +763,7 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
 fn scaffold_from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, attr: &str, maintainer: &str) -> Result<()> {
     let (template, emitted) = scaffold::from_nix(env, runner, repo, name, attr, maintainer)?;
     println!("create {}", relative(repo, &template));
-    emitted.todos.iter().for_each(|todo| println!("todo {todo}: no void package found"));
+    emitted.todos.iter().for_each(|todo| println!("todo {todo}: no void package"));
     open_in_editor(runner, &template)?;
 
     let after = std::fs::read_to_string(&template)?;
@@ -784,6 +812,7 @@ fn sv_list(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
             _ => "",
         };
         let state = row.state.as_deref().unwrap_or(if row.enabled { "?" } else { "-" });
+        let note = if std::io::stdout().is_terminal() { painted(style::note_tone(note), note) } else { note.to_string() };
         println!("{:<24}{:<8}{state}{note}", row.name, row.scope);
     });
     Ok(())

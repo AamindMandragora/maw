@@ -1,0 +1,18 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-sync 1  "maw-sync " 
+.SH NAME
+maw\-sync \- upgrade the system, then every unpinned cargo and go package
+.SH SYNOPSIS
+\fBmaw sync\fR [\fB\-\-release\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+upgrade the system, then every unpinned cargo and go package
+.SH OPTIONS
+.TP
+\fB\-\-release\fR
+first release the packages a rollback held back
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH EXTRA
+see: maw help updating

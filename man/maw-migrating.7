@@ -1,0 +1,101 @@
+.TH "MAW-MIGRATING" "7" "" "maw 0.1.0" "maw manual"
+.SH NAME
+maw-migrating \- moving an existing setup into maw, step by step
+.SH DESCRIPTION
+.PP
+How to move a machine you already configured by hand, or with stow or a bare git repo, into maw. Nothing on disk changes until the final \fBmaw activate\fR, and everything it replaces is backed up first.
+.SH "1. CREATE THE REPO"
+.PP
+.EX
+maw init ~/dotfiles
+.EE
+.PP
+This works on an existing directory too; maw only adds what's missing.
+.SH "2. BRING IN CONFIGS"
+.PP
+Decide per program whether it becomes a module (Nix you can share values between) or a verbatim file in \fBstatic/\fR. A module is worth it for programs whose config you want to tie together, like fonts and colors across a bar, launcher, and terminal. Everything else can stay verbatim.
+.PP
+Use \fB--no-activate\fR throughout, so you can assemble the whole repo and activate once at the end.
+.SS "As modules"
+.PP
+.EX
+maw new niri --no-activate
+maw new waybar --no-activate
+.EE
+.PP
+\fBnew\fR imports whatever config is already where the module will put it, wrapped in \fBlib.raw\fR, so the module renders byte for byte what you have. Convert it to Nix later, a section at a time; see \fBmaw help modules\fR.
+.PP
+A program the registry doesn't know writes to \fB~/.config/<name>/config\fR. If that's wrong for it, \fBmaw add\fR its file instead (below), which records the real path.
+.SS "As verbatim files"
+.PP
+.EX
+maw add ~/.config/nvim --no-activate          # a whole dir, file by file
+maw add ~/.gitconfig --no-activate
+maw add ~/.local/bin/powermenu --no-activate
+.EE
+.PP
+Each copy lands back exactly where it came from; see "Adding verbatim files" in \fBmaw help usage\fR.
+.SS "What to leave out"
+.IP \(bu 2
+Files an app rewrites on its own, like a GUI's settings file or a plugin lockfile. Linked, they turn into drift every time the app saves.
+.IP \(bu 2
+Anything holding secrets or tokens (\fBgh/hosts.yml\fR, \fBrclone.conf\fR, \fB.claude.json\fR). The repo is meant to be committed and pushed.
+.IP \(bu 2
+Configs for programs you no longer have installed.
+.SH "3. CHECK BEFORE TOUCHING ANYTHING"
+.PP
+.EX
+maw status               # every file that would change
+maw diff                 # live content against what maw would put there
+maw activate --dry-run   # the exact plan
+.EE
+.PP
+Raw imports and \fBadd\fRed files diff to nothing: same content, just about to become a link. \fBstatus\fR shows them as \fBblocked\fR, meaning a real file sits where the link goes and will be backed up.
+.PP
+A module you converted to Nix may differ in formatting (key order, spacing) but should say the same thing. Check with a parser where there is one, or the program's own validator, e.g. \fBniri validate -c ~/dotfiles/out/niri/config.kdl\fR.
+.SH "4. ACTIVATE"
+.PP
+.EX
+maw activate
+.EE
+.PP
+Each replaced file is moved to \fB~/.local/state/maw/backups/\fR, under the same path relative to your home (system files under \fBbackups/system/\fR). A second \fBmaw activate\fR should print \fBup to date\fR, and \fBmaw status\fR should print \fBclean\fR.
+.PP
+That activation is also your first generation: maw commits the repo and records it (see \fBmaw help generations\fR). Add a remote and \fBmaw push\fR to keep a copy off the machine.
+.PP
+If you were using a bare git repo or stow, retire it now: the files it tracked are links into \fB~/dotfiles\fR from here on, so it will show them all as changed.
+.SH "5. PACKAGES AND SERVICES"
+.PP
+Record what's installed and enabled, so a fresh machine gets it too:
+.PP
+.EX
+maw adopt
+.EE
+.PP
+It opens a checklist of every package you installed by hand and every enabled service; keep what the machine should have, skip the rest (maw remembers the skips). See \fBmaw help adopting\fR. Afterwards \fBmaw status\fR should print \fBclean\fR, apart from \fBorphan\fR lines for any config whose program you removed.
+.SS "Moving a service you wrote"
+.PP
+A service you wrote by hand in \fB/etc/sv/<name>\fR can become a module. If it only drops to your user (with \fBchpst -u you\fR) to do its job, it's usually better as a user service, which runs as you from login and needs no \fBchpst\fR:
+.IP 1. 4
+Write \fBmodules/<name>.nix\fR with \fBlib.service "<name>" { scope = "user"; run = ''...''; }\fR, pasting the script without the privilege-dropping lines. User services already have \fBHOME\fR, \fBUSER\fR, and \fBPATH\fR set.
+.IP 2. 4
+Check the rendered script: \fBsh -n ~/dotfiles/out/sv/<name>/run\fR.
+.IP 3. 4
+Stop the old one first, so both never run at once: \fBmaw sv disable <name> --system\fR.
+.IP 4. 4
+\fBmaw activate\fR links and starts the new one. Follow it with \fBmaw sv log <name>\fR.
+.IP 5. 4
+Once it works, remove the old definition: \fBsudo rm -r /etc/sv/<name>\fR. maw never deletes a service definition it didn't write.
+.SS "System files"
+.PP
+Config under \fB/etc\fR, like greetd's, is copied with \fBsudo\fR rather than linked. \fBmaw new greetd\fR imports it like any other module. The first activation backs up the original to \fB~/.local/state/maw/backups/system/\fR.
+.SH "UNDOING IT"
+.PP
+A single file: delete its link and move its backup back.
+.PP
+.EX
+rm ~/.config/foot/foot.ini
+mv ~/.local/state/maw/backups/.config/foot/foot.ini ~/.config/foot/foot.ini
+.EE
+.PP
+A module or static file you remove from the repo is unlinked on the next \fBmaw activate\fR; its backup stays where it is, so restore it the same way.

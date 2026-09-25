@@ -1,0 +1,158 @@
+.TH "MAW-FORMATS" "5" "" "maw 0.1.0" "maw manual"
+.SH NAME
+maw-formats \- every output format and how nix values map to it
+.SH DESCRIPTION
+.PP
+Set with \fBformat = "<name>"\fR in \fBlib.program\fR, or call the generator directly (\fBlib.toCSS { ... }\fR). Every format accepts \fBlib.raw\fR at any node.
+.PP
+Floats print in their shortest form (\fB0.5\fR). When you build a string yourself, use \fBbuiltins.toJSON 0.5\fR rather than \fBtoString 0.5\fR, which gives \fB0.500000\fR.
+.SH "INI (LIB.TOINI)"
+.PP
+Attrsets become \fB[sections]\fR. Scalars at the top level are written first, without a section. Lists repeat the key. A \fBlib.raw\fR in a section's place is written verbatim, with no header.
+.PP
+.EX
+{ shell = "bash"; main.term = "xterm-256color"; }
+.EE
+.PP
+.EX
+shell=bash
+
+[main]
+term=xterm-256color
+.EE
+.SH "KEYVALUE (LIB.TOKEYVALUE)"
+.PP
+\fBkey=value\fR lines. Lists repeat the key.
+.SH "JSON (LIB.TOJSON)"
+.PP
+Indented JSON. A \fBlib.raw\fR value is spliced in as literal JSON.
+.SH "KDL (LIB.TOKDL)"
+.PP
+For niri. The shape of each value decides the node:
+.PP
+.EX
+Nix                                                      KDL
+gaps = 16;                                               gaps 16
+spawn = [ "foot" "-e" "htop" ];                          spawn "foot" "-e" "htop"
+layout = { gaps = 16; };                                 layout { gaps 16 }
+prefer-no-csd = null;                                    prefer-no-csd
+spawn-at-startup = [ [ "waybar" ] [ "mako" ] ];          the node twice, once per list
+window-rule = [ { ... } { ... } ];                       the block twice, in list order
+output = lib.kdl.node [ "eDP-1" ] { } { scale = 1.5; };  output "eDP-1" { scale 1.5 }
+.EE
+.PP
+\fBlib.kdl.node args props children\fR covers anything else, like binds with properties:
+.PP
+.EX
+"Mod+Shift+Slash" = lib.kdl.node [ ] { hotkey-overlay-title = "help"; } { show-hotkey-overlay = null; };
+.EE
+.PP
+A node repeated with one argument each needs a list of lists, since a flat list is read as several arguments:
+.PP
+.EX
+preset-column-widths.proportion = map (width: [ width ]) [ 0.25 0.5 0.75 ];
+.EE
+.PP
+For property-only nodes like \fBmatch app-id="firefox"\fR, a small helper keeps modules readable:
+.PP
+.EX
+props = attrs: lib.kdl.node [ ] attrs { };
+window-rule = [ { match = props { app-id = "firefox"; }; open-maximized = true; } ];
+.EE
+.PP
+A \fBlib.raw\fR in a node's place is written verbatim, and isn't re-indented.
+.SH "CSS (LIB.TOCSS)"
+.PP
+Selectors map to properties. Nested attrsets are nested selectors: plain keys become descendants, and \fB&\fR stands for the parent. Keys starting with \fB@\fR that hold attrsets become blocks. Scalars at rule level become statements, and statements are written before rules.
+.PP
+.EX
+{
+  "@define-color bg" = "#1e1e2e";
+  "*".font-family = [ "\e"JetBrains Mono\e"" "monospace" ];
+  "window#waybar" = {
+    background = "@bg";
+    "#clock".padding = "0 8px";
+    "&.hidden".opacity = 0;
+  };
+  "@media (max-width: 800px)"."#clock".font-size = "10px";
+}
+.EE
+.PP
+.EX
+@define-color bg #1e1e2e;
+
+* {
+  font-family: "JetBrains Mono", monospace;
+}
+
+@media (max-width: 800px) {
+  #clock {
+    font-size: 10px;
+  }
+}
+
+window#waybar {
+  background: @bg;
+}
+
+window#waybar #clock {
+  padding: 0 8px;
+}
+
+window#waybar.hidden {
+  opacity: 0;
+}
+.EE
+.PP
+When cascade order matters, pass a list of rule sets instead of one attrset. Each set is rendered in turn:
+.PP
+.EX
+[
+  { "#clock, #cpu".color = "#bababf"; }
+  { "#clock".color = "#f2f2f7"; }   # must come after the group rule
+]
+.EE
+.PP
+A key can hold several selectors (\fB"#clock, #cpu"\fR), so a helper can share properties:
+.PP
+.EX
+each = selectors: properties: { ${lib.concatStringsSep ",\en" selectors} = properties; };
+.EE
+.PP
+Property lists are joined with \fB, \fR. Values are written as-is, so quote font names yourself when they need it. Nesting under a comma selector (\fB"a, b"\fR) isn't expanded per selector; write those rules out flat.
+.SH "SHELL (LIB.TOSHELL)"
+.PP
+For bashrc-style files. Takes \fB{ aliases; exports; extra; }\fR:
+.PP
+.EX
+{
+  aliases.ll = "ls -l";
+  exports.EDITOR = "nvim";
+  exports.PATH = lib.raw ''"$HOME/.local/bin:$PATH"'';
+  extra = lib.raw "PS1='\e\ew \e\e$ '\en";
+}
+.EE
+.PP
+Values are single-quoted. Use \fBlib.raw\fR to keep \fB$\fR expansion.
+.SH "TOML (LIB.TOTOML)"
+.PP
+Scalars and lists at the top level come first. Attrsets become \fB[tables]\fR, nested ones \fB[a.b]\fR, and lists of attrsets \fB[[arrays of tables]]\fR. An attrset inside a list is written inline. A \fBlib.raw\fR value is written as-is after \fBkey = \fR.
+.PP
+.EX
+{
+  terminal.vt = 1;
+  default_session = { command = "tuigreet --cmd niri-session"; user = "greeter"; };
+}
+.EE
+.PP
+.EX
+[default_session]
+command = "tuigreet --cmd niri-session"
+user = "greeter"
+
+[terminal]
+vt = 1
+.EE
+.SH "RAW"
+.PP
+The default format. \fBsettings\fR is a string written as-is.

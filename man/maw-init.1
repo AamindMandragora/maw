@@ -1,0 +1,21 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-init 1  "maw-init " 
+.SH NAME
+maw\-init \- create a dotfiles repo, or adopt an existing one
+.SH SYNOPSIS
+\fBmaw init\fR [\fB\-h\fR|\fB\-\-help\fR] <\fITARGET\fR> [\fIPATH\fR] 
+.SH DESCRIPTION
+create a dotfiles repo, or adopt an existing one
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fITARGET\fR>
+a path for a new or existing repo, or a git url to clone
+.TP
+[\fIPATH\fR]
+where to clone a url to; ~/dotfiles by default
+.SH EXTRA
+see: maw help setting up

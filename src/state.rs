@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub enum StateError {
     #[error("maw.nix: unexpected shape: {0}")]
     Shape(serde_json::Error),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

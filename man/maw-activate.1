@@ -1,0 +1,27 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-activate 1  "maw-activate " 
+.SH NAME
+maw\-activate \- build, then link everything into place
+.SH SYNOPSIS
+\fBmaw activate\fR [\fB\-\-dry\-run\fR] [\fB\-\-force\fR] [\fB\-\-no\-commit\fR] [\fB\-\-no\-build\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+build, then link everything into place
+.SH OPTIONS
+.TP
+\fB\-\-dry\-run\fR
+print the plan without changing anything
+.TP
+\fB\-\-force\fR
+replace drifted files, backing them up
+.TP
+\fB\-\-no\-commit\fR
+don\*(Aqt commit or record a generation this time
+.TP
+\fB\-\-no\-build\fR
+skip nix: activate the committed out/ from its index, e.g. on a fresh machine
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH EXTRA
+see: maw help activating

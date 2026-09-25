@@ -14,7 +14,7 @@ use std::fs;
 pub enum ServicesError {
     #[error("no service {0}")]
     Unknown(String),
-    #[error("a module enables {0} with lib.service; set `enable = false` there instead")]
+    #[error("{0} is enabled by its module; set enable = false there")]
     ModuleEnabled(String),
     #[error(transparent)]
     Activate(#[from] ActivateError),

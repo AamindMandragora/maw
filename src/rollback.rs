@@ -40,7 +40,7 @@ pub enum RollbackError {
     Inputs(#[from] InputsError),
     #[error(transparent)]
     Packages(#[from] PackagesError),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

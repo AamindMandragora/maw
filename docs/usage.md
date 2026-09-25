@@ -33,6 +33,18 @@ Everywhere: `j`/`k` or up/down move, `g`/`G` jump to the top or bottom, `h`/`l`,
 
 Every action runs exactly what the matching command runs. Its output streams into a pane at the bottom, questions (a commit message, `[Y/n]`) appear as popups, and your editor takes over the screen until you close it. Removing, disabling, rolling back, and forcing ask for confirmation first. It asks for your sudo password when it opens, and again before an action if that has expired.
 
+## Completions and man pages
+
+The maw package installs tab completion for bash, zsh, and fish, and man pages: `man maw` for every command (`man maw-install`, `man maw-sv-enable`, ...), and the guides as `maw-usage(7)`, `maw-migrating(7)`, `maw-modules(5)`, and `maw-formats(5)`, the same text as `maw help`.
+
+Completion knows your own names, not just commands: `maw edit <tab>` offers your modules, `maw remove <tab>` your declared packages, `maw sv restart <tab>` your services, `maw rollback <tab>` your generations with their messages. Running maw from a source checkout, load it yourself:
+
+```sh
+source <(COMPLETE=bash maw)                 # bash, in ~/.bashrc
+source <(COMPLETE=zsh maw)                  # zsh, in ~/.zshrc
+COMPLETE=fish maw | source                  # fish, in config.fish
+```
+
 ## Setting up
 
 ```sh

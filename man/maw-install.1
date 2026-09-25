@@ -1,0 +1,21 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-install 1  "maw-install " 
+.SH NAME
+maw\-install \- install packages, record them in maw.nix, scaffold their modules, then activate
+.SH SYNOPSIS
+\fBmaw install\fR [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPACKAGES\fR> 
+.SH DESCRIPTION
+install packages, record them in maw.nix, scaffold their modules, then activate
+.SH OPTIONS
+.TP
+\fB\-\-dry\-run\fR
+print what would change without changing anything
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIPACKAGES\fR>
+names, or cargo:<crate|git url>, go:<path>, xbps:<name>; @version pins
+.SH EXTRA
+see: maw help installing

@@ -19,4 +19,10 @@ post_install() {
 	vinstall registry.nix 644 usr/share/maw
 	vinstall depmap.nix 644 usr/share/maw
 	vlicense LICENSE
+	vcompletion completions/maw.bash bash
+	vcompletion completions/_maw zsh
+	vcompletion completions/maw.fish fish
+	for page in man/*; do
+		vman "$page"
+	done
 }

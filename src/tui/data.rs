@@ -9,6 +9,7 @@ use crate::packages;
 use crate::repo::Repo;
 use crate::runner::Runner;
 use crate::services;
+use crate::style;
 use anyhow::Result;
 use std::fs;
 
@@ -18,7 +19,7 @@ pub fn load(env: &Env, runner: &dyn Runner, tab: Tab) -> Vec<Row> {
         Tab::Packages => packages_rows(env, runner, &repo),
         Tab::Modules => modules_rows(&repo),
         Tab::Services => services_rows(env, runner, &repo),
-        Tab::Status => Ok(cli::status_lines(env, runner, &repo)?.into_iter().map(Row::text).collect()),
+        Tab::Status => Ok(cli::status_lines(env, runner, &repo)?.into_iter().map(|line| Row::text(line.clone()).toned(style::status_tone(&line))).collect()),
         Tab::Diff => Ok(text_rows(&cli::diff_text(env, runner, &repo)?, "no changes")),
         Tab::History => history_rows(env),
         Tab::Git => git_rows(runner, &repo),
@@ -41,7 +42,10 @@ fn packages_rows(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Row>
     };
     Ok(rows
         .iter()
-        .map(|row| Row::new(vec![row.name.clone(), row.version.clone().unwrap_or("-".into()), row.target.backend.clone(), note(row).into()], row.target.to_string()))
+        .map(|row| {
+            let cells = vec![row.name.clone(), row.version.clone().unwrap_or("-".into()), row.target.backend.clone(), note(row).into()];
+            Row::new(cells, row.target.to_string()).toned(style::label_tone(note(row)))
+        })
         .collect())
 }
 
@@ -88,7 +92,7 @@ fn services_rows(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Row>
         .iter()
         .map(|row| {
             let state = row.state.clone().unwrap_or(if row.enabled { "?".into() } else { "-".into() });
-            Row::new(vec![row.name.clone(), row.scope.to_string(), state, note(row).into()], format!("{}:{}", row.scope, row.name))
+            Row::new(vec![row.name.clone(), row.scope.to_string(), state, note(row).into()], format!("{}:{}", row.scope, row.name)).toned(style::label_tone(note(row)))
         })
         .collect())
 }

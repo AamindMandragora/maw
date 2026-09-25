@@ -20,11 +20,11 @@ pub mod xbps_src;
 pub enum ScaffoldError {
     #[error("srcpkgs/{0}/template already exists")]
     Exists(String),
-    #[error("srcpkgs/{0}/template wasn't scaffolded from nixpkgs, so there's nothing to update it from")]
+    #[error("srcpkgs/{0}/template didn't come from nixpkgs")]
     NotFromNix(String),
     #[error("nixpkgs' {0} has no source url to fetch")]
     NoSource(String),
-    #[error("nixpkgs {attr}: unexpected metadata: {source}")]
+    #[error("nixpkgs {attr}: unexpected metadata")]
     Meta { attr: String, source: serde_json::Error },
     #[error(transparent)]
     Eval(#[from] EvalError),
@@ -34,7 +34,7 @@ pub enum ScaffoldError {
     Backend(#[from] BackendError),
     #[error(transparent)]
     Build(#[from] BuildError),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

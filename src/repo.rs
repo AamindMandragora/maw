@@ -9,7 +9,7 @@ pub enum RepoError {
     NotInitialized,
     #[error("dotfiles repo {0} is missing")]
     Missing(PathBuf),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
     #[error(transparent)]
     Run(#[from] RunError),

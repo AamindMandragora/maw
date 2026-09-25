@@ -1,0 +1,24 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-new 1  "maw-new " 
+.SH NAME
+maw\-new \- create modules/<name>.nix, importing any live config, then edit it
+.SH SYNOPSIS
+\fBmaw new\fR [\fB\-\-format\fR] [\fB\-\-no\-activate\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
+.SH DESCRIPTION
+create modules/<name>.nix, importing any live config, then edit it
+.SH OPTIONS
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR
+css, ini, json, kdl, keyValue, raw, shell, or toml; defaults to the registry\*(Aqs
+.TP
+\fB\-\-no\-activate\fR
+only create and edit; activate later
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fINAME\fR>
+the program, as the registry names it
+.SH EXTRA
+see: maw help writing a module

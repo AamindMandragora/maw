@@ -1,0 +1,18 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-search 1  "maw-search " 
+.SH NAME
+maw\-search \- search xbps, or crates.io when xbps has nothing
+.SH SYNOPSIS
+\fBmaw search\fR [\fB\-h\fR|\fB\-\-help\fR] <\fITERM\fR> 
+.SH DESCRIPTION
+search xbps, or crates.io when xbps has nothing
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fITERM\fR>
+a term, or cargo:<term> to search crates.io directly
+.SH EXTRA
+see: maw help looking things up

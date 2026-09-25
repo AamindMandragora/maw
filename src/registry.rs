@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
-    #[error("registry entry {name}: {source}")]
+    #[error("registry entry {name}")]
     Entry { name: String, source: serde_json::Error },
 }
 

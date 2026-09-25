@@ -1,0 +1,576 @@
+.TH "MAW-USAGE" "7" "" "maw 0.1.0" "maw manual"
+.SH NAME
+maw-usage \- setting up, building, activating, day-to-day commands
+.SH "GETTING HELP"
+.PP
+.EX
+maw help              # list topics
+maw help usage        # this guide; also modules, formats
+maw help drift        # any section, by its heading
+maw help add          # a command's options
+.EE
+.PP
+Every command's \fB--help\fR ends with a \fBsee:\fR line naming the section that explains it. On a terminal, help opens in \fB$PAGER\fR (\fBless\fR by default); set \fBNO_COLOR\fR to turn off styling.
+.SH "THE TUI"
+.PP
+.EX
+maw
+.EE
+.PP
+With no arguments, maw opens a full-screen view of everything it manages, one tab per area:
+.PP
+.EX
+tab         shows                                                         keys
+1 packages  what's installed and declared, per source                     i install, r remove, f find in the repos, s sync, A adopt
+2 modules   modules and static dirs, with a preview of the rendered file  e/enter edit, n new, a add a file
+3 services  declared and enabled services, with the selected one's log    e enable, d disable, r restart, s status
+4 status    the same report as maw status                                 a activate, F activate --force
+5 diff      the same diff as maw diff                                     a activate
+6 history   generations, newest first                                     r/enter roll back to the selected one
+7 git       the repo's status and recent commits                          c commit, p push, P pull
+.EE
+.PP
+Everywhere: \fBj\fR/\fBk\fR or up/down move, \fBg\fR/\fBG\fR jump to the top or bottom, \fBh\fR/\fBl\fR, left/right, \fB1\fR-\fB7\fR, or tab switch tabs, \fB/\fR filters the list, \fBo\fR shows or hides the output pane, \fBR\fR reloads, \fB?\fR lists the keys, \fBq\fR quits. The mouse works too: click a tab or a row, scroll to move. On a narrow window the tab names shorten and previews move below the list.
+.PP
+Every action runs exactly what the matching command runs. Its output streams into a pane at the bottom, questions (a commit message, \fB[Y/n]\fR) appear as popups, and your editor takes over the screen until you close it. Removing, disabling, rolling back, and forcing ask for confirmation first. It asks for your sudo password when it opens, and again before an action if that has expired.
+.SH "COMPLETIONS AND MAN PAGES"
+.PP
+The maw package installs tab completion for bash, zsh, and fish, and man pages: \fBman maw\fR for every command (\fBman maw-install\fR, \fBman maw-sv-enable\fR, ...), and the guides as \fBmaw-usage(7)\fR, \fBmaw-migrating(7)\fR, \fBmaw-modules(5)\fR, and \fBmaw-formats(5)\fR, the same text as \fBmaw help\fR.
+.PP
+Completion knows your own names, not just commands: \fBmaw edit <tab>\fR offers your modules, \fBmaw remove <tab>\fR your declared packages, \fBmaw sv restart <tab>\fR your services, \fBmaw rollback <tab>\fR your generations with their messages. Running maw from a source checkout, load it yourself:
+.PP
+.EX
+source <(COMPLETE=bash maw)                 # bash, in ~/.bashrc
+source <(COMPLETE=zsh maw)                  # zsh, in ~/.zshrc
+COMPLETE=fish maw | source                  # fish, in config.fish
+.EE
+.SH "SETTING UP"
+.PP
+.EX
+maw init ~/dotfiles
+.EE
+.PP
+This creates the repo, or fills in whatever an existing one is missing, and records its path in \fB~/.config/maw/dotfiles\fR. Existing files are never overwritten.
+.PP
+.EX
+~/dotfiles/
+  default.nix    # entry point, leave as is
+  config.nix     # your shared values
+  maw.nix        # written by maw
+  modules/       # one <name>.nix per program
+  static/        # verbatim files
+  out/           # rendered output, committed with the repo
+.EE
+.PP
+Every other command finds the repo through that recorded path, so it works from any directory.
+.PP
+Moving an existing setup in? Follow \fBmaw help migrating\fR instead.
+.SS "On a new machine"
+.PP
+.EX
+maw init https://github.com/you/dotfiles          # clones to ~/dotfiles
+maw init git@github.com:you/dotfiles.git ~/dots   # or anywhere
+.EE
+.PP
+Given a git url, \fBinit\fR clones the repo, prints the plan of what activating would do, and asks \fBactivate now? [Y/n]\fR. Saying yes installs every declared package, links and copies every file, and enables every service: the machine becomes the one the repo describes.
+.PP
+Nix isn't needed for that. If it isn't installed, maw activates from the committed \fBout/\fR and its index, \fBout/.maw/index.json\fR, which every activation keeps up to date. To do the same by hand: \fBmaw activate --no-build\fR. Install nix (\fBmaw install nix\fR) before editing modules; without it maw can't render them.
+.SH "BUILDING"
+.PP
+.EX
+maw build
+.EE
+.PP
+Renders every module into \fBout/<name>/\fR, named after the file's destination: \fBout/niri/config.kdl\fR, \fBout/waybar/style.css\fR. Output lists what happened:
+.PP
+.EX
+eval niri
+write out/niri/config.kdl
+remove out/foot/foot.ini
+.EE
+.PP
+\fBup to date\fR means nothing needed doing.
+.PP
+Builds are incremental:
+.IP \(bu 2
+A module is re-evaluated only when its file, \fBconfig.nix\fR, \fBmaw.nix\fR, or maw itself changed. Editing \fBconfig.nix\fR re-evaluates every module.
+.IP \(bu 2
+A file in \fBout/\fR is rewritten only when its content changed.
+.IP \(bu 2
+Files in \fBout/\fR that no module produces anymore are deleted.
+.IP \(bu 2
+A file in \fBout/\fR edited by hand (usually through its link, see drift) is never overwritten. \fBmaw build --force\fR backs up the edit and overwrites it.
+.SH "ACTIVATING"
+.PP
+.EX
+maw activate
+.EE
+.PP
+Builds, then symlinks every file into place:
+.IP \(bu 2
+rendered files link to \fBout/\fR: \fB~/.config/niri/config.kdl -> ~/dotfiles/out/niri/config.kdl\fR
+.IP \(bu 2
+files in \fBstatic/<name>/\fR link as they are, each file on its own: \fBstatic/nvim/init.lua\fR goes to \fB~/.config/nvim/init.lua\fR
+.PP
+.EX
+link ~/.config/niri/config.kdl
+backup ~/.config/fuzzel/fuzzel.ini -> ~/.local/state/maw/backups/.config/fuzzel/fuzzel.ini
+link ~/.config/fuzzel/fuzzel.ini
+update ~/.config/waybar/style.css
+unlink ~/.config/foot/foot.ini
+.EE
+.IP \(bu 2
+\fBlink\fR: a new link. If a real file or someone else's link was already there, it's moved to the backups dir first (\fBbackup\fR).
+.IP \(bu 2
+\fBrelink\fR: the file now comes from somewhere else, e.g. it moved from a module to \fBstatic/\fR.
+.IP \(bu 2
+\fBupdate\fR: the content behind an existing link changed. Nothing needs doing on disk.
+.IP \(bu 2
+\fBunlink\fR: a module or static file was removed, so its link is too. A backup made when it was first linked stays in the backups dir.
+.PP
+Since everything is a link, a change reaches the live file as soon as it's in \fBout/\fR or \fBstatic/\fR. Running \fBmaw activate\fR twice in a row does nothing the second time.
+.SS "System files"
+.PP
+Files under \fB/\fR (a registry entry with \fBroot = true\fR, like greetd's \fB/etc/greetd/config.toml\fR) are copied with \fBsudo\fR instead of linked, since \fB/home\fR may not be mounted when the system reads them at boot:
+.PP
+.EX
+backup /etc/greetd/config.toml -> ~/.local/state/maw/backups/system/etc/greetd/config.toml
+copy /etc/greetd/config.toml
+delete /etc/old/thing.conf
+.EE
+.IP \(bu 2
+\fBcopy\fR: the file is new, or changed in the repo. The first time maw replaces a file it didn't write, the original is saved first (\fBbackup\fR).
+.IP \(bu 2
+\fBdelete\fR: nothing declares it anymore. A file someone edited since maw copied it is left alone.
+.PP
+A copy edited by hand is drift, like an edited link: reported as \fBedited\fR, left alone, and overwritten (after a backup) only with \fB--force\fR.
+.PP
+\fBmaw activate --dry-run\fR prints the plan and changes nothing, not even \fBout/\fR. \fBmaw activate --no-build\fR skips nix and activates what's committed in \fBout/\fR; see on a new machine.
+.SS "Loose static files"
+.PP
+Files at the top of \fBstatic/\fR, outside any \fB<name>/\fR dir, are placed by type:
+.PP
+.EX
+file                         goes to
+executable                   ~/.local/bin/
+image (png, jpg, webp, ...)  ~/.local/share/wallpapers/
+font (ttf, otf, woff, ...)   ~/.local/share/fonts/
+.EE
+.PP
+Anything else, or a file that fits more than one row, gets a question the first time you activate in a terminal:
+.PP
+.EX
+static/notes.txt: [s]cript, [w]allpaper, [f]ont, or a path: ~/notes.txt
+record notes.txt in maw.nix
+.EE
+.PP
+A path works like a registry path: relative paths are under \fB~/.config\fR, and a path ending in \fB/\fR is a directory. The answer is recorded in \fBmaw.nix\fR \fBpaths\fR, so you're asked only once. An empty answer, or a run without a terminal, skips the file for now.
+.SS "Drift"
+.PP
+maw never overwrites a change it didn't make. It reports two kinds:
+.PP
+.EX
+drift ~/.config/niri/config.kdl: replaced by another file; --force to relink
+drift ~/.config/waybar/style.css: edited in place; --force to overwrite
+.EE
+.IP \(bu 2
+\fBreplaced\fR: the link is gone and something else sits there, often an app that saves by writing a new file.
+.IP \(bu 2
+\fBedited\fR: the file was edited through its link, so \fBout/\fR holds your edit instead of what the module renders.
+.PP
+Drifted files are left alone and reported on every run. To keep the change, move it into the module or \fBstatic/\fR. To discard it, run \fBmaw activate --force\fR, which backs up the drifted file and puts maw's version back.
+.PP
+Editing a \fBstatic/\fR file through its link is not drift: the link points straight at \fBstatic/\fR, so you're editing the repo.
+.SH "DAY TO DAY"
+.SS "Writing a module"
+.PP
+.EX
+maw new foot
+maw new foot --format ini
+.EE
+.PP
+Creates \fBmodules/foot.nix\fR, opens it in your editor, and activates when you close it. The format defaults to the registry's for that program (\fBraw\fR if it has none), and a program with several files gets a \fBfiles\fR set with a format per file, guessed from each file's extension.
+.PP
+If the program already has a config where the module will put it, the file is imported as \fBlib.raw\fR, so the module renders exactly what you had:
+.PP
+.EX
+{ config, lib, ... }:
+lib.program "foot" {
+  format = "ini";
+  # imported from ~/.config/foot/foot.ini
+  settings = lib.raw ''
+    [main]
+    font=monospace:size=11
+  '';
+}
+.EE
+.PP
+From there, move settings out of the raw block into Nix at your own pace.
+.SS "Editing"
+.PP
+.EX
+maw edit foot       # modules/foot.nix, or static/foot/ if there's no module
+maw edit config     # config.nix
+.EE
+.PP
+Opens \fB$VISUAL\fR, else \fB$EDITOR\fR, else \fBvi\fR, then activates. If the module doesn't evaluate, maw prints the error and asks whether to reopen it.
+.SS "Adding verbatim files"
+.PP
+.EX
+maw add ~/.config/nvim          # a whole dir, file by file
+maw add ~/.bashrc
+maw add ~/.tmux.conf tmux       # under an explicit name
+.EE
+.PP
+Copies into \fBstatic/\fR and activates, so the original is backed up and replaced by a link to the copy. Each file lands back exactly where it came from:
+.IP \(bu 2
+a path the registry knows is filed under that program: \fB~/.bashrc\fR becomes \fBstatic/bash/.bashrc\fR
+.IP \(bu 2
+a path under \fB~/.config/<name>/\fR is filed under \fB<name>\fR: \fBstatic/nvim/init.lua\fR
+.IP \(bu 2
+anything else goes at the top of \fBstatic/\fR, like a loose file
+.PP
+When the registry alone would put the copy somewhere else, the original path is recorded in \fBmaw.nix\fR \fBpaths\fR. Adding a file maw already links is an error.
+.PP
+\fBedit\fR, \fBnew\fR, and \fBadd\fR all take \fB--no-activate\fR, to change several things and activate once at the end, e.g. when moving an existing setup into maw.
+.SS "Checking"
+.PP
+.EX
+maw status
+.EE
+.PP
+The one report of everything out of sync, one line each, or \fBclean\fR. First what \fBmaw activate\fR would change, then what \fBmaw.nix\fR doesn't cover:
+.PP
+.EX
+label       meaning
+missing     a declared package isn't installed
+new         declared, not linked yet
+blocked     a file maw doesn't manage is in the way; activating backs it up
+changed     a module changed and out/ hasn't caught up
+moved       the file now comes from somewhere else
+stale       no longer declared; activating unlinks, deletes, or disables it
+replaced    drift: the link was replaced
+edited      drift: edited through the link
+unplaced    a loose static file with no destination yet
+disabled    a declared service isn't enabled
+restart     a running service's files changed
+undeclared  installed by hand or enabled, but not in maw.nix; see adopting
+orphan      a module or static/ dir for a program that isn't installed
+outdated    a source package whose template is at a newer version than what's installed; see source packages
+.EE
+.PP
+A program counts as installed when any source has a package by that name or a command by that name is on your \fBPATH\fR, so \fBstatic/nvim/\fR is fine with the \fBneovim\fR package. Data dirs like \fBfonts\fR and \fBwallpapers\fR are never orphans.
+.PP
+.EX
+maw diff
+.EE
+.PP
+A unified diff of each live file against what maw would put there, the same as \fBmaw activate --force\fR would leave. Removed links diff against nothing. Neither command writes anything.
+.SS "Adopting"
+.PP
+.EX
+maw adopt
+maw adopt --dry-run    # print the checklist instead
+.EE
+.PP
+Lists everything \fBstatus\fR calls \fBundeclared\fR in your editor, one line each, every line starting as \fBkeep\fR:
+.PP
+.EX
+# maw adopt: `keep` records it in maw.nix, `skip` (or deleting the line) ignores it from now on
+
+# packages (xbps)
+keep firefox
+skip base-devel
+
+# packages (cargo)
+keep https://github.com/vitali87/croft.git
+
+# services (system)
+keep NetworkManager
+skip agetty-tty3
+.EE
+.PP
+Save and quit, and \fBkeep\fR lines are recorded in \fBmaw.nix\fR like \fBmaw install\fR or \fBmaw sv enable\fR would, while \fBskip\fR lines go under \fBignored\fR:
+.PP
+.EX
+ignored = {
+  packages = {
+    xbps = [ "base-devel" ];
+  };
+  services = {
+    system = [ "agetty-tty3" ];
+  };
+};
+.EE
+.PP
+Ignored things stay installed and enabled; maw just stops mentioning them. Nothing is installed, removed, or restarted by \fBadopt\fR. Only packages you installed by hand are offered, never their dependencies.
+.SH "PACKAGES"
+.PP
+Packages you want on the machine are declared in \fBmaw.nix\fR, one list per source:
+.PP
+.EX
+packages = {
+  xbps = [ "foot" "niri" ];
+  cargo = [ "bat" "typos-cli@1.24" "https://github.com/vitali87/croft.git" ];
+  go = [ "github.com/jesseduffield/lazygit" ];
+};
+.EE
+.PP
+maw writes those lists; you change them with the commands below. \fBmaw activate\fR installs anything declared but missing, before it links files. Nothing is ever removed just because it isn't declared.
+.SS "Installing"
+.PP
+.EX
+maw install foot                                   # from the void repos
+maw install hello-cli                              # not in xbps: asks before using crates.io
+maw install cargo:bat@0.24                         # a crate, pinned to a version
+maw install cargo:https://github.com/user/tool.git # a crate from git
+maw install go:github.com/jesseduffield/lazygit    # a go program
+maw install foot --dry-run
+.EE
+.PP
+.EX
+install foot
+record foot in maw.nix
+create modules/foot.nix
+.EE
+.PP
+A bare name goes to whichever source already declares it, else to xbps. If xbps doesn't have it but crates.io has a crate by that name, maw asks first:
+.PP
+.EX
+hello-cli isn't in xbps; install crate hello-cli 0.2.2 from crates.io? [Y/n]
+.EE
+.PP
+Without a terminal it stops and suggests \fBcargo:<name>\fR instead. Library crates, which build no program, are refused before any question, since there's nothing to install; add them to a project with \fBcargo add\fR instead. A \fBcargo:\fR, \fBgo:\fR, or \fBxbps:\fR prefix skips all of that. \fB@version\fR pins a crate or go program to that version; without it you get the latest.
+.PP
+Then maw installs (\fBsudo xbps-install\fR, \fBcargo install --locked\fR, or \fBgo install\fR), records the package in \fBmaw.nix\fR, and, when the registry knows the program and the repo has no module or \fBstatic/\fR dir for it yet, creates its module the way \fBmaw new\fR does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+.PP
+cargo installs into \fB~/.cargo/bin\fR, go into \fB$GOBIN\fR (or \fB$GOPATH/bin\fR, or \fB~/go/bin\fR). maw leaves your shell config alone, but warns after an install if that dir isn't on your \fBPATH\fR, naming the line to add.
+.SS "Removing"
+.PP
+.EX
+maw remove foot
+maw remove bat          # a crate, found by name
+maw remove lazygit      # a go program, by its binary or path
+.EE
+.PP
+Removes the package and drops it from \fBmaw.nix\fR. xbps also removes dependencies nothing else needs; go programs are deleted from the bin dir. Its module stays, so reinstalling brings the config back; delete \fBmodules/foot.nix\fR yourself if you're done with it. \fB--dry-run\fR prints the plan.
+.SS "Looking things up"
+.PP
+.EX
+maw query           # packages you installed or declared, in every source
+maw query bat       # one of them
+maw search term     # xbps, or crates.io when xbps has nothing; [*] marks installed
+maw search cargo:term
+maw info bat        # details, plus whether maw manages it
+.EE
+.PP
+\fBquery\fR lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: \fB(undeclared)\fR for installed but not in \fBmaw.nix\fR, \fB(missing)\fR for declared but not installed. Crates and go programs are marked with their source. \fBsearch\fR prints names the way \fBmaw install\fR takes them. \fBinfo\fR shows the version, whether it's installed and declared, the module or \fBstatic/\fR dir holding its config, and where the registry puts that config.
+.SS "Source packages"
+.PP
+Anything the Void repos don't have, you can build yourself with an xbps-src template in \fBsrcpkgs/<name>/template\fR:
+.PP
+.EX
+maw src new hello        # writes a blank template and opens it
+maw install hello        # builds it with xbps-src, installs it, records it
+maw src build hello      # rebuilds after you change the template
+.EE
+.PP
+To draft a template from nixpkgs instead of writing one:
+.PP
+.EX
+maw src new lazygit --from-nix           # from nixpkgs' lazygit
+maw src new rg --from-nix ripgrep        # a different name than nixpkgs uses
+maw src update lazygit                   # later: move it to nixpkgs' current version, then rebuild
+.EE
+.PP
+maw reads the package's metadata from nixpkgs (it never builds with nix) and fills in the version, description, license, homepage, source url and its checksum, the build style (go, cargo, meson, cmake, python, or configure), and the dependencies, using Void's names:
+.PP
+.EX
+# scaffolded by maw from nixpkgs 'ripgrep' at 4975466d3247
+pkgname=ripgrep
+version=15.2.0
+revision=1
+build_style=cargo
+hostmakedepends="pkg-config"
+makedepends="pcre2-devel"
+# TODO: nix had 'libfoo'
+\&...
+.EE
+.PP
+A dependency maw can't match to a Void package is left as a \fB# TODO\fR line. Fix it by hand; when you close the editor, maw asks whether to remember what you replaced it with (\fBrecord libfoo -> foo-devel in depmap? [Y/n]\fR) and saves it to \fBdepmap.nix\fR in your repo, so the next scaffold gets it right. Nix-only build helpers are dropped on their own. Check a draft before building: nixpkgs sometimes patches or configures a package in ways a template needs spelled out, like ripgrep's \fBconfigure_args="--features=pcre2"\fR.
+.PP
+The nixpkgs checkout lives at \fB~/.local/share/maw/nixpkgs\fR (a shallow nixos-unstable clone, about 400MB), made on first use; \fBmaw.nixpkgs\fR in \fBconfig.nix\fR points elsewhere. \fBsrc update\fR works on templates \fB--from-nix\fR wrote, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay.
+.PP
+A name with a template in \fBsrcpkgs/\fR is always a source build, and it's recorded under \fBpackages.xbps\fR like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the Void manual on templates (https://github.com/void-linux/void-packages/blob/master/Manual.md).
+.PP
+Builds happen in a void-packages clone maw keeps at \fB~/.local/share/maw/void-packages\fR. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is linked into the clone's \fBsrcpkgs/\fR and built with \fBxbps-src pkg <name>\fR, and the package is installed from the clone's \fBhostdir/binpkgs\fR. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in \fBconfig.nix\fR:
+.PP
+.EX
+maw.voidPackages = "~/void-packages";
+.EE
+.PP
+Activation builds and installs a declared source package that isn't installed at all. It doesn't rebuild on its own when you change a template: \fBmaw status\fR shows \fBoutdated hello 0.1_1 -> 0.2_1\fR, and \fBmaw src build hello\fR (or the next \fBmaw sync\fR) rebuilds it and upgrades the installed package.
+.PP
+While any source package is declared, maw also manages \fB/etc/xbps.d/10-maw-local.conf\fR, which adds the clone's \fBhostdir/binpkgs\fR to xbps's repositories, so \fBxbps-query\fR, \fBxbps-install\fR, and \fBxbps-install -Su\fR see your builds like any other package.
+.SS "Updating"
+.PP
+.EX
+maw sync
+.EE
+.PP
+Upgrades the system (\fBxbps-install -Su\fR), then every crate and go program that isn't pinned to a version, then rebuilds every source package whose template is ahead of what's installed (this is how maw updates itself: bump \fBsrcpkgs/maw/template\fR, then \fBmaw sync\fR). Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
+.SH "SERVICES"
+.PP
+Services are supervised by runit. There are two kinds:
+.IP \(bu 2
+\fBsystem\fR services run from boot as root. Definitions live in \fB/etc/sv/<name>/\fR, enabled by a link in \fB/var/service/\fR.
+.IP \(bu 2
+\fBuser\fR services run as you, in your session, started by turnstile at login. Definitions live in \fB~/.config/sv/<name>/\fR, enabled by a link in \fB~/.config/service/\fR.
+.PP
+A service is enabled when \fBmaw.nix\fR lists it, or when a module defines it with \fBlib.service\fR (see \fBmaw help lib.service\fR):
+.PP
+.EX
+services = {
+  system = [ "NetworkManager" "dbus" ];
+  user = [ "pipewire" ];
+};
+.EE
+.PP
+\fBmaw activate\fR enables what's declared, disables what maw enabled that no longer is (\fBsv down\fR first), and restarts running services whose files changed:
+.PP
+.EX
+copy /etc/sv/backup/run
+enable backup
+restart rclone (user)
+.EE
+.PP
+Services maw didn't enable are never touched by activation.
+.SS "Service commands"
+.PP
+.EX
+maw sv list                   # declared and enabled services, and their state
+maw sv enable NetworkManager  # record in maw.nix, then activate
+maw sv disable bluetoothd     # stop and unlink now, drop from maw.nix
+maw sv status greetd
+maw sv restart greetd
+maw sv log rclone             # follow its log
+.EE
+.PP
+A name is looked up in maw.nix and modules first, then among enabled services, then among definitions; \fB--user\fR or \fB--system\fR picks one when a name exists in both, e.g. while moving a system service to your session. \fBenable\fR works for any service with a definition, like the ones Void packages install into \fB/etc/sv\fR. A service a module enables can't be disabled from here: set \fBenable = false\fR in its \fBlib.service\fR.
+.PP
+\fBsv list\fR flags \fB(disabled)\fR for declared but not enabled and \fB(undeclared)\fR for enabled but not declared. Reading a system service's state needs root, so it shows \fB?\fR unless \fBsudo\fR needs no password.
+.SS "Logs"
+.PP
+Services maw writes log through \fBsvlogd\fR: system ones to \fB/var/log/<name>/\fR, user ones to \fB~/.local/state/log/<name>/\fR, rotated automatically. \fBmaw sv log <name>\fR follows the \fBcurrent\fR file.
+.SH "GENERATIONS"
+.PP
+Every activation that changes something is a generation: maw commits your whole repo (modules, static files, \fBconfig.nix\fR, \fBmaw.nix\fR, and \fBout/\fR) and records it. The same happens after \fBinstall\fR, \fBremove\fR, \fBsv enable\fR, \fBsv disable\fR, \fBadopt\fR, and \fBpull\fR, since each ends by activating.
+.PP
+Before committing, maw asks for a message, offering a generated one:
+.PP
+.EX
+commit message [generation 12: niri, waybar; 2 links; install foot]:
+generation 12 (3f9a2c1)
+.EE
+.PP
+Press enter to take it. Without a terminal the generated one is used.
+.PP
+.EX
+maw generations
+.EE
+.PP
+.EX
+  11  2026-09-22 21:04  e761146  initial dotfiles
+  12  2026-09-23 14:02  3f9a2c1  generation 12: niri, waybar; 2 links; install foot
+.EE
+.PP
+Each generation also records the exact version of every installed package in every source, in \fB~/.local/state/maw/generations\fR. That log belongs to the machine, not the repo: two machines sharing a repo each have their own.
+.PP
+To skip committing once, \fBmaw activate --no-commit\fR. To turn it off, in \fBconfig.nix\fR:
+.PP
+.EX
+maw.autoCommit = false;
+.EE
+.PP
+To commit by hand, e.g. edits you haven't activated yet:
+.PP
+.EX
+maw commit -m "try a lighter bar"
+maw commit            # git opens your editor for the message
+.EE
+.SS "Rolling back"
+.PP
+.EX
+maw rollback            # to the generation before the latest
+maw rollback 11         # to generation 11
+maw rollback --dry-run
+.EE
+.PP
+.EX
+restore generation 11 (e761146)
+remove cargo:bat
+install libportal-0.10.0_1
+keep firefox: firefox-150.0_1 isn't in the cache or the repo
+hold libportal
+.EE
+.PP
+A rollback is itself a new generation, so history only moves forward and you can roll back a rollback. It:
+.IP 1. 4
+restores the repo to that generation's commit (it needs no uncommitted changes, so \fBmaw commit\fR first),
+.IP 2. 4
+removes packages declared now but not then, and puts every package declared then back at the version that generation recorded,
+.IP 3. 4
+activates, which relinks config and re-enables services the way they were.
+.PP
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in \fB/var/cache/xbps\fR (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's \fBhostdir/binpkgs\fR, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. crates and go programs are reinstalled at their recorded version.
+.PP
+xbps packages left behind the repo's newest version are held, so \fBmaw sync\fR doesn't undo the rollback. They stay held until \fBmaw sync --release\fR, or until a later rollback puts them back at the newest version.
+.SS "Sharing"
+.PP
+.EX
+maw push      # to the repo's remote, setting it as upstream
+maw pull      # fast-forward only, then activate
+.EE
+.PP
+Both need a remote: \fBgit -C ~/dotfiles remote add origin <url>\fR. \fBpull\fR refuses to merge; if both sides changed, sort it out with git, then \fBmaw activate\fR.
+.PP
+Since \fBout/\fR is committed, push after activating rather than after editing: then the other machine pulls output that already matches the source, re-renders nothing, and makes no commit of its own. Pushing source that was never activated means the pulling machine renders and commits new \fBout/\fR itself, and the two sides diverge until one of them pulls the other's commit.
+.SH "WHERE FILES GO"
+.PP
+You never write destination paths. Each program name maps to destinations through the registry, checked in this order:
+.IP 1. 4
+\fBpaths\fR in your \fBmaw.nix\fR, recorded when maw had to ask you
+.IP 2. 4
+the registry shipped with maw (\fB/usr/share/maw/registry.nix\fR)
+.IP 3. 4
+\fB~/.config/<name>/\fR, with the main file named \fBconfig\fR
+.PP
+A registry entry looks like this:
+.PP
+.EX
+waybar = {
+  format = "json";
+  files = {
+    main = "waybar/config.jsonc";
+    style = "waybar/style.css";
+  };
+};
+.EE
+.PP
+Paths in \fBfiles\fR are relative to \fB~/.config\fR, unless they start with \fB~/\fR (your home) or \fB/\fR (the system). File roles not listed in \fBfiles\fR go under \fBdir\fR, which defaults to the program name. \fBroot = true\fR marks system files, and \fBexecutable = true\fR marks scripts.
+.SH "STATE"
+.PP
+maw keeps its own bookkeeping outside the repo:
+.PP
+.EX
+~/.config/maw/dotfiles       # path of your repo
+~/.local/state/maw/inputs    # stamps of input files, to skip re-reading unchanged ones
+~/.local/state/maw/cache/    # evaluated modules, reused while their inputs are unchanged
+~/.local/state/maw/outputs   # hash of each out/ file as maw last wrote it
+~/.local/state/maw/manifest  # every link and root copy the last activation made, with content hashes, and the services it enabled
+~/.local/state/maw/backups/  # files moved aside, mirrored by path under home (system/ for the rest)
+~/.local/state/maw/generations  # one line per generation: number, time, commit, message, package versions
+~/.local/state/maw/held      # xbps packages a rollback is holding back
+.EE
+.PP
+\fBinputs\fR and \fBcache/\fR are safe to delete. Deleting \fBoutputs\fR or \fBmanifest\fR makes maw forget what it wrote, so drift goes unnoticed until the next activation.

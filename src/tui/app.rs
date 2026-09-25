@@ -1,5 +1,6 @@
 use crate::cli::{Command, ServiceName, SvAction};
 use crate::init::Scope;
+use crate::style::Tone;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::cell::RefCell;
@@ -49,21 +50,26 @@ impl Tab {
     }
 }
 
-// one line of a tab: its columns, and the key actions use (a package target, a module name, a generation number)
+// one line of a tab: its columns, the key actions use (a package target, a module name, a generation number), and its tone
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     pub cells: Vec<String>,
     pub key: String,
+    pub tone: Option<Tone>,
 }
 
 impl Row {
     pub fn new(cells: Vec<String>, key: impl Into<String>) -> Self {
-        Row { cells, key: key.into() }
+        Row { cells, key: key.into(), tone: None }
     }
 
     // a plain line of text with no key
     pub fn text(line: impl Into<String>) -> Self {
-        Row { cells: vec![line.into()], key: String::new() }
+        Row { cells: vec![line.into()], key: String::new(), tone: None }
+    }
+
+    pub fn toned(self, tone: Option<Tone>) -> Self {
+        Row { tone, ..self }
     }
 }
 
@@ -116,11 +122,10 @@ pub enum Request {
     Quit,
 }
 
-// where the last frame drew clickable things: each tab's columns in the tab bar, and the list with its scroll
+// where the last frame drew clickable things: each tab as (row, first column, end column), and the list with its scroll
 #[derive(Debug, Default, Clone)]
 pub struct Hits {
-    pub tabs: Vec<(u16, u16)>,
-    pub bar_y: u16,
+    pub tabs: Vec<(u16, u16, u16)>,
     pub list: Rect,
     pub offset: usize,
 }
@@ -202,8 +207,8 @@ impl App {
         match mouse.kind {
             MouseEventKind::ScrollDown => *selected = (*selected + 1).min(last),
             MouseEventKind::ScrollUp => *selected = selected.saturating_sub(1),
-            MouseEventKind::Down(MouseButton::Left) if mouse.row == hits.bar_y => {
-                if let Some(index) = hits.tabs.iter().position(|(start, end)| (*start..*end).contains(&mouse.column)) {
+            MouseEventKind::Down(MouseButton::Left) if hits.tabs.iter().any(|(row, _, _)| *row == mouse.row) => {
+                if let Some(index) = hits.tabs.iter().position(|(row, start, end)| *row == mouse.row && (*start..*end).contains(&mouse.column)) {
                     self.tab = index;
                 }
             }
@@ -472,7 +477,7 @@ mod tests {
     fn clicks_pick_tabs_and_rows_and_the_wheel_scrolls() {
         let mut app = App::new();
         app.set_rows(Tab::Packages, rows(&["a", "b", "c", "d"]));
-        *app.hits.borrow_mut() = Hits { tabs: vec![(0, 10), (11, 20)], bar_y: 0, list: Rect::new(0, 1, 40, 10), offset: 1 };
+        *app.hits.borrow_mut() = Hits { tabs: vec![(0, 0, 10), (0, 11, 20)], list: Rect::new(0, 1, 40, 10), offset: 1 };
         let click = |column, row| MouseEvent { kind: MouseEventKind::Down(MouseButton::Left), column, row, modifiers: KeyModifiers::NONE };
 
         app.handle_mouse(click(5, 3));

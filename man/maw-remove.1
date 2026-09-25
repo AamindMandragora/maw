@@ -1,0 +1,21 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-remove 1  "maw-remove " 
+.SH NAME
+maw\-remove \- remove packages and drop them from maw.nix; their modules stay
+.SH SYNOPSIS
+\fBmaw remove\fR [\fB\-\-dry\-run\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPACKAGES\fR> 
+.SH DESCRIPTION
+remove packages and drop them from maw.nix; their modules stay
+.SH OPTIONS
+.TP
+\fB\-\-dry\-run\fR
+print what would change without changing anything
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIPACKAGES\fR>
+
+.SH EXTRA
+see: maw help removing

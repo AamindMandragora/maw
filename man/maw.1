@@ -1,0 +1,92 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw 1  "maw 0.1.0" 
+.SH NAME
+maw \- declarative system manager for void linux
+.SH SYNOPSIS
+\fBmaw\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+declarative system manager for void linux
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+maw\-init(1)
+create a dotfiles repo, or adopt an existing one
+.TP
+maw\-build(1)
+render changed modules into out/
+.TP
+maw\-activate(1)
+build, then link everything into place
+.TP
+maw\-edit(1)
+open a module, static dir, or config.nix (`config`) in $EDITOR, then activate
+.TP
+maw\-new(1)
+create modules/<name>.nix, importing any live config, then edit it
+.TP
+maw\-add(1)
+copy a file or dir into static/, then activate so it\*(Aqs linked back in place
+.TP
+maw\-diff(1)
+show what activating would change in each live file
+.TP
+maw\-status(1)
+everything out of sync: files, packages, services, and config for missing programs
+.TP
+maw\-adopt(1)
+record installed packages and enabled services maw.nix doesn\*(Aqt know about
+.TP
+maw\-install(1)
+install packages, record them in maw.nix, scaffold their modules, then activate
+.TP
+maw\-remove(1)
+remove packages and drop them from maw.nix; their modules stay
+.TP
+maw\-query(1)
+list packages you installed, or show one
+.TP
+maw\-search(1)
+search xbps, or crates.io when xbps has nothing
+.TP
+maw\-info(1)
+a package\*(Aqs details, and whether maw manages it
+.TP
+maw\-sync(1)
+upgrade the system, then every unpinned cargo and go package
+.TP
+maw\-rollback(1)
+restore a generation\*(Aqs repo and package versions, as a new generation
+.TP
+maw\-sv(1)
+services: list, enable, disable, status, restart, log
+.TP
+maw\-generations(1)
+list generations: each activation that changed something
+.TP
+maw\-commit(1)
+commit every change in the repo
+.TP
+maw\-push(1)
+push the repo to its remote
+.TP
+maw\-pull(1)
+pull the repo from its remote, then activate
+.TP
+maw\-src(1)
+packages built from your own xbps\-src templates in srcpkgs/
+.TP
+maw\-help(1)
+read the docs: a topic, a command, or any section by its heading
+.SH EXTRA
+see: maw help
+.SH VERSION
+v0.1.0
+.SH "SEE ALSO"
+\fBmaw-usage\fR(7), \fBmaw-migrating\fR(7), \fBmaw-modules\fR(5), \fBmaw-formats\fR(5)

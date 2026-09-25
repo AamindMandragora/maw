@@ -14,11 +14,11 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
-    #[error("no out/.maw/index.json in {0}; activate once with nix installed to write it")]
+    #[error("no out/.maw/index.json in {0}; activate once with nix installed")]
     Missing(String),
     #[error(transparent)]
     Inputs(#[from] InputsError),
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 

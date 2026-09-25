@@ -17,7 +17,7 @@ use std::path::PathBuf;
 pub enum PackagesError {
     #[error("no package {0}; `maw search {0}` to look for it")]
     NotFound(String),
-    #[error("{0} isn't in xbps; install it from crates.io with `maw install cargo:{0}`")]
+    #[error("{0} isn't in xbps; install the crate with `maw install cargo:{0}`")]
     Unconfirmed(String),
     #[error("{0} is a library crate, not a program; add it to a project with `cargo add {0}`")]
     Library(String),
@@ -31,7 +31,7 @@ pub enum PackagesError {
     State(#[from] StateError),
     #[error(transparent)]
     Build(#[from] BuildError),
-    #[error("no template srcpkgs/{0}/template; create one with `maw src new {0}`")]
+    #[error("no srcpkgs/{0}/template; create one with `maw src new {0}`")]
     NoTemplate(String),
 }
 

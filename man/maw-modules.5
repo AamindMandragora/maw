@@ -1,0 +1,136 @@
+.TH "MAW-MODULES" "5" "" "maw 0.1.0" "maw manual"
+.SH NAME
+maw-modules \- writing modules: lib.program, lib.raw, config.nix
+.SH DESCRIPTION
+.PP
+A dotfiles repo looks like this:
+.PP
+.EX
+dotfiles/
+  default.nix    # import <maw> { dotfiles = ./.; }
+  config.nix     # your settings: fonts, colors, anything modules share
+  maw.nix        # written by maw: packages, services, recorded paths
+  modules/       # one <name>.nix per program
+.EE
+.SH "A MODULE"
+.PP
+A module is a function that returns the files for one program. It names the program, never a path. maw works out where the file goes.
+.PP
+.EX
+{ config, lib, ... }:
+lib.program "foot" {
+  format = "ini";
+  settings = {
+    main.font = "${config.font.mono}:size=${toString config.font.size}";
+    colors = config.colors.foot;
+  };
+}
+.EE
+.PP
+The arguments:
+.IP \(bu 2
+\fBconfig\fR: the contents of \fBconfig.nix\fR. It can be an attrset, or a function taking \fB{ lib }\fR.
+.IP \(bu 2
+\fBlib\fR: the nixpkgs lib plus maw's additions (below).
+.IP \(bu 2
+\fBmaw\fR: the contents of \fBmaw.nix\fR.
+.SH "LIB.PROGRAM NAME { ... }"
+.PP
+.EX
+option      default               meaning
+format      "raw"                 how to render settings; see maw help formats
+settings                          the file's contents as Nix values
+files       { main = settings; }  several files, keyed by role
+executable  false                 mark the output executable
+path                              a subpath for the main file, when the program needs one
+scope       "user"                "user" or "root"
+.EE
+.PP
+Programs with more than one file use \fBfiles\fR. \fBformat\fR can then be one string for all files, or an attrset with one format per file:
+.PP
+.EX
+lib.program "waybar" {
+  format = { main = "json"; style = "css"; };
+  files = {
+    main = { layer = "top"; modules-right = [ "clock" ]; };
+    style."window#waybar".background = "#1e1e2e";
+  };
+}
+.EE
+.PP
+A plain string or \fBlib.raw\fR as a file's settings is written verbatim, whatever the format.
+.SH "LIB.SERVICE NAME { ... }"
+.PP
+Describes a runit service. maw writes its \fBrun\fR and \fBlog/run\fR files and enables it; see "Services" in \fBmaw help usage\fR.
+.PP
+.EX
+option  default   meaning
+scope   "system"  "system" runs from boot as root, "user" runs as you from login
+run               the script: shell text, or a whole script with its own #! line
+log     true      log through svlogd to /var/log/<name>/ or ~/.local/state/log/<name>/
+enable  true      link it into place; false writes the definition but leaves it off
+env     { }       variables exported before run, literally: no $ expansion
+.EE
+.PP
+.EX
+{ config, lib, ... }:
+lib.service "rclone" {
+  scope = "user";
+  env.RCLONE_VFS_CACHE_MODE = "full";
+  run = ''
+    exec rclone --config "$HOME/.config/rclone/rclone.conf" mount "Google Drive:" "$HOME/Google Drive"
+  '';
+}
+.EE
+.PP
+The run script gets \fBexec 2>&1\fR first, so errors reach the log, then the \fBenv\fR exports. It should end by \fBexec\fRing the long-running program, which runit supervises and restarts when it exits. A module can return a service alongside program files as a list: \fB[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]\fR.
+.SH "VERBATIM TEXT"
+.PP
+\fBlib.raw ''...''\fR is accepted anywhere a value is. Use it where Nix syntax doesn't reach, and mix it freely with Nix in one file:
+.PP
+.EX
+settings = {
+  main.pad = "8x8";
+  bindings = lib.raw ''
+    [key-bindings]
+    clipboard-copy=Control+Shift+c
+  '';
+};
+.EE
+.SH "ORDERING"
+.PP
+Nix sorts attrset keys alphabetically, so rendered files come out sorted. When order matters, like niri window rules or CSS cascade, use a list.
+.SH "SHARING VALUES"
+.PP
+Anything several modules use, like colors, fonts, or your terminal, belongs in \fBconfig.nix\fR:
+.PP
+.EX
+{
+  font.ui = "Adwaita Sans";
+  colors.text = "f2f2f7";
+  terminal = "ghostty";
+}
+.EE
+.PP
+Then \fBconfig.colors.text\fR in fuzzel, waybar, and niri all read the same value. Plain \fBlet\fR bindings and functions work too, for repetition inside one module:
+.PP
+.EX
+let
+  workspaceBinds = prefix: action:
+    lib.listToAttrs (map (n: lib.nameValuePair "${prefix}${toString n}" { ${action} = n; }) (lib.range 1 9));
+in
+# ...
+binds = workspaceBinds "Mod+" "focus-workspace" // { "Mod+Q".close-window = null; };
+.EE
+.PP
+\fBtests/fixtures/dotfiles/modules/\fR has complete real-world modules for niri, waybar, and fuzzel.
+.SH "RENDERING A MODULE BY HAND"
+.PP
+\fB-I maw=\fR points at maw's \fBnix/\fR directory:
+.PP
+.EX
+nix-instantiate --eval --strict --raw -I maw=./nix \e
+  -E '(builtins.head (import ./path/to/dotfiles).modules.fuzzel).content'
+.EE
+.PP
+Each module evaluates to a list of \fB{ name, key, content, executable, scope }\fR, one entry per file.

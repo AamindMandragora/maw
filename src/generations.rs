@@ -11,9 +11,9 @@ use std::path::{Component, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GenerationsError {
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
-    #[error("{path}: bad generation entry: {source}")]
+    #[error("{path}: bad generation entry")]
     Parse { path: PathBuf, source: serde_json::Error },
     #[error(transparent)]
     Run(#[from] RunError),
@@ -21,7 +21,7 @@ pub enum GenerationsError {
     Backend(#[from] BackendError),
     #[error("{0} has no remote; add one with `git -C {0} remote add origin <url>`")]
     NoRemote(String),
-    #[error("pull failed; if both sides have new commits, merge them with git in {0}, then run `maw activate`")]
+    #[error("can't fast-forward {0}; merge with git in {0}, then maw activate")]
     PullFailed(String),
 }
 

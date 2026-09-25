@@ -12,9 +12,9 @@ pub enum EvalError {
     Nix { what: String, message: String },
     #[error(transparent)]
     Run(RunError),
-    #[error("{what}: unexpected evaluator output: {source}")]
+    #[error("{what}: unexpected evaluator output")]
     Shape { what: String, source: serde_json::Error },
-    #[error("{path}: {source}")]
+    #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
 
