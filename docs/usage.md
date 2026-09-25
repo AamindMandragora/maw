@@ -408,7 +408,7 @@ The nixpkgs checkout lives at `~/.local/share/maw/nixpkgs` (a shallow nixos-unst
 
 A name with a template in `srcpkgs/` is always a source build, and it's recorded under `packages.xbps` like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the [Void manual on templates](https://github.com/void-linux/void-packages/blob/master/Manual.md).
 
-Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-packages`. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is linked into the clone's `srcpkgs/` and built with `xbps-src pkg <name>`, and the package is installed from the clone's `hostdir/binpkgs`. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in `config.nix`:
+Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-packages`. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is copied into the clone's `srcpkgs/` and built with `xbps-src pkg <name>`, and the package is installed from the clone's `hostdir/binpkgs`. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in `config.nix`:
 
 ```nix
 maw.voidPackages = "~/void-packages";

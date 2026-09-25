@@ -4,7 +4,6 @@ use crate::env::Env;
 use crate::runner::Runner;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 const VOID_PACKAGES: &str = "https://github.com/void-linux/void-packages.git";
@@ -66,27 +65,32 @@ impl<'a> SrcPkgs<'a> {
         Ok(self.runner.interactive(&self.clone.join("xbps-src").display().to_string(), &["binary-bootstrap".into()])?)
     }
 
-    // links the template into the clone's srcpkgs, unless void-packages has its own package by that name
-    fn link(&self, name: &str) -> Result<(), BackendError> {
-        let (link, template) = (self.clone.join("srcpkgs").join(name), self.templates.join(name));
-        match fs::read_link(&link) {
-            Ok(target) if target == template => return Ok(()),
-            Ok(_) => fs::remove_file(&link).map_err(io(&link))?,
-            Err(_) if fs::symlink_metadata(&link).is_ok() => return Err(BackendError::Taken(name.into())),
+    // copies the template into the clone's srcpkgs, fresh each build, unless void-packages has its own package by that name;
+    // a copy rather than a link, since xbps-src treats a symlinked srcpkgs entry as a subpackage
+    fn place(&self, name: &str) -> Result<(), BackendError> {
+        let copy = self.clone.join("srcpkgs").join(name);
+        if self.is_official(name) {
+            return Err(BackendError::Taken(name.into()));
+        }
+
+        // clear the last copy, or a link from before maw copied
+        match fs::symlink_metadata(&copy) {
+            Ok(meta) if meta.is_dir() => fs::remove_dir_all(&copy).map_err(io(&copy))?,
+            Ok(_) => fs::remove_file(&copy).map_err(io(&copy))?,
             Err(_) => {}
         }
-        fs::create_dir_all(link.parent().unwrap()).map_err(io(&link))?;
-        symlink(&template, &link).map_err(io(&link))?;
+
+        copy_dir(&self.templates.join(name), &copy)?;
         self.exclude(name)
     }
 
-    // keeps a linked template out of the clone's git status
+    // keeps a copied template out of the clone's git status
     fn exclude(&self, name: &str) -> Result<(), BackendError> {
         let exclude = self.clone.join(".git/info/exclude");
-        let line = format!("/srcpkgs/{name}");
-        if fs::read_to_string(&exclude).unwrap_or_default().lines().any(|existing| existing == line) {
+        if self.is_ours(name) {
             return Ok(());
         }
+        let line = format!("/srcpkgs/{name}");
         fs::create_dir_all(exclude.parent().unwrap()).map_err(io(&exclude))?;
         let mut file = fs::OpenOptions::new().create(true).append(true).open(&exclude).map_err(io(&exclude))?;
         writeln!(file, "{line}").map_err(io(&exclude))
@@ -97,7 +101,7 @@ impl<'a> SrcPkgs<'a> {
         self.ensure_clone()?;
         let xbps_src = self.clone.join("xbps-src").display().to_string();
         names.iter().try_for_each(|name| {
-            self.link(name)?;
+            self.place(name)?;
             Ok(self.runner.interactive(&xbps_src, &["pkg".into(), name.clone()])?)
         })
     }
@@ -108,10 +112,15 @@ impl<'a> SrcPkgs<'a> {
         Xbps::new(self.runner, &self.env).install_from(&self.binpkgs(), names, force)
     }
 
-    // whether the clone has its own package by this name, not a link to one of ours
+    // whether this name is in the exclude list, which marks the clone's copies of our templates
+    fn is_ours(&self, name: &str) -> bool {
+        let line = format!("/srcpkgs/{name}");
+        fs::read_to_string(self.clone.join(".git/info/exclude")).unwrap_or_default().lines().any(|existing| existing == line)
+    }
+
+    // whether the clone has its own package by this name, not a copy of ours
     fn is_official(&self, name: &str) -> bool {
-        let entry = self.clone.join("srcpkgs").join(name);
-        fs::symlink_metadata(&entry).is_ok() && fs::read_link(&entry).map_or(true, |target| target != self.templates.join(name))
+        fs::symlink_metadata(self.clone.join("srcpkgs").join(name)).is_ok() && !self.is_ours(name)
     }
 
     // writes a blank srcpkgs/<name>/template, refusing names void-packages already uses
@@ -132,10 +141,27 @@ impl<'a> SrcPkgs<'a> {
     }
 }
 
+// copies a directory tree, files keeping their permissions
+fn copy_dir(from: &Path, to: &Path) -> Result<(), BackendError> {
+    fs::create_dir_all(to).map_err(io(to))?;
+
+    // each entry, recursing into subdirectories like files/ and patches/
+    fs::read_dir(from).map_err(io(from))?.try_for_each(|entry| {
+        let entry = entry.map_err(io(from))?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target)
+        } else {
+            fs::copy(entry.path(), &target).map(drop).map_err(io(&target))
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::runner::fake::FakeRunner;
+    use crate::testing::write;
 
     struct Setup {
         dir: tempfile::TempDir,
@@ -182,17 +208,35 @@ mod tests {
     }
 
     #[test]
-    fn templates_are_linked_and_excluded_from_git() {
+    fn templates_are_copied_fresh_and_excluded_from_git() {
         let setup = Setup::new();
         setup.cloned();
-        setup.src().new_template("hello", "me").unwrap();
+        let template = setup.src().new_template("hello", "me").unwrap();
+        write(&template.with_file_name("patches/fix.patch"), "--- a\n");
         setup.src().build(&["hello".into()]).unwrap();
+        fs::write(&template, "pkgname=hello\nversion=0.2.0\n").unwrap();
         setup.src().build(&["hello".into()]).unwrap();
 
-        let clone = setup.dir.path().join("clone");
-        assert_eq!(fs::read_link(clone.join("srcpkgs/hello")).unwrap(), setup.dir.path().join("dots/srcpkgs/hello"));
-        assert_eq!(fs::read_to_string(clone.join(".git/info/exclude")).unwrap(), "/srcpkgs/hello\n");
+        let copy = setup.dir.path().join("clone/srcpkgs/hello");
+        assert!(!fs::symlink_metadata(&copy).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(copy.join("template")).unwrap(), "pkgname=hello\nversion=0.2.0\n");
+        assert!(copy.join("patches/fix.patch").is_file());
+        assert_eq!(fs::read_to_string(setup.dir.path().join("clone/.git/info/exclude")).unwrap(), "/srcpkgs/hello\n");
         assert!(!setup.runner.calls.borrow().iter().any(|call| call.starts_with("git clone")));
+    }
+
+    #[test]
+    fn old_links_are_replaced_with_copies() {
+        let setup = Setup::new();
+        setup.cloned();
+        let template = setup.src().new_template("hello", "me").unwrap();
+        let link = setup.dir.path().join("clone/srcpkgs/hello");
+        std::os::unix::fs::symlink(template.parent().unwrap(), &link).unwrap();
+        write(&setup.dir.path().join("clone/.git/info/exclude"), "/srcpkgs/hello\n");
+
+        setup.src().build(&["hello".into()]).unwrap();
+        assert!(fs::symlink_metadata(&link).unwrap().is_dir());
+        assert!(template.is_file());
     }
 
     #[test]

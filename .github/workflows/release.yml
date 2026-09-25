@@ -1,0 +1,25 @@
+# pushing a v<version> tag commits the template's new version and checksum to master: see finish-release.sh
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: update srcpkgs/maw/template
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          .github/finish-release.sh "$GITHUB_REF_NAME"
+          git push

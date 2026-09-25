@@ -140,11 +140,19 @@ Every color maw shows comes from `src/style.rs`, the same for the CLI (on a term
 
 maw ships as an xbps package built from `srcpkgs/maw/template` (`build_style=cargo`). It installs the binary, plus `nix/` and `registry.nix` into `/usr/share/maw`, where the installed maw looks for them. To release a version:
 
-1. bump `version` in `Cargo.toml` and in the template, and `mawVersion` in `nix/lib.nix`
-2. tag the commit `v<version>` and push the tag
-3. `xgensum -i srcpkgs/maw/template` to fill in the checksum, and `xlint` it
+```sh
+tools/release.sh 0.2.0
+git push --follow-tags
+```
 
-It also installs the shipped `depmap.nix`. To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; from then on, updating the template's version there and running `maw sync` rebuilds and upgrades maw.
+`tools/release.sh` bumps the version in `Cargo.toml`, `Cargo.lock` and `mawVersion` in `nix/lib.nix`, commits, and tags `v<version>`. Pushing the tag runs the release workflow (`.github/workflows/release.yml`), which checksums GitHub's tarball of the tag and commits the template's new `version` and `checksum` to master; `git pull` afterwards. The workflow refuses a tag whose `Cargo.toml` doesn't carry its version. The repo has to be public, since xbps-src fetches the tarball without credentials.
+
+It also installs the shipped `depmap.nix`. To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; after each release, fetch the updated template and `maw sync` rebuilds and upgrades maw:
+
+```sh
+curl -fsSLo ~/dotfiles/srcpkgs/maw/template https://raw.githubusercontent.com/AamindMandragora/maw/master/srcpkgs/maw/template
+maw sync
+```
 
 ## Docs
 
