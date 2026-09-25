@@ -334,5 +334,5 @@ nixpkgs
     toTOML
     ;
   kdl.node = kdlNode;
-  mawVersion = "0.1.0";
+  mawVersion = "0.1.1";
 }
