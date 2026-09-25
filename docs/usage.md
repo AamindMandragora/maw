@@ -11,6 +11,28 @@ maw help add          # a command's options
 
 Every command's `--help` ends with a `see:` line naming the section that explains it. On a terminal, help opens in `$PAGER` (`less` by default); set `NO_COLOR` to turn off styling.
 
+## The TUI
+
+```sh
+maw
+```
+
+With no arguments, maw opens a full-screen view of everything it manages, one tab per area:
+
+| tab | shows | keys |
+|---|---|---|
+| 1 packages | what's installed and declared, per source | `i` install, `r` remove, `f` find in the repos, `s` sync, `A` adopt |
+| 2 modules | modules and static dirs, with a preview of the rendered file | `e`/enter edit, `n` new, `a` add a file |
+| 3 services | declared and enabled services, with the selected one's log | `e` enable, `d` disable, `r` restart, `s` status |
+| 4 status | the same report as `maw status` | `a` activate, `F` activate --force |
+| 5 diff | the same diff as `maw diff` | `a` activate |
+| 6 history | generations, newest first | `r`/enter roll back to the selected one |
+| 7 git | the repo's status and recent commits | `c` commit, `p` push, `P` pull |
+
+Everywhere: `j`/`k` or up/down move, `g`/`G` jump to the top or bottom, `h`/`l`, left/right, `1`-`7`, or tab switch tabs, `/` filters the list, `o` shows or hides the output pane, `R` reloads, `?` lists the keys, `q` quits. The mouse works too: click a tab or a row, scroll to move. On a narrow window the tab names shorten and previews move below the list.
+
+Every action runs exactly what the matching command runs. Its output streams into a pane at the bottom, questions (a commit message, `[Y/n]`) appear as popups, and your editor takes over the screen until you close it. Removing, disabling, rolling back, and forcing ask for confirmation first. It asks for your sudo password when it opens, and again before an action if that has expired.
+
 ## Setting up
 
 ```sh

@@ -28,6 +28,7 @@ src/
   rollback.rs     # restore a generation: repo, package versions, holds
   index.rs        # out/.maw/index.json: activating without nix
   scaffold/       # src new --from-nix: nixpkgs metadata -> SourcePkg -> xbps-src template (SourceEmitter)
+  tui/            # `maw` alone: app.rs (state and keys, no io), data.rs (tab loaders), view.rs (drawing), term.rs (tty and fds), mod.rs (event loop)
 nix/nixpkgs-meta.nix   # one nixpkgs package's metadata as plain data
 depmap.nix        # shipped nixpkgs -> void dependency names, installed to /usr/share/maw
 srcpkgs/maw/      # maw's own xbps-src template
@@ -92,6 +93,12 @@ cargo build
 export MAW=$PWD/target/debug/maw HOME=/tmp/maw-home MAW_SYSROOT=/tmp/maw-home/sysroot
 $MAW init ~/dots
 ```
+
+## The TUI
+
+TUI actions build a `cli::Command` and run it through `cli::run` on a background thread, the same function the CLI dispatches to. While the TUI is open it draws on `/dev/tty`, and the process's stdin is `/dev/null` while stdout and stderr go to a pipe, so everything commands print (maw's own lines, xbps, cargo) streams into the output pane. The CLI's two interactive points go through `cli::Hooks`: questions become popups, and the editor makes the TUI step aside and restore the real file descriptors until it exits. Root steps rely on a `sudo -v` taken when the TUI opens and renewed before an action if `sudo -n true` fails.
+
+`app.rs` is plain state: key events in, `Request`s out, tested without a terminal; `view.rs` is tested by rendering into ratatui's `TestBackend`. The whole thing can be driven for real in a pty with timed keystrokes: `(sleep 3; printf 2; sleep 1; printf q) | script -qfc maw log`.
 
 ## Tests
 

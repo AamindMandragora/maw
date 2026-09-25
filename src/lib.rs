@@ -21,6 +21,7 @@ pub mod scaffold;
 pub mod services;
 pub mod state;
 pub mod status;
+pub mod tui;
 pub mod system;
 #[cfg(test)]
 pub mod testing;

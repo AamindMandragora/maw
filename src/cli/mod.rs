@@ -26,11 +26,11 @@ use std::path::{Path, PathBuf};
 #[command(name = "maw", version, about = "declarative system manager for void linux", disable_help_subcommand = true, after_help = "see: maw help")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
-#[derive(Subcommand)]
-enum Command {
+#[derive(Subcommand, Clone, Debug)]
+pub enum Command {
     #[command(about = "create a dotfiles repo, or adopt an existing one", after_help = "see: maw help setting up")]
     Init {
         #[arg(help = "a path for a new or existing repo, or a git url to clone")]
@@ -151,8 +151,8 @@ enum Command {
     },
 }
 
-#[derive(Subcommand)]
-enum SvAction {
+#[derive(Subcommand, Clone, Debug)]
+pub enum SvAction {
     #[command(about = "declared and enabled services, and whether they run")]
     List,
     #[command(about = "record a service in maw.nix and link it into place")]
@@ -167,8 +167,8 @@ enum SvAction {
     Log(ServiceName),
 }
 
-#[derive(Subcommand)]
-enum SrcAction {
+#[derive(Subcommand, Clone, Debug)]
+pub enum SrcAction {
     #[command(about = "write a srcpkgs/<name>/template, blank or drafted from nixpkgs, and open it")]
     New {
         name: String,
@@ -181,13 +181,13 @@ enum SrcAction {
     Build { name: String },
 }
 
-#[derive(clap::Args)]
-struct ServiceName {
-    name: String,
+#[derive(clap::Args, Clone, Debug)]
+pub struct ServiceName {
+    pub name: String,
     #[arg(long, conflicts_with = "system", help = "the user service run by your session")]
-    user: bool,
+    pub user: bool,
     #[arg(long, help = "the system service run from boot")]
-    system: bool,
+    pub system: bool,
 }
 
 impl ServiceName {
@@ -201,45 +201,83 @@ impl ServiceName {
     }
 }
 
+// `maw` alone opens the tui; anything else is a command
 pub fn main() -> Result<()> {
-    let cli = Cli::parse();
     let env = Env::from_process();
-    let runner = SystemRunner;
+    match Cli::parse().command {
+        Some(command) => run(&env, &SystemRunner, command),
+        None => crate::tui::run(&env),
+    }
+}
 
-    match cli.command {
-        Command::Init { target, path } => init(&env, &runner, &target, path.as_deref()),
-        Command::Build { force } => build(&env, &runner, force),
-        Command::Activate { dry_run, force, no_commit, no_build } => activate(&env, &runner, Options { dry_run, force, no_build }, !no_commit),
-        Command::Generations => list_generations(&env),
+// answers a question, or None when there's nobody to ask
+pub type AskHook = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+// opens a file in the editor and waits for it to close
+pub type EditHook = Box<dyn Fn(&Path) -> Result<()> + Send + Sync>;
+
+// what the tui plugs into the cli while it's running: popups for questions, and stepping aside for the editor
+pub struct Hooks {
+    pub ask: AskHook,
+    pub edit: EditHook,
+}
+
+static HOOKS: std::sync::OnceLock<Hooks> = std::sync::OnceLock::new();
+
+// installed once, by the tui
+pub fn set_hooks(hooks: Hooks) {
+    let _ = HOOKS.set(hooks);
+}
+
+// the user's editor: $VISUAL, then $EDITOR, then vi
+pub fn editor() -> String {
+    std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into())
+}
+
+// opens a file in the editor, or asks the tui to while it's running
+fn open_in_editor(runner: &dyn Runner, path: &Path) -> Result<()> {
+    match HOOKS.get() {
+        Some(hooks) => (hooks.edit)(path),
+        None => Ok(edit::open_editor(runner, &editor(), path)?),
+    }
+}
+
+// runs one command; the tui calls this too, so every action is the cli's own code
+pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
+    match command {
+        Command::Init { target, path } => init(env, runner, &target, path.as_deref()),
+        Command::Build { force } => build(env, runner, force),
+        Command::Activate { dry_run, force, no_commit, no_build } => activate(env, runner, Options { dry_run, force, no_build }, !no_commit),
+        Command::Generations => list_generations(env),
         Command::Commit { message } => {
-            let repo = Repo::locate(&env)?;
-            if !generations::commit(&runner, &repo, message.as_deref())? {
+            let repo = Repo::locate(env)?;
+            if !generations::commit(runner, &repo, message.as_deref())? {
                 println!("nothing to commit");
             }
             Ok(())
         }
-        Command::Push => Ok(generations::push(&runner, &Repo::locate(&env)?)?),
+        Command::Push => Ok(generations::push(runner, &Repo::locate(env)?)?),
         Command::Pull => {
-            let repo = Repo::locate(&env)?;
-            let moved = generations::pull(&runner, &repo)?;
-            activate_after(&env, &runner, &repo, if moved { vec!["pull".into()] } else { Vec::new() })
+            let repo = Repo::locate(env)?;
+            let moved = generations::pull(runner, &repo)?;
+            activate_after(env, runner, &repo, if moved { vec!["pull".into()] } else { Vec::new() })
         }
-        Command::Edit { name, no_activate } => edit(&env, &runner, &name, !no_activate),
-        Command::New { name, format, no_activate } => new(&env, &runner, &name, format.as_deref(), !no_activate),
-        Command::Add { path, name, no_activate } => add(&env, &runner, &path, name.as_deref(), !no_activate),
-        Command::Diff => diff(&env, &runner),
-        Command::Status => status(&env, &runner),
-        Command::Adopt { dry_run } => adopt(&env, &runner, dry_run),
-        Command::Install { packages, dry_run } => install(&env, &runner, &packages, dry_run),
-        Command::Remove { packages, dry_run } => remove(&env, &runner, &packages, dry_run),
-        Command::Query { package } => query(&env, &runner, package.as_deref()),
-        Command::Search { term } => search(&env, &runner, &term),
-        Command::Info { package } => info(&env, &runner, &package),
-        Command::Sync { release } => sync(&env, &runner, release),
-        Command::Rollback { generation, dry_run } => rollback(&env, &runner, generation, dry_run),
-        Command::Sv { action } => sv(&env, &runner, action),
-        Command::Src { action } => src(&env, &runner, action),
-        Command::Help { query } => show_help(&runner, &query.join(" ")),
+        Command::Edit { name, no_activate } => edit(env, runner, &name, !no_activate),
+        Command::New { name, format, no_activate } => new(env, runner, &name, format.as_deref(), !no_activate),
+        Command::Add { path, name, no_activate } => add(env, runner, &path, name.as_deref(), !no_activate),
+        Command::Diff => diff(env, runner),
+        Command::Status => status(env, runner),
+        Command::Adopt { dry_run } => adopt(env, runner, dry_run),
+        Command::Install { packages, dry_run } => install(env, runner, &packages, dry_run),
+        Command::Remove { packages, dry_run } => remove(env, runner, &packages, dry_run),
+        Command::Query { package } => query(env, runner, package.as_deref()),
+        Command::Search { term } => search(env, runner, &term),
+        Command::Info { package } => info(env, runner, &package),
+        Command::Sync { release } => sync(env, runner, release),
+        Command::Rollback { generation, dry_run } => rollback(env, runner, generation, dry_run),
+        Command::Sv { action } => sv(env, runner, action),
+        Command::Src { action } => src(env, runner, action),
+        Command::Help { query } => show_help(runner, &query.join(" ")),
     }
 }
 
@@ -248,6 +286,9 @@ struct Terminal;
 
 impl Ask for Terminal {
     fn ask(&self, question: &str) -> Option<String> {
+        if let Some(hooks) = HOOKS.get() {
+            return (hooks.ask)(question);
+        }
         if !std::io::stdin().is_terminal() {
             return None;
         }
@@ -275,14 +316,14 @@ fn init(env: &Env, runner: &dyn Runner, target: &str, clone_to: Option<&Path>) -
 fn bootstrap(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
     let no_build = runner.run("nix-instantiate", &["--version".into()]).is_err();
     if no_build {
-        println!("nix isn't installed; activating from the committed out/");
+        println!("no nix, using the committed out/");
     }
     let plan = activate::activate(env, runner, repo, &Terminal, Options { dry_run: true, no_build, ..Options::default() })?;
     print_activation(env, repo, &plan, true);
 
     let yes = Terminal.ask("activate now? [Y/n] ").is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n'));
     if !yes {
-        println!("run `maw activate{}` when ready", if no_build { " --no-build" } else { "" });
+        println!("later: maw activate{}", if no_build { " --no-build" } else { "" });
         return Ok(());
     }
     let activation = activate::activate(env, runner, repo, &Terminal, Options { no_build, ..Options::default() })?;
@@ -328,9 +369,8 @@ fn finish(env: &Env, runner: &dyn Runner, repo: &Repo, activation: &Activation, 
 
 // opens a file in the editor, then activates if asked; on an evaluation error, offers to reopen it
 fn edit_then_activate(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, activate: bool) -> Result<()> {
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
     loop {
-        edit::open_editor(runner, &editor, path)?;
+        open_in_editor(runner, path)?;
         if !activate {
             return Ok(());
         }
@@ -376,15 +416,19 @@ fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>, activate
 // unified diffs per file, colored on a terminal
 fn diff(env: &Env, runner: &dyn Runner) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let color = std::io::stdout().is_terminal();
-    status::diff(env, runner, &repo)?.iter().for_each(|file| {
-        let label = env.pretty(&file.destination);
-        match file.unified(&label) {
-            Some(text) => print!("{}", if color { colorize(&text) } else { text }),
-            None => println!("binary {label} differs"),
-        }
-    });
+    let text = diff_text(env, runner, &repo)?;
+    print!("{}", if std::io::stdout().is_terminal() { colorize(&text) } else { text });
     Ok(())
+}
+
+// every file's unified diff as one text; the diff tab shows the same
+pub fn diff_text(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<String> {
+    let files = status::diff(env, runner, repo)?;
+    let texts = files.iter().map(|file| {
+        let label = env.pretty(&file.destination);
+        file.unified(&label).unwrap_or_else(|| format!("binary {label} differs\n"))
+    });
+    Ok(texts.collect())
 }
 
 // + lines green, - lines red, hunk headers cyan
@@ -402,11 +446,17 @@ fn colorize(diff: &str) -> String {
 // one line per out-of-sync file, like git status --short
 fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let report = status::report(env, runner, &repo, &std::env::var("PATH").unwrap_or_default())?;
-    let line = |label: &str, text: String| println!("{label:<11}{text}");
+    status_lines(env, runner, &repo)?.iter().for_each(|line| println!("{line}"));
+    Ok(())
+}
+
+// the status report as labeled lines, `clean` when there's nothing; the status tab shows the same lines
+pub fn status_lines(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<String>> {
+    let report = status::report(env, runner, repo, &std::env::var("PATH").unwrap_or_default())?;
+    let line = |label: &str, text: String| format!("{label:<11}{text}");
     let path = |path: &PathBuf| env.pretty(path);
 
-    report.steps.iter().for_each(|step| match step {
+    let steps = report.steps.iter().map(|step| match step {
         Step::Install { backend, package } => line("missing", packages::Target { backend: backend.clone(), spec: package.clone() }.to_string()),
         Step::Link { destination, backup: false } => line("new", path(destination)),
         Step::Link { destination, backup: true } => line("blocked", path(destination)),
@@ -427,17 +477,15 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     });
 
     // source packages behind their template, things maw.nix doesn't know about, then config for programs that aren't installed
-    report.outdated.iter().for_each(|(name, installed, template)| line("outdated", format!("{name} {installed} -> {template} (maw src build {name})")));
-    report.undeclared.iter().for_each(|candidate| line("undeclared", candidate_label(candidate)));
-    report.orphans.iter().for_each(|name| {
+    let outdated = report.outdated.iter().map(|(name, installed, template)| line("outdated", format!("{name} {installed} -> {template} (maw src build {name})")));
+    let undeclared = report.undeclared.iter().map(|candidate| line("undeclared", candidate_label(candidate)));
+    let orphans = report.orphans.iter().map(|name| {
         let module = repo.module_file(name);
-        let source = if module.exists() { relative(&repo, &module) } else { format!("static/{name}/") };
-        line("orphan", format!("{source} ({name} isn't installed)"));
+        let source = if module.exists() { relative(repo, &module) } else { format!("static/{name}/") };
+        line("orphan", format!("{source} ({name} isn't installed)"))
     });
-    if report.is_clean() {
-        println!("clean");
-    }
-    Ok(())
+    let lines: Vec<String> = steps.chain(outdated).chain(undeclared).chain(orphans).collect();
+    Ok(if lines.is_empty() { vec!["clean".into()] } else { lines })
 }
 
 // packages the way maw install takes them, services with their scope
@@ -466,8 +514,7 @@ fn adopt(env: &Env, runner: &dyn Runner, dry_run: bool) -> Result<()> {
     let file = env.state_dir.join("adopt");
     std::fs::create_dir_all(&env.state_dir)?;
     std::fs::write(&file, &checklist)?;
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
-    edit::open_editor(runner, &editor, &file)?;
+    open_in_editor(runner, &file)?;
     let decisions = adopt::parse(&std::fs::read_to_string(&file)?, &candidates)?;
     std::fs::remove_file(&file)?;
 
@@ -653,14 +700,13 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
         SrcAction::New { name, from_nix } => {
             let git = |key: &str| runner.run("git", &["-C".into(), repo.root.display().to_string(), "config".into(), key.into()]).unwrap_or_default().trim().to_string();
             let maintainer = format!("{} <{}>", git("user.name"), git("user.email"));
-            let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
             let Some(attr) = from_nix else {
                 let template = packages::srcpkgs(env, runner, &repo)?.new_template(&name, &maintainer)?;
                 println!("create {}", relative(&repo, &template));
-                return Ok(edit::open_editor(runner, &editor, &template)?);
+                return open_in_editor(runner, &template);
             };
             let attr = if attr.is_empty() { name.clone() } else { attr };
-            scaffold_from_nix(env, runner, &repo, &name, &attr, &maintainer, &editor)
+            scaffold_from_nix(env, runner, &repo, &name, &attr, &maintainer)
         }
         SrcAction::Update { name } => match scaffold::update(env, runner, &repo, &name)? {
             None => {
@@ -686,11 +732,11 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
 }
 
 // drafts a template from nixpkgs, opens it, and offers to remember the dependency names the user fixed
-fn scaffold_from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, attr: &str, maintainer: &str, editor: &str) -> Result<()> {
+fn scaffold_from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, attr: &str, maintainer: &str) -> Result<()> {
     let (template, emitted) = scaffold::from_nix(env, runner, repo, name, attr, maintainer)?;
     println!("create {}", relative(repo, &template));
     emitted.todos.iter().for_each(|todo| println!("todo {todo}: no void package found"));
-    edit::open_editor(runner, editor, &template)?;
+    open_in_editor(runner, &template)?;
 
     let after = std::fs::read_to_string(&template)?;
     let confirmed: Vec<(String, String)> = scaffold::learned(&emitted.text, &after, &emitted.todos)
