@@ -133,6 +133,22 @@ lib.dconf {
 Strings, numbers, booleans, and lists become GVariant values; for anything else (\fBuint32 5\fR, tuples), write the GVariant text with \fBlib.raw\fR. A module can return settings next to program files as a list: \fB[ (lib.program "x" { ... }) (lib.dconf { ... }) ]\fR. Two modules setting one key to different values is an error.
 .PP
 maw writes each key with \fBdconf write\fR, and only when its value differs. A key you change by hand afterwards, say in a settings app, is reported and left alone, like a hand-edited file; \fBmaw activate --force\fR puts the declared value back. Keys you stop declaring are reset to their defaults, unless you've changed them since. dconf needs a desktop session: activating from a bare console skips settings with a note, and the next activation in your session applies them.
+.SH "LIB.COLOR"
+.PP
+For deriving colors from others, say from a \fBmaw help usage\fR. Each takes \fB"#rrggbb"\fR or \fB"rrggbb"\fR and returns the same shape:
+.IP \(bu 2
+\fBlib.color.rotate degrees color\fR: the same saturation and lightness at another hue. \fBrotate 35 theme.colors.error\fR turns the palette's soft red amber, a warning color that always matches
+.IP \(bu 2
+\fBlib.color.lighten amount color\fR: lightness moved by \fBamount\fR (0 to 1; negative darkens)
+.IP \(bu 2
+\fBlib.color.ansi color\fR: the parameters of a 24-bit terminal color, for escapes like \fB\ee[${lib.color.ansi c}m\fR in a prompt
+.IP \(bu 2
+\fBlib.color.toHsl color\fR, \fBlib.color.rgb color\fR: the numbers, as \fB{ h, s, l }\fR and \fB{ r, g, b }\fR
+.PP
+.EX
+colors.warning = lib.color.rotate 35 theme.colors.error;
+colors.host = lib.color.rotate 240 theme.colors.primary;   # a third of the wheel away the other way
+.EE
 .SH "VERBATIM TEXT"
 .PP
 \fBlib.raw ''...''\fR is accepted anywhere a value is. Use it where Nix syntax doesn't reach, and mix it freely with Nix in one file:

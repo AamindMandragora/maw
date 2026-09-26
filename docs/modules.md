@@ -130,6 +130,20 @@ Strings, numbers, booleans, and lists become GVariant values; for anything else 
 
 maw writes each key with `dconf write`, and only when its value differs. A key you change by hand afterwards, say in a settings app, is reported and left alone, like a hand-edited file; `maw activate --force` puts the declared value back. Keys you stop declaring are reset to their defaults, unless you've changed them since. dconf needs a desktop session: activating from a bare console skips settings with a note, and the next activation in your session applies them.
 
+## `lib.color`
+
+For deriving colors from others, say from a [wallpaper theme](usage.md). Each takes `"#rrggbb"` or `"rrggbb"` and returns the same shape:
+
+- `lib.color.rotate degrees color`: the same saturation and lightness at another hue. `rotate 35 theme.colors.error` turns the palette's soft red amber, a warning color that always matches
+- `lib.color.lighten amount color`: lightness moved by `amount` (0 to 1; negative darkens)
+- `lib.color.ansi color`: the parameters of a 24-bit terminal color, for escapes like `\e[${lib.color.ansi c}m` in a prompt
+- `lib.color.toHsl color`, `lib.color.rgb color`: the numbers, as `{ h, s, l }` and `{ r, g, b }`
+
+```nix
+colors.warning = lib.color.rotate 35 theme.colors.error;
+colors.host = lib.color.rotate 240 theme.colors.primary;   # a third of the wheel away the other way
+```
+
 ## Verbatim text
 
 `lib.raw ''...''` is accepted anywhere a value is. Use it where Nix syntax doesn't reach, and mix it freely with Nix in one file:

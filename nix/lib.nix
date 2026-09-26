@@ -323,6 +323,86 @@ let
     else
       throw "maw: dconf values are strings, numbers, booleans, lists, or lib.raw GVariant text";
 
+  # colors as "#rrggbb" (or without the #), for deriving one from another: a hue turned, lightness moved, an ansi escape
+  color =
+    let
+      # 0-255 channels, and back to two hex digits
+      channels =
+        hex:
+        let
+          digits = nixpkgs.removePrefix "#" hex;
+          byte = at: nixpkgs.fromHexString (builtins.substring at 2 digits);
+        in
+        {
+          r = byte 0;
+          g = byte 2;
+          b = byte 4;
+        };
+      twoDigits =
+        value:
+        let
+          text = nixpkgs.toLower (nixpkgs.toHexString value);
+        in
+        if builtins.stringLength text < 2 then "0${text}" else text;
+      clamp = low: high: value: if value < low then low else if value > high then high else value;
+      round = value: builtins.floor (value + 0.5);
+
+      # hue in degrees, saturation and lightness 0-1
+      toHsl =
+        hex:
+        let
+          c = channels hex;
+          r = c.r / 255.0;
+          g = c.g / 255.0;
+          b = c.b / 255.0;
+          high = nixpkgs.max r (nixpkgs.max g b);
+          low = nixpkgs.min r (nixpkgs.min g b);
+          delta = high - low;
+          l = (high + low) / 2;
+          s = if delta == 0 then 0.0 else if l > 0.5 then delta / (2 - high - low) else delta / (high + low);
+          sector =
+            if delta == 0 then 0.0
+            else if high == r then (g - b) / delta + (if g < b then 6 else 0)
+            else if high == g then (b - r) / delta + 2
+            else (r - g) / delta + 4;
+        in
+        {
+          h = sector * 60;
+          inherit s l;
+        };
+      fromHsl =
+        { h, s, l }:
+        let
+          hue = (h - 360 * builtins.floor (h / 360.0)) / 360.0;
+          q = if l < 0.5 then l * (1 + s) else l + s - l * s;
+          p = 2 * l - q;
+          channel =
+            t:
+            let
+              t' = if t < 0 then t + 1 else if t > 1 then t - 1 else t;
+            in
+            if t' < 1 / 6.0 then p + (q - p) * 6 * t'
+            else if t' < 0.5 then q
+            else if t' < 2 / 3.0 then p + (q - p) * (2 / 3.0 - t') * 6
+            else p;
+          byte = t: twoDigits (clamp 0 255 (round (channel t * 255)));
+        in
+        byte (hue + 1 / 3.0) + byte hue + byte (hue - 1 / 3.0);
+
+      # the result keeps the input's # or lack of one
+      like = hex: result: if nixpkgs.hasPrefix "#" hex then "#${result}" else result;
+    in
+    {
+      inherit toHsl;
+      rgb = channels;
+      # another hue at the same saturation and lightness: rotate 35 "#ffb4ab" turns a soft red amber
+      rotate = degrees: hex: let hsl = toHsl hex; in like hex (fromHsl (hsl // { h = hsl.h + degrees; }));
+      # lighter (positive) or darker (negative), by lightness points 0-1
+      lighten = amount: hex: let hsl = toHsl hex; in like hex (fromHsl (hsl // { l = clamp 0.0 1.0 (hsl.l + amount); }));
+      # the sgr parameters of a 24-bit foreground color, for \e[...m
+      ansi = hex: let c = channels hex; in "38;2;${toString c.r};${toString c.g};${toString c.b}";
+    };
+
   # desktop settings in dconf, by path then key: { "org/gnome/desktop/interface".color-scheme = "prefer-dark"; }
   dconf = settings: [
     {
@@ -368,6 +448,7 @@ nixpkgs
     program
     service
     dconf
+    color
     toGVariant
     toCSS
     toINI
