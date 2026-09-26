@@ -1,5 +1,6 @@
 use crate::activate::Ask;
 use crate::backend::cargo::Cargo;
+use crate::backend::flatpak::{self, Flatpak};
 use crate::backend::srcpkgs::SrcPkgs;
 use crate::build::{self, BuildError};
 use crate::backend::xbps::Xbps;
@@ -103,13 +104,14 @@ impl<'a> Context<'a> {
         self.installed.get(&target.backend).is_some_and(|sources| sources.contains(spec_base(&target.spec)))
     }
 
-    // the declared spec in this backend that a request names, by its base or its program name
+    // the declared spec in this backend that a request names, by its base or its program name (a flatpak's short name)
     fn declared_as(&self, backend: &str, request: &str) -> Option<String> {
         let wanted = spec_base(request);
-        declared(&self.state, backend).into_iter().find(|spec| spec_base(spec) == wanted || spec_program(spec) == wanted)
+        let program = |spec: &str| if backend == "flatpak" { flatpak::short_name(spec) } else { spec_program(spec) };
+        declared(&self.state, backend).into_iter().find(|spec| spec_base(spec) == wanted || program(spec) == wanted)
     }
 
-    // the backend a bare request belongs to: already declared, a srcpkgs template (built for xbps), xbps, then crates.io once the user agrees
+    // the backend a bare request belongs to: already declared, a flatpak app id, a srcpkgs template (built for xbps), xbps, then crates.io once the user agrees
     fn resolve(&self, request: &str, ask: Option<&dyn Ask>) -> Result<Target, PackagesError> {
         let target = |backend: &str, spec: &str| Target { backend: backend.into(), spec: spec.into() };
         if let Some((backend, spec)) = request.split_once(':').filter(|(backend, _)| NAMES.contains(backend)) {
@@ -117,6 +119,12 @@ impl<'a> Context<'a> {
         }
         if let Some((backend, spec)) = NAMES.iter().find_map(|backend| Some((*backend, self.declared_as(backend, request)?))) {
             return Ok(target(backend, &spec));
+        }
+        if flatpak::is_app_id(request) {
+            return match self.backend("flatpak").info(request)? {
+                Some(_) => Ok(target("flatpak", request)),
+                None => Err(PackagesError::NotFound(request.into())),
+            };
         }
         if self.src.has(request) || self.is_installed(&target("xbps", request)) || self.backend("xbps").info(request)?.is_some() {
             return Ok(target("xbps", request));
@@ -276,15 +284,20 @@ pub fn remove(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> R
     Ok(())
 }
 
-// upgrades unpinned cargo and go packages; xbps upgrades through its own sync
+// upgrades unpinned flatpak, cargo, and go packages; xbps upgrades through its own sync
 pub fn upgrade(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Target>, PackagesError> {
     let (_, state) = edit::load(env, runner, repo)?;
-    let unpinned: Vec<Target> = ["cargo", "go"]
+    let unpinned: Vec<Target> = ["flatpak", "cargo", "go"]
         .iter()
         .flat_map(|backend| declared(&state, backend).into_iter().map(|spec| Target { backend: backend.to_string(), spec }))
         .filter(|target| spec_base(&target.spec) == target.spec)
         .collect();
-    grouped(&unpinned).into_iter().try_for_each(|(name, specs)| backend::for_name(&name, runner, env).unwrap().install(&specs))?;
+
+    // flatpak updates in place; cargo and go upgrade by installing again
+    grouped(&unpinned).into_iter().try_for_each(|(name, specs)| match name.as_str() {
+        "flatpak" => Flatpak::new(runner, env).update(&specs),
+        _ => backend::for_name(&name, runner, env).unwrap().install(&specs),
+    })?;
     Ok(unpinned)
 }
 
@@ -450,6 +463,12 @@ mod tests {
     fn existing_modules_are_left_alone() {
         let fixture = fixture(&["foot"]);
         assert!(plan(&fixture, &["foot"], None).unwrap().scaffolded.is_empty());
+    }
+
+    #[test]
+    fn app_ids_are_flatpaks() {
+        let fixture = fixture(&[]);
+        assert_eq!(plan(&fixture, &["com.slack.Slack"], None).unwrap().packages, [target("flatpak", "com.slack.Slack")]);
     }
 
     #[test]

@@ -90,7 +90,7 @@ pub fn load(env: &Env, repo: &Repo) -> Result<(Report, Vec<Wanted>), IndexError>
         })
         .collect::<Result<Vec<_>, IndexError>>()?;
 
-    let settings = Settings { auto_commit: index.auto_commit, void_packages: index.void_packages, nixpkgs: None };
+    let settings = Settings { auto_commit: index.auto_commit, void_packages: index.void_packages, ..Settings::default() };
     Ok((Report { outputs, state: index.state, settings, ..Report::default() }, statics))
 }
 

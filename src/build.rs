@@ -1,8 +1,8 @@
+use crate::backend::{flatpak, spec_base, srcpkgs};
 use crate::backup;
 use crate::env::Env;
 use crate::eval::{self, EvalError, RenderedFile};
 use crate::init::runit::Runit;
-use crate::backend::srcpkgs;
 use crate::init::{InitBackend, Scope};
 use crate::inputs::{Inputs, InputsError, combine, hash_bytes, load_json, save_json};
 use crate::registry::{self, Registry, RegistryError};
@@ -94,11 +94,14 @@ pub struct Settings {
     pub void_packages: Option<String>,
     // where maw keeps its nixpkgs clone for `src new --from-nix`; ~/ is home
     pub nixpkgs: Option<String>,
+    // wrapper names for flatpak apps, by app id, where the default (the id's last part) doesn't suit
+    #[serde(default)]
+    pub flatpak_names: BTreeMap<String, String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_commit: true, void_packages: None, nixpkgs: None }
+        Settings { auto_commit: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new() }
     }
 }
 
@@ -158,6 +161,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
     let mut outputs: Vec<Output> = files.iter().flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
     outputs.extend(local_repo(env, repo, &state, &settings));
+    outputs.extend(flatpak_wrappers(env, repo, &state, &settings));
     let placements = place_all(env, &outputs, options)?;
 
     // sort each file into the report by what happened to it
@@ -231,6 +235,29 @@ fn local_repo(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> 
             service: None,
         }
     })
+}
+
+// a script in ~/.local/bin per declared flatpak app, so configs can run it by a short name
+fn flatpak_wrappers(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> Vec<Output> {
+    let declared = state.packages.get("flatpak").into_iter().flatten();
+    declared
+        .map(|spec| {
+            let id = spec_base(spec);
+            let name = settings.flatpak_names.get(id).cloned().unwrap_or_else(|| flatpak::short_name(id));
+            let content = format!("#!/bin/sh\n# written by maw: runs the flatpak {id}\nexec flatpak run {id} \"$@\"\n");
+            Output {
+                name: ".maw".into(),
+                key: format!("flatpak/{name}"),
+                out: repo.out_dir().join(".maw/flatpak").join(&name),
+                destination: env.home.join(".local/bin").join(&name),
+                root: false,
+                executable: true,
+                hash: hash_bytes(content.as_bytes()),
+                content,
+                service: None,
+            }
+        })
+        .collect()
 }
 
 // what every module depends on: config.nix, maw.nix, and the maw lib
@@ -388,6 +415,19 @@ mod tests {
 
     fn module_evals(runner: &FakeRunner) -> usize {
         runner.calls.borrow().iter().filter(|call| call.contains("-A modules.")).count()
+    }
+
+    #[test]
+    fn flatpaks_get_short_name_wrappers() {
+        let fixture = fixture(&[]);
+        let mut state = MawState::default();
+        state.packages.insert("flatpak".into(), vec!["com.tomjwatson.Emote@abc".into(), "us.zoom.Zoom".into()]);
+        let settings = Settings { flatpak_names: BTreeMap::from([("us.zoom.Zoom".into(), "zoom-meet".into())]), ..Settings::default() };
+
+        let wrappers = flatpak_wrappers(&fixture.env, &fixture.repo, &state, &settings);
+        let bin = fixture.env.home.join(".local/bin");
+        assert_eq!(wrappers.iter().map(|wrapper| wrapper.destination.clone()).collect::<Vec<_>>(), [bin.join("emote"), bin.join("zoom-meet")]);
+        assert!(wrappers[0].executable && wrappers[0].content.ends_with("exec flatpak run com.tomjwatson.Emote \"$@\"\n"));
     }
 
     #[test]

@@ -311,6 +311,7 @@ Packages you want on the machine are declared in \fBmaw.nix\fR, one list per sou
 .EX
 packages = {
   xbps = [ "foot" "niri" ];
+  flatpak = [ "com.slack.Slack" "com.tomjwatson.Emote" ];
   cargo = [ "bat" "typos-cli@1.24" "https://github.com/vitali87/croft.git" ];
   go = [ "github.com/jesseduffield/lazygit" ];
 };
@@ -325,6 +326,7 @@ maw install hello-cli                              # not in xbps: asks before us
 maw install cargo:bat@0.24                         # a crate, pinned to a version
 maw install cargo:https://github.com/user/tool.git # a crate from git
 maw install go:github.com/jesseduffield/lazygit    # a go program
+maw install com.slack.Slack                        # a flatpak app, by its app id
 maw install foot --dry-run
 .EE
 .PP
@@ -334,26 +336,37 @@ record foot in maw.nix
 create modules/foot.nix
 .EE
 .PP
-A bare name goes to whichever source already declares it, else to xbps. If xbps doesn't have it but crates.io has a crate by that name, maw asks first:
+A bare name goes to whichever source already declares it, a flatpak app id (\fBcom.slack.Slack\fR) to Flathub, and anything else to xbps. If xbps doesn't have it but crates.io has a crate by that name, maw asks first:
 .PP
 .EX
 hello-cli isn't in xbps; install crate hello-cli 0.2.2 from crates.io? [Y/n]
 .EE
 .PP
-Without a terminal it stops and suggests \fBcargo:<name>\fR instead. Library crates, which build no program, are refused before any question, since there's nothing to install; add them to a project with \fBcargo add\fR instead. A \fBcargo:\fR, \fBgo:\fR, or \fBxbps:\fR prefix skips all of that. \fB@version\fR pins a crate or go program to that version; without it you get the latest.
+Without a terminal it stops and suggests \fBcargo:<name>\fR instead. Library crates, which build no program, are refused before any question, since there's nothing to install; add them to a project with \fBcargo add\fR instead. A \fBflatpak:\fR, \fBcargo:\fR, \fBgo:\fR, or \fBxbps:\fR prefix skips all of that. \fB@version\fR pins a crate or go program to that version; without it you get the latest.
 .PP
-Then maw installs (\fBsudo xbps-install\fR, \fBcargo install --locked\fR, or \fBgo install\fR), records the package in \fBmaw.nix\fR, and, when the registry knows the program and the repo has no module or \fBstatic/\fR dir for it yet, creates its module the way \fBmaw new\fR does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+Then maw installs (\fBsudo xbps-install\fR, \fBsudo flatpak install\fR, \fBcargo install --locked\fR, or \fBgo install\fR), records the package in \fBmaw.nix\fR, and, when the registry knows the program and the repo has no module or \fBstatic/\fR dir for it yet, creates its module the way \fBmaw new\fR does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
 .PP
 cargo installs into \fB~/.cargo/bin\fR, go into \fB$GOBIN\fR (or \fB$GOPATH/bin\fR, or \fB~/go/bin\fR). maw leaves your shell config alone, but warns after an install if that dir isn't on your \fBPATH\fR, naming the line to add.
+.PP
+
+.PP
+Flatpaks come from Flathub (maw adds the remote if it's missing) and are installed system-wide, for every user. Each declared app also gets a wrapper in \fB~/.local/bin\fR named after the last part of its id, so configs and shells can run it by that name: \fBemote\fR runs \fBflatpak run com.tomjwatson.Emote\fR. To pick another name, in \fBconfig.nix\fR:
+.PP
+.EX
+maw.flatpakNames = { "us.zoom.Zoom" = "zoom-meet"; };
+.EE
+.PP
+App launchers like fuzzel find flatpaks through their desktop entries either way. \fB@<commit>\fR pins an app to an exact build, which is how generations record them.
 .SS "Removing"
 .PP
 .EX
 maw remove foot
 maw remove bat          # a crate, found by name
 maw remove lazygit      # a go program, by its binary or path
+maw remove emote        # a flatpak, by its id or wrapper name
 .EE
 .PP
-Removes the package and drops it from \fBmaw.nix\fR. xbps also removes dependencies nothing else needs; go programs are deleted from the bin dir. Its module stays, so reinstalling brings the config back; delete \fBmodules/foot.nix\fR yourself if you're done with it. \fB--dry-run\fR prints the plan.
+Removes the package and drops it from \fBmaw.nix\fR. xbps also removes dependencies nothing else needs, and flatpak runtimes nothing uses any more; go programs are deleted from the bin dir. Its module stays, so reinstalling brings the config back; delete \fBmodules/foot.nix\fR yourself if you're done with it. \fB--dry-run\fR prints the plan.
 .SS "Looking things up"
 .PP
 .EX
@@ -434,7 +447,7 @@ While any source package is declared, maw also manages \fB/etc/xbps.d/10-maw-loc
 maw sync
 .EE
 .PP
-Upgrades the system (\fBxbps-install -Su\fR), then every crate and go program that isn't pinned to a version, then rebuilds every source package whose template is ahead of what's installed (this is how maw updates itself: bump \fBsrcpkgs/maw/template\fR, then \fBmaw sync\fR). Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
+Upgrades the system (\fBxbps-install -Su\fR), then every flatpak, crate, and go program that isn't pinned to a version, then rebuilds every source package whose template is ahead of what's installed (this is how maw updates itself: bump \fBsrcpkgs/maw/template\fR, then \fBmaw sync\fR). Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
 .SH "SERVICES"
 .PP
 Services are supervised by runit. There are two kinds:
@@ -538,7 +551,7 @@ removes packages declared now but not then, and puts every package declared then
 .IP 3. 4
 activates, which relinks config and re-enables services the way they were.
 .PP
-Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in \fB/var/cache/xbps\fR (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's \fBhostdir/binpkgs\fR, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. crates and go programs are reinstalled at their recorded version.
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in \fB/var/cache/xbps\fR (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's \fBhostdir/binpkgs\fR, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and crates and go programs are reinstalled at their recorded version.
 .PP
 xbps packages left behind the repo's newest version are held, so \fBmaw sync\fR doesn't undo the rollback. They stay held until \fBmaw sync --release\fR, or until a later rollback puts them back at the newest version.
 .SS "Sharing"

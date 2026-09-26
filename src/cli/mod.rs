@@ -1,8 +1,8 @@
 use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
 use crate::adopt::{self, Candidate};
+use crate::backend::SystemBackend;
 use crate::backend::srcpkgs;
 use crate::backend::xbps::Xbps;
-use crate::backend::SystemBackend;
 use crate::build::{self, BuildError, Report};
 use crate::complete;
 use crate::edit;
@@ -94,7 +94,7 @@ pub enum Command {
     },
     #[command(about = "install packages, record them in maw.nix, scaffold their modules, then activate", after_help = "see: maw help installing")]
     Install {
-        #[arg(required = true, help = "names, or cargo:<crate|git url>, go:<path>, xbps:<name>; @version pins")]
+        #[arg(required = true, help = "names or flatpak app ids, or cargo:<crate|git url>, go:<path>, flatpak:<app id>, xbps:<name>; @version pins")]
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,

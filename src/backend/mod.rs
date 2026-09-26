@@ -3,12 +3,13 @@ use crate::runner::{RunError, Runner};
 use std::path::PathBuf;
 
 pub mod cargo;
+pub mod flatpak;
 pub mod go;
 pub mod srcpkgs;
 pub mod xbps;
 
 // every backend, in the order a bare `maw install foo` tries them after xbps
-pub const NAMES: [&str; 3] = ["xbps", "cargo", "go"];
+pub const NAMES: [&str; 4] = ["xbps", "flatpak", "cargo", "go"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
@@ -38,6 +39,8 @@ pub struct Pkg {
     pub manual: bool,
     // the executables it builds, when the backend can tell; an empty list means a library
     pub programs: Option<Vec<String>>,
+    // the exact build, when the version alone can't reinstall it: a flatpak commit
+    pub build: String,
 }
 
 // a source of packages: installed state, the repo, and changes to either
@@ -86,6 +89,7 @@ pub fn for_name<'a>(name: &str, runner: &'a dyn Runner, env: &Env) -> Option<Box
         "xbps" => Some(Box::new(xbps::Xbps::new(runner, env))),
         "cargo" => Some(Box::new(cargo::Cargo::new(runner, env))),
         "go" => Some(Box::new(go::Go::new(runner, env))),
+        "flatpak" => Some(Box::new(flatpak::Flatpak::new(runner, env))),
         _ => None,
     }
 }
