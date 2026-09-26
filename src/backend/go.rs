@@ -93,6 +93,10 @@ impl Backend for Go<'_> {
         })
     }
 
+    fn tool(&self) -> Option<(&'static str, &'static str)> {
+        Some(("go", "go"))
+    }
+
     fn pin(&self, pkg: &Pkg) -> String {
         format!("{}@v{}", pkg.source, pkg.version)
     }

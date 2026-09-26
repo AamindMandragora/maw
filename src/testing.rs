@@ -28,13 +28,13 @@ pub fn fixture(modules: &[&str]) -> Fixture {
 }
 
 // nix; xbps with only bash installed and bash, foot, waybar in the repo; crates.io with bat and ripgrep; nothing from go
-fn fake(program: &str, args: &[String]) -> Result<String, RunError> {
+pub fn fake(program: &str, args: &[String]) -> Result<String, RunError> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match program {
         "xbps-query" => fake_xbps(program, &args),
         "cargo" => Ok(fake_cargo(&args)),
         "curl" => Ok(fake_crates_io(&args)),
-        "go" | "flatpak" | "xbps-install" | "xbps-remove" | "xbps-rindex" | "xbps-pkgdb" | "sv" | "tail" => Ok(String::new()),
+        "go" | "flatpak" | "uv" | "npm" | "xbps-install" | "xbps-remove" | "xbps-rindex" | "xbps-pkgdb" | "sv" | "tail" => Ok(String::new()),
         "install" | "cp" | "ln" | "rm" | "mkdir" | "git" => real(program, &args),
         "date" => Ok("2026-09-23 12:00\n".into()),
         _ => Ok(fake_nix(&args)),

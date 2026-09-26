@@ -119,6 +119,10 @@ impl Backend for Flatpak<'_> {
         self.change(&["uninstall".into(), "--unused".into()])
     }
 
+    fn tool(&self) -> Option<(&'static str, &'static str)> {
+        Some(("flatpak", "flatpak"))
+    }
+
     fn pin(&self, pkg: &Pkg) -> String {
         format!("{}@{}", pkg.source, pkg.build)
     }

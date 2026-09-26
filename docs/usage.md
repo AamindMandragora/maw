@@ -315,6 +315,8 @@ packages = {
   flatpak = [ "com.slack.Slack" "com.tomjwatson.Emote" ];
   cargo = [ "bat" "typos-cli@1.24" "https://github.com/vitali87/croft.git" ];
   go = [ "github.com/jesseduffield/lazygit" ];
+  uv = [ "ruff" "httpie@3.2.3" ];
+  npm = [ "prettier" ];
 };
 ```
 
@@ -329,6 +331,9 @@ maw install cargo:bat@0.24                         # a crate, pinned to a versio
 maw install cargo:https://github.com/user/tool.git # a crate from git
 maw install go:github.com/jesseduffield/lazygit    # a go program
 maw install com.slack.Slack                        # a flatpak app, by its app id
+maw install uv:ruff                                # a python program from pypi
+maw install uv:git+https://github.com/user/tool    # a python program from git
+maw install npm:prettier                           # a javascript program from npm
 maw install foot --dry-run
 ```
 
@@ -344,11 +349,13 @@ A bare name goes to whichever source already declares it, a flatpak app id (`com
 hello-cli isn't in xbps; install crate hello-cli 0.2.2 from crates.io? [Y/n]
 ```
 
-Without a terminal it stops and suggests `cargo:<name>` instead. Library crates, which build no program, are refused before any question, since there's nothing to install; add them to a project with `cargo add` instead. A `flatpak:`, `cargo:`, `go:`, or `xbps:` prefix skips all of that. `@version` pins a crate or go program to that version; without it you get the latest.
+Without a terminal it stops and suggests `cargo:<name>` instead. Library crates and npm packages with no commands are refused before any question, since there's nothing to install; add them to a project with `cargo add` or `npm install` instead. A `flatpak:`, `cargo:`, `go:`, `uv:`, `npm:`, or `xbps:` prefix skips all of that. Python and npm packages always need their prefix. `@version` pins a crate, go program, python program, or npm package to that version; without it you get the latest.
 
-Then maw installs (`sudo xbps-install`, `sudo flatpak install`, `cargo install --locked`, or `go install`), records the package in `maw.nix`, and, when the registry knows the program and the repo has no module or `static/` dir for it yet, creates its module the way `maw new` does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+Each source needs its tool: `cargo`, `go`, `uv`, `flatpak`, or `npm` (Void's `nodejs`). When one is missing, maw stops and says what to install: `error: uv isn't installed; maw install uv first`. `maw install uv uv:ruff` does both, xbps first.
 
-cargo installs into `~/.cargo/bin`, go into `$GOBIN` (or `$GOPATH/bin`, or `~/go/bin`). maw leaves your shell config alone, but warns after an install if that dir isn't on your `PATH`, naming the line to add.
+Then maw installs (`sudo xbps-install`, `sudo flatpak install`, `cargo install --locked`, `go install`, `uv tool install`, or `npm install -g`), records the package in `maw.nix`, and, when the registry knows the program and the repo has no module or `static/` dir for it yet, creates its module the way `maw new` does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+
+cargo installs into `~/.cargo/bin`, go into `$GOBIN` (or `$GOPATH/bin`, or `~/go/bin`), and uv and npm into `~/.local/bin` (npm with `~/.local` as its global prefix, so nothing needs root). maw leaves your shell config alone, but warns after an install if that dir isn't on your `PATH`, naming the line to add.
 
 #### Flatpak apps
 
@@ -453,7 +460,7 @@ While any source package is declared, maw also manages `/etc/xbps.d/10-maw-local
 maw sync
 ```
 
-Upgrades the system (`xbps-install -Su`), then every flatpak, crate, and go program that isn't pinned to a version, then rebuilds every [source package](#source-packages) whose template is ahead of what's installed (this is how maw updates itself: bump `srcpkgs/maw/template`, then `maw sync`). Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
+Upgrades the system (`xbps-install -Su`), then every flatpak, crate, go, python, and npm program that isn't pinned to a version, then rebuilds every [source package](#source-packages) whose template is ahead of what's installed (this is how maw updates itself: bump `srcpkgs/maw/template`, then `maw sync`). Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
 
 ## Services
 
@@ -559,7 +566,7 @@ A rollback is itself a new generation, so history only moves forward and you can
 2. removes packages declared now but not then, and puts every package declared then back at the version that generation recorded,
 3. activates, which relinks config and re-enables services the way they were.
 
-Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's `hostdir/binpkgs`, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and crates and go programs are reinstalled at their recorded version.
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's `hostdir/binpkgs`, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and everything else is reinstalled at its recorded version.
 
 xbps packages left behind the repo's newest version are held, so `maw sync` doesn't undo the rollback. They stay held until `maw sync --release`, or until a later rollback puts them back at the newest version.
 

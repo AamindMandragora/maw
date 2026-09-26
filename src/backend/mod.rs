@@ -5,11 +5,13 @@ use std::path::PathBuf;
 pub mod cargo;
 pub mod flatpak;
 pub mod go;
+pub mod npm;
 pub mod srcpkgs;
+pub mod uv;
 pub mod xbps;
 
 // every backend, in the order a bare `maw install foo` tries them after xbps
-pub const NAMES: [&str; 4] = ["xbps", "flatpak", "cargo", "go"];
+pub const NAMES: [&str; 6] = ["xbps", "flatpak", "cargo", "go", "uv", "npm"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
@@ -66,6 +68,11 @@ pub trait Backend {
     fn bin_dir(&self) -> Option<PathBuf> {
         None
     }
+
+    // the program this backend runs and the xbps package that provides it; None for xbps itself
+    fn tool(&self) -> Option<(&'static str, &'static str)> {
+        None
+    }
 }
 
 // the backend that owns the base system
@@ -90,6 +97,8 @@ pub fn for_name<'a>(name: &str, runner: &'a dyn Runner, env: &Env) -> Option<Box
         "cargo" => Some(Box::new(cargo::Cargo::new(runner, env))),
         "go" => Some(Box::new(go::Go::new(runner, env))),
         "flatpak" => Some(Box::new(flatpak::Flatpak::new(runner, env))),
+        "uv" => Some(Box::new(uv::Uv::new(runner, env))),
+        "npm" => Some(Box::new(npm::Npm::new(runner, env))),
         _ => None,
     }
 }

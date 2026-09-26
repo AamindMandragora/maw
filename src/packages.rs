@@ -9,7 +9,7 @@ use crate::edit::{self, EditError};
 use crate::env::Env;
 use crate::registry::Registry;
 use crate::repo::Repo;
-use crate::runner::Runner;
+use crate::runner::{RunError, Runner};
 use crate::state::{MawState, StateError};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -20,8 +20,10 @@ pub enum PackagesError {
     NotFound(String),
     #[error("{0} isn't in xbps; install the crate with `maw install cargo:{0}`")]
     Unconfirmed(String),
-    #[error("{0} is a library crate, not a program; add it to a project with `cargo add {0}`")]
-    Library(String),
+    #[error("{name} is a library, not a program; add it to a project with `{add} {name}`")]
+    Library { name: String, add: &'static str },
+    #[error("{program} isn't installed; `maw install {package}` first")]
+    MissingTool { program: &'static str, package: &'static str },
     #[error("{0} is neither installed nor declared")]
     Unknown(String),
     #[error(transparent)]
@@ -135,7 +137,7 @@ impl<'a> Context<'a> {
             return Err(PackagesError::NotFound(request.into()));
         };
         if is_library(&crate_found) {
-            return Err(PackagesError::Library(request.into()));
+            return Err(library("cargo", request));
         }
         let question = format!("{request} isn't in xbps; install crate {} {} from crates.io? [Y/n] ", crate_found.name, crate_found.version);
         match ask.map(|ask| ask.ask(&question)) {
@@ -157,17 +159,37 @@ impl<'a> Context<'a> {
     }
 }
 
+// the error for a package that builds no program, with how to use it instead
+fn library(backend: &str, name: &str) -> PackagesError {
+    let add = if backend == "npm" { "npm install" } else { "cargo add" };
+    PackagesError::Library { name: name.into(), add }
+}
+
+// the first backend whose tool isn't installed and isn't being installed from xbps alongside
+fn missing_tool(runner: &dyn Runner, context: &Context, packages: &[Target]) -> Option<PackagesError> {
+    let backends: BTreeSet<&str> = packages.iter().map(|target| target.backend.as_str()).collect();
+    let coming = |package: &str| packages.iter().any(|target| target.backend == "xbps" && target.spec == package);
+    let tools = backends.into_iter().filter_map(|name| context.backend(name).tool());
+    tools
+        .filter(|(program, package)| !coming(package) && matches!(runner.run(program, &["--version".into()]), Err(RunError::Spawn { .. })))
+        .map(|(program, package)| PackagesError::MissingTool { program, package })
+        .next()
+}
+
 // what installing would do: resolve each request, install the missing, record the undeclared, scaffold known programs
 pub fn plan_install(env: &Env, runner: &dyn Runner, repo: &Repo, requests: &[String], ask: Option<&dyn Ask>) -> Result<Change, PackagesError> {
     let context = Context::load(env, runner, repo)?;
     let targets = requests.iter().map(|request| context.resolve(request, ask)).collect::<Result<Vec<_>, _>>()?;
     let packages: Vec<Target> = targets.iter().filter(|target| !context.is_installed(target)).cloned().collect();
+    if let Some(error) = missing_tool(runner, &context, &packages) {
+        return Err(error);
+    }
 
     // anything not installed yet has to exist where it's going to come from, and be a program; a template is its own source
     let from_repos = packages.iter().filter(|target| !(target.backend == "xbps" && context.src.has(&target.spec)));
     from_repos.into_iter().try_for_each(|target| match context.backend(&target.backend).info(&target.spec)? {
         None => Err(PackagesError::NotFound(target.spec.clone())),
-        Some(pkg) if is_library(&pkg) => Err(PackagesError::Library(target.spec.clone())),
+        Some(pkg) if is_library(&pkg) => Err(library(&target.backend, &target.spec)),
         Some(_) => Ok(()),
     })?;
 
@@ -245,12 +267,15 @@ pub fn outdated(env: &Env, runner: &dyn Runner, repo: &Repo, state: &MawState) -
     Ok(stale.collect())
 }
 
-// specs per backend, in backend order
-fn grouped(targets: &[Target]) -> BTreeMap<String, Vec<String>> {
-    targets.iter().fold(BTreeMap::new(), |mut groups, target| {
-        groups.entry(target.backend.clone()).or_insert_with(Vec::new).push(target.spec.clone());
+// specs per backend, in NAMES order, so xbps goes first and can bring the tools the others need
+fn grouped(targets: &[Target]) -> Vec<(String, Vec<String>)> {
+    let groups = targets.iter().fold(BTreeMap::new(), |mut groups: BTreeMap<String, Vec<String>>, target| {
+        groups.entry(target.backend.clone()).or_default().push(target.spec.clone());
         groups
-    })
+    });
+    let mut ordered: Vec<(String, Vec<String>)> = groups.into_iter().collect();
+    ordered.sort_by_key(|(name, _)| NAMES.iter().position(|known| known == name));
+    ordered
 }
 
 // what removing would do: remove the installed, drop the declared; modules are kept
@@ -284,16 +309,16 @@ pub fn remove(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> R
     Ok(())
 }
 
-// upgrades unpinned flatpak, cargo, and go packages; xbps upgrades through its own sync
+// upgrades every unpinned package but xbps's, which upgrade through its own sync
 pub fn upgrade(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Target>, PackagesError> {
     let (_, state) = edit::load(env, runner, repo)?;
-    let unpinned: Vec<Target> = ["flatpak", "cargo", "go"]
+    let unpinned: Vec<Target> = ["flatpak", "cargo", "go", "uv", "npm"]
         .iter()
         .flat_map(|backend| declared(&state, backend).into_iter().map(|spec| Target { backend: backend.to_string(), spec }))
         .filter(|target| spec_base(&target.spec) == target.spec)
         .collect();
 
-    // flatpak updates in place; cargo and go upgrade by installing again
+    // flatpak updates in place; the rest upgrade by installing again
     grouped(&unpinned).into_iter().try_for_each(|(name, specs)| match name.as_str() {
         "flatpak" => Flatpak::new(runner, env).update(&specs),
         _ => backend::for_name(&name, runner, env).unwrap().install(&specs),
@@ -405,6 +430,7 @@ pub fn off_path(env: &Env, runner: &dyn Runner, change: &Change, path_var: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runner::fake::FakeRunner;
     use crate::testing::{Fixture, fixture};
     use std::fs;
 
@@ -472,6 +498,23 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_tool_stops_the_plan_unless_xbps_brings_it() {
+        let mut fixture = fixture(&[]);
+        fixture.runner = FakeRunner::fallible(|program, args| match program {
+            "uv" => Err(RunError::Spawn { program: "uv".into(), source: std::io::ErrorKind::NotFound.into() }),
+            "curl" => Ok(r#"{"info":{"name":"ruff","version":"0.6.9"}}"#.into()),
+            "xbps-query" if args.last().is_some_and(|name| name == "uv") => Ok("pkgver: uv-0.12.9_1\n".into()),
+            _ => crate::testing::fake(program, args),
+        });
+        assert!(matches!(plan(&fixture, &["uv:ruff"], None), Err(PackagesError::MissingTool { program: "uv", package: "uv" })));
+
+        // uv from xbps in the same install is fine, and goes first
+        let change = plan(&fixture, &["uv:ruff", "xbps:uv"], None).unwrap();
+        let order: Vec<String> = grouped(&change.packages).into_iter().map(|(backend, _)| backend).collect();
+        assert_eq!(order, ["xbps", "uv"]);
+    }
+
+    #[test]
     fn names_nowhere_are_not_found() {
         let fixture = fixture(&[]);
         assert!(matches!(plan(&fixture, &["foot", "nope"], None), Err(PackagesError::NotFound(name)) if name == "nope"));
@@ -487,8 +530,8 @@ mod tests {
     #[test]
     fn library_crates_are_refused_before_asking() {
         let fixture = fixture(&[]);
-        assert!(matches!(plan(&fixture, &["libfoo"], Some(&Answer("y"))), Err(PackagesError::Library(_))));
-        assert!(matches!(plan(&fixture, &["cargo:libfoo"], None), Err(PackagesError::Library(_))));
+        assert!(matches!(plan(&fixture, &["libfoo"], Some(&Answer("y"))), Err(PackagesError::Library { .. })));
+        assert!(matches!(plan(&fixture, &["cargo:libfoo"], None), Err(PackagesError::Library { add: "cargo add", .. })));
         assert!(plan(&fixture, &["cargo:bat"], None).is_ok());
     }
 

@@ -314,6 +314,8 @@ packages = {
   flatpak = [ "com.slack.Slack" "com.tomjwatson.Emote" ];
   cargo = [ "bat" "typos-cli@1.24" "https://github.com/vitali87/croft.git" ];
   go = [ "github.com/jesseduffield/lazygit" ];
+  uv = [ "ruff" "httpie@3.2.3" ];
+  npm = [ "prettier" ];
 };
 .EE
 .PP
@@ -327,6 +329,9 @@ maw install cargo:bat@0.24                         # a crate, pinned to a versio
 maw install cargo:https://github.com/user/tool.git # a crate from git
 maw install go:github.com/jesseduffield/lazygit    # a go program
 maw install com.slack.Slack                        # a flatpak app, by its app id
+maw install uv:ruff                                # a python program from pypi
+maw install uv:git+https://github.com/user/tool    # a python program from git
+maw install npm:prettier                           # a javascript program from npm
 maw install foot --dry-run
 .EE
 .PP
@@ -342,11 +347,13 @@ A bare name goes to whichever source already declares it, a flatpak app id (\fBc
 hello-cli isn't in xbps; install crate hello-cli 0.2.2 from crates.io? [Y/n]
 .EE
 .PP
-Without a terminal it stops and suggests \fBcargo:<name>\fR instead. Library crates, which build no program, are refused before any question, since there's nothing to install; add them to a project with \fBcargo add\fR instead. A \fBflatpak:\fR, \fBcargo:\fR, \fBgo:\fR, or \fBxbps:\fR prefix skips all of that. \fB@version\fR pins a crate or go program to that version; without it you get the latest.
+Without a terminal it stops and suggests \fBcargo:<name>\fR instead. Library crates and npm packages with no commands are refused before any question, since there's nothing to install; add them to a project with \fBcargo add\fR or \fBnpm install\fR instead. A \fBflatpak:\fR, \fBcargo:\fR, \fBgo:\fR, \fBuv:\fR, \fBnpm:\fR, or \fBxbps:\fR prefix skips all of that. Python and npm packages always need their prefix. \fB@version\fR pins a crate, go program, python program, or npm package to that version; without it you get the latest.
 .PP
-Then maw installs (\fBsudo xbps-install\fR, \fBsudo flatpak install\fR, \fBcargo install --locked\fR, or \fBgo install\fR), records the package in \fBmaw.nix\fR, and, when the registry knows the program and the repo has no module or \fBstatic/\fR dir for it yet, creates its module the way \fBmaw new\fR does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+Each source needs its tool: \fBcargo\fR, \fBgo\fR, \fBuv\fR, \fBflatpak\fR, or \fBnpm\fR (Void's \fBnodejs\fR). When one is missing, maw stops and says what to install: \fBerror: uv isn't installed; maw install uv first\fR. \fBmaw install uv uv:ruff\fR does both, xbps first.
 .PP
-cargo installs into \fB~/.cargo/bin\fR, go into \fB$GOBIN\fR (or \fB$GOPATH/bin\fR, or \fB~/go/bin\fR). maw leaves your shell config alone, but warns after an install if that dir isn't on your \fBPATH\fR, naming the line to add.
+Then maw installs (\fBsudo xbps-install\fR, \fBsudo flatpak install\fR, \fBcargo install --locked\fR, \fBgo install\fR, \fBuv tool install\fR, or \fBnpm install -g\fR), records the package in \fBmaw.nix\fR, and, when the registry knows the program and the repo has no module or \fBstatic/\fR dir for it yet, creates its module the way \fBmaw new\fR does, importing any config already on disk. Then it activates. A package that's already installed is only recorded. A name nothing has is an error.
+.PP
+cargo installs into \fB~/.cargo/bin\fR, go into \fB$GOBIN\fR (or \fB$GOPATH/bin\fR, or \fB~/go/bin\fR), and uv and npm into \fB~/.local/bin\fR (npm with \fB~/.local\fR as its global prefix, so nothing needs root). maw leaves your shell config alone, but warns after an install if that dir isn't on your \fBPATH\fR, naming the line to add.
 .PP
 
 .PP
@@ -447,7 +454,7 @@ While any source package is declared, maw also manages \fB/etc/xbps.d/10-maw-loc
 maw sync
 .EE
 .PP
-Upgrades the system (\fBxbps-install -Su\fR), then every flatpak, crate, and go program that isn't pinned to a version, then rebuilds every source package whose template is ahead of what's installed (this is how maw updates itself: bump \fBsrcpkgs/maw/template\fR, then \fBmaw sync\fR). Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
+Upgrades the system (\fBxbps-install -Su\fR), then every flatpak, crate, go, python, and npm program that isn't pinned to a version, then rebuilds every source package whose template is ahead of what's installed (this is how maw updates itself: bump \fBsrcpkgs/maw/template\fR, then \fBmaw sync\fR). Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
 .SH "SERVICES"
 .PP
 Services are supervised by runit. There are two kinds:
@@ -551,7 +558,7 @@ removes packages declared now but not then, and puts every package declared then
 .IP 3. 4
 activates, which relinks config and re-enables services the way they were.
 .PP
-Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in \fB/var/cache/xbps\fR (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's \fBhostdir/binpkgs\fR, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and crates and go programs are reinstalled at their recorded version.
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in \fB/var/cache/xbps\fR (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's \fBhostdir/binpkgs\fR, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and everything else is reinstalled at its recorded version.
 .PP
 xbps packages left behind the repo's newest version are held, so \fBmaw sync\fR doesn't undo the rollback. They stay held until \fBmaw sync --release\fR, or until a later rollback puts them back at the newest version.
 .SS "Sharing"

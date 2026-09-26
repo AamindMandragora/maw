@@ -94,7 +94,7 @@ pub enum Command {
     },
     #[command(about = "install packages, record them in maw.nix, scaffold their modules, then activate", after_help = "see: maw help installing")]
     Install {
-        #[arg(required = true, help = "names or flatpak app ids, or cargo:<crate|git url>, go:<path>, flatpak:<app id>, xbps:<name>; @version pins")]
+        #[arg(required = true, help = "names or flatpak app ids, or cargo:<crate|git url>, go:<path>, uv:<pypi name|git url>, npm:<package>, flatpak:<app id>, xbps:<name>; @version pins")]
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,

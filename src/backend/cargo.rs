@@ -100,6 +100,10 @@ impl Backend for Cargo<'_> {
         names.into_iter().try_for_each(|pkg| Ok(self.runner.interactive("cargo", &["uninstall".into(), pkg.name.clone()])?))
     }
 
+    fn tool(&self) -> Option<(&'static str, &'static str)> {
+        Some(("cargo", "cargo"))
+    }
+
     fn pin(&self, pkg: &Pkg) -> String {
         if is_git(&pkg.source) { pkg.source.clone() } else { format!("{}@{}", pkg.name, pkg.version) }
     }
