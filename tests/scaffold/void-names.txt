@@ -1,5 +1,10 @@
 cairo-devel
 fcft-devel
+git
+gobject-introspection
+gtk+3-devel
+gtk-layer-shell
+gtk-layer-shell-devel
 libpng-devel
 libresvg-devel
 libxkbcommon-devel

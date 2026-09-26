@@ -92,7 +92,7 @@ Running the binary picks these up from the environment:
 | `HOME` | | home directory for destinations and state |
 | `MAW_SYSROOT` | `/` | prefix for system paths like `/etc` |
 
-The share dir is `/usr/share/maw` when installed, else the source checkout. To try maw without touching your real home, build first, then point `HOME` at a scratch dir. rustup reads `HOME` too, so run the built binary directly rather than `cargo run`:
+The share dir (the nix lib, registry, and depmap) is the checkout a binary was built from while that checkout exists, so a development build never mixes with an installed maw's files; the packaged binary uses `/usr/share/maw`. To try maw without touching your real home, build first, then point `HOME` at a scratch dir. rustup reads `HOME` too, so run the built binary directly rather than `cargo run`:
 
 ```sh
 cargo build

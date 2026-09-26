@@ -1,4 +1,4 @@
-# nixpkgs dependency name -> void package, for `maw src new --from-nix`
+# upstream dependency name (nixpkgs or arch) -> void package, for `maw src new --from-nix` and `--from-aur`
 # null drops the dependency: nix-only build hooks, and tools a build_style already brings
 # names that match a void package (or its -devel) as they are need no entry
 {
@@ -17,6 +17,11 @@
   wrapQtAppsHook = null;
   writable-tmpdir-as-home-hook = null;
   writableTmpDirAsHomeHook = null;
+
+  # arch's base system, which every void build already has
+  gcc-libs = null;
+  glibc = null;
+  libgcc = null;
 
   # brought by the build_style
   cargo = null;

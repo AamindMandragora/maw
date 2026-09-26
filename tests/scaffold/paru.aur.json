@@ -1,0 +1,40 @@
+{
+  "Depends": [
+    "git",
+    "pacman",
+    "libalpm.so>=14"
+  ],
+  "Description": "Feature packed AUR helper",
+  "FirstSubmitted": 1603068230,
+  "ID": 1908988,
+  "Keywords": [
+    "AUR",
+    "helper",
+    "pacman",
+    "rust",
+    "wrapper",
+    "yay"
+  ],
+  "LastModified": 1765515783,
+  "License": [
+    "GPL-3.0-or-later"
+  ],
+  "Maintainer": "Morganamilo",
+  "MakeDepends": [
+    "cargo"
+  ],
+  "Name": "paru",
+  "NumVotes": 1256,
+  "OptDepends": [
+    "bat",
+    "devtools"
+  ],
+  "OutOfDate": null,
+  "PackageBase": "paru",
+  "PackageBaseID": 158891,
+  "Popularity": 20.398532,
+  "Submitter": "Morganamilo",
+  "URL": "https://github.com/morganamilo/paru",
+  "URLPath": "/cgit/aur.git/snapshot/paru.tar.gz",
+  "Version": "2.1.0-2"
+}

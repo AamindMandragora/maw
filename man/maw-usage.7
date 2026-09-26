@@ -419,7 +419,26 @@ makedepends="pcre2-devel"
 .PP
 A dependency maw can't match to a Void package is left as a \fB# TODO\fR line. Fix it by hand; when you close the editor, maw asks whether to remember what you replaced it with (\fBrecord libfoo -> foo-devel in depmap? [Y/n]\fR) and saves it to \fBdepmap.nix\fR in your repo, so the next scaffold gets it right. Nix-only build helpers are dropped on their own. Check a draft before building: nixpkgs sometimes patches or configures a package in ways a template needs spelled out, like ripgrep's \fBconfigure_args="--features=pcre2"\fR.
 .PP
-The nixpkgs checkout lives at \fB~/.local/share/maw/nixpkgs\fR (a shallow nixos-unstable clone, about 400MB), made on first use; \fBmaw.nixpkgs\fR in \fBconfig.nix\fR points elsewhere. \fBsrc update\fR works on templates \fB--from-nix\fR wrote, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay.
+The nixpkgs checkout lives at \fB~/.local/share/maw/nixpkgs\fR (a shallow nixos-unstable clone, about 400MB), made on first use; \fBmaw.nixpkgs\fR in \fBconfig.nix\fR points elsewhere.
+.PP
+Or from an AUR package, which works the same way:
+.PP
+.EX
+maw src new wlogout --from-aur           # from the aur's wlogout
+maw src new yay --from-aur yay-bin       # a different name than the aur uses
+.EE
+.PP
+maw reads the AUR's metadata and the package's PKGBUILD. It never runs the PKGBUILD: it reads its plain assignments and simple \fB${var}\fR expansions, so anything cleverer shows up as a \fB# TODO\fR. The build style comes from the build tools and the PKGBUILD's \fBbuild()\fR. Arch's \fBdepends\fR holds both libraries and programs, so libraries go to \fBmakedepends\fR as their \fB-devel\fR package and programs to \fBdepends\fR. The PKGBUILD's \fBpackage()\fR is kept as comments at the end of the draft, for install steps the build style doesn't cover (licenses, completions, config files):
+.PP
+.EX
+# the PKGBUILD's package(), for anything the build style doesn't cover:
+#	install -Dm644 man/paru.8 "$pkgdir/usr/share/man/man8/paru.8"
+#	install -Dm644 completions/zsh "${pkgdir}/usr/share/zsh/site-functions/_paru"
+.EE
+.PP
+A \fB-bin\fR package that repackages prebuilt files gets no build style and a TODO to port its \fBpackage()\fR into \fBdo_install()\fR. A \fB-git\fR package builds from a checkout, which xbps-src can't do; draft from the release package instead. Arch-only dependencies, like \fBpacman\fR, stay as TODOs to delete.
+.PP
+\fBsrc update\fR works on templates drafted either way, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay.
 .PP
 
 .PP

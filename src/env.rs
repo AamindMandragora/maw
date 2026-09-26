@@ -22,12 +22,13 @@ impl Env {
         }
     }
 
-    // reads HOME and MAW_SYSROOT; share_dir is /usr/share/maw when installed, else this checkout
+    // reads HOME and MAW_SYSROOT; share_dir is the checkout maw was built from while it's still there, so a
+    // development build uses its own nix lib and registry, else /usr/share/maw (xbps-src deletes its build dir)
     pub fn from_process() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/".into());
         let sysroot = std::env::var_os("MAW_SYSROOT").map(PathBuf::from).unwrap_or_else(|| "/".into());
-        let installed = PathBuf::from("/usr/share/maw");
-        let share_dir = if installed.exists() { installed } else { PathBuf::from(env!("CARGO_MANIFEST_DIR")) };
+        let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let share_dir = if checkout.join("nix/lib.nix").exists() { checkout } else { PathBuf::from("/usr/share/maw") };
         Env::new(&home, &sysroot, &share_dir)
     }
 

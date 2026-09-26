@@ -424,7 +424,26 @@ makedepends="pcre2-devel"
 
 A dependency maw can't match to a Void package is left as a `# TODO` line. Fix it by hand; when you close the editor, maw asks whether to remember what you replaced it with (`record libfoo -> foo-devel in depmap? [Y/n]`) and saves it to `depmap.nix` in your repo, so the next scaffold gets it right. Nix-only build helpers are dropped on their own. Check a draft before building: nixpkgs sometimes patches or configures a package in ways a template needs spelled out, like ripgrep's `configure_args="--features=pcre2"`.
 
-The nixpkgs checkout lives at `~/.local/share/maw/nixpkgs` (a shallow nixos-unstable clone, about 400MB), made on first use; `maw.nixpkgs` in `config.nix` points elsewhere. `src update` works on templates `--from-nix` wrote, which it recognizes by their `# scaffolded by maw` line; it touches only `version`, `revision`, `distfiles`, and `checksum`, so your other edits stay.
+The nixpkgs checkout lives at `~/.local/share/maw/nixpkgs` (a shallow nixos-unstable clone, about 400MB), made on first use; `maw.nixpkgs` in `config.nix` points elsewhere.
+
+Or from an AUR package, which works the same way:
+
+```sh
+maw src new wlogout --from-aur           # from the aur's wlogout
+maw src new yay --from-aur yay-bin       # a different name than the aur uses
+```
+
+maw reads the AUR's metadata and the package's PKGBUILD. It never runs the PKGBUILD: it reads its plain assignments and simple `${var}` expansions, so anything cleverer shows up as a `# TODO`. The build style comes from the build tools and the PKGBUILD's `build()`. Arch's `depends` holds both libraries and programs, so libraries go to `makedepends` as their `-devel` package and programs to `depends`. The PKGBUILD's `package()` is kept as comments at the end of the draft, for install steps the build style doesn't cover (licenses, completions, config files):
+
+```
+# the PKGBUILD's package(), for anything the build style doesn't cover:
+#	install -Dm644 man/paru.8 "$pkgdir/usr/share/man/man8/paru.8"
+#	install -Dm644 completions/zsh "${pkgdir}/usr/share/zsh/site-functions/_paru"
+```
+
+A `-bin` package that repackages prebuilt files gets no build style and a TODO to port its `package()` into `do_install()`. A `-git` package builds from a checkout, which xbps-src can't do; draft from the release package instead. Arch-only dependencies, like `pacman`, stay as TODOs to delete.
+
+`src update` works on templates drafted either way, which it recognizes by their `# scaffolded by maw` line; it touches only `version`, `revision`, `distfiles`, and `checksum`, so your other edits stay.
 
 #### Patching Void's packages
 

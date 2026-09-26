@@ -1,0 +1,31 @@
+# Template file for 'paru'
+# scaffolded by maw from aur 'paru' at 2.1.0-2
+pkgname=paru
+version=2.1.0
+revision=1
+build_style=cargo
+depends="git"
+# TODO: aur had 'pacman'
+# TODO: aur had 'libalpm.so'
+short_desc="Feature packed AUR helper"
+maintainer="Maw Test <maw@test>"
+license="GPL-3.0-or-later"
+homepage="https://github.com/morganamilo/paru"
+distfiles="https://github.com/Morganamilo/paru/archive/v${version}.tar.gz"
+checksum=CHECKSUM
+
+# the PKGBUILD's package(), for anything the build style doesn't cover:
+#	cd "$srcdir/$pkgname-$pkgver"
+#
+#	install -Dm755 target/release/paru "${pkgdir}/usr/bin/paru"
+#	install -Dm644 paru.conf "${pkgdir}/etc/paru.conf"
+#
+#	install -Dm644 man/paru.8 "$pkgdir/usr/share/man/man8/paru.8"
+#	install -Dm644 man/paru.conf.5 "$pkgdir/usr/share/man/man5/paru.conf.5"
+#
+#	install -Dm644 completions/bash "${pkgdir}/usr/share/bash-completion/completions/paru.bash"
+#	install -Dm644 completions/fish "${pkgdir}/usr/share/fish/vendor_completions.d/paru.fish"
+#	install -Dm644 completions/zsh "${pkgdir}/usr/share/zsh/site-functions/_paru"
+#
+#	install -d "$pkgdir/usr/share/"
+#	cp -r locale "$pkgdir/usr/share/"

@@ -1,4 +1,5 @@
 use crate::backend::BackendError;
+use crate::backend::srcpkgs::SrcPkgs;
 use crate::backend::xbps::Xbps;
 use crate::build::{self, BuildError};
 use crate::env::Env;
@@ -13,6 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod aur;
 pub mod nixpkgs;
 pub mod xbps_src;
 
@@ -20,10 +22,16 @@ pub mod xbps_src;
 pub enum ScaffoldError {
     #[error("srcpkgs/{0}/template already exists")]
     Exists(String),
-    #[error("srcpkgs/{0}/template didn't come from nixpkgs")]
-    NotFromNix(String),
-    #[error("nixpkgs' {0} has no source url to fetch")]
+    #[error("srcpkgs/{0}/template wasn't drafted from nixpkgs or the aur")]
+    NotDrafted(String),
+    #[error("{0} has no source url to fetch")]
     NoSource(String),
+    #[error("void already has {0}; `maw install {0}`, or patch it with srcpkgs/{0}/patches/")]
+    InVoid(String),
+    #[error("the aur has no {0}; `maw search {0}` to look for it")]
+    NotInAur(String),
+    #[error("{0} builds from a git checkout; draft from its release package instead, usually the name without -git")]
+    Vcs(String),
     #[error("nixpkgs {attr}: unexpected metadata")]
     Meta { attr: String, source: serde_json::Error },
     #[error(transparent)]
@@ -75,6 +83,14 @@ pub struct SourcePkg {
     pub go_packages: Vec<String>,
     // where it came from, e.g. "nixpkgs 'lazygit' at 4975466d3"
     pub origin: String,
+    // what its dependency names are, for TODO lines: "nix" or "aur"
+    pub upstream: String,
+    // deps mixes libraries and runtime programs (arch's depends): only -devel matches are build deps, the rest runtime
+    pub mixed_deps: bool,
+    // things the draft couldn't carry over, each a TODO line
+    pub notes: Vec<String>,
+    // text for the end of the template, like upstream build steps kept as comments
+    pub extra: String,
 }
 
 impl SourcePkg {
@@ -99,12 +115,16 @@ impl SourcePkg {
             go_import_path,
             go_packages,
             origin: origin.into(),
+            upstream: "nix".into(),
+            mixed_deps: false,
+            notes: Vec::new(),
+            extra: String::new(),
         })
     }
 }
 
 // a go module path from a forge url: https://github.com/a/b/... -> github.com/a/b
-fn go_import_path(homepage: &str, distfile: &str) -> Option<String> {
+pub(crate) fn go_import_path(homepage: &str, distfile: &str) -> Option<String> {
     [homepage, distfile].iter().find_map(|url| {
         let rest = url.strip_prefix("https://")?;
         let parts: Vec<&str> = rest.split('/').take(3).collect();
@@ -145,7 +165,12 @@ impl Deps {
         Deps { map, known: known.into_iter().map(|name| (name.to_lowercase(), name)).collect() }
     }
 
-    // development libraries prefer the -devel package, the way void's makedepends are written
+    // whether the distro has a package by exactly this name
+    pub fn has(&self, name: &str) -> bool {
+        self.known.get(&name.to_lowercase()).is_some_and(|known| known == name)
+    }
+
+    // development libraries prefer the -devel package, the way void's makedepends are written; arch's python-x is void's python3-x
     pub fn resolve(&self, name: &str, devel: bool) -> Resolved {
         if let Some(mapped) = self.map.get(name) {
             return mapped.clone().map_or(Resolved::Drop, Resolved::Package);
@@ -153,7 +178,8 @@ impl Deps {
         if name.ends_with("-hook") || name.ends_with("-hook.sh") {
             return Resolved::Drop;
         }
-        let candidates = [devel.then(|| format!("{name}-devel")), Some(name.to_string())];
+        let python = name.strip_prefix("python-").map(|module| format!("python3-{module}"));
+        let candidates = [devel.then(|| format!("{name}-devel")), Some(name.to_string()), python];
         let found = candidates.into_iter().flatten().find_map(|candidate| self.known.get(&candidate.to_lowercase()));
         found.map_or(Resolved::Unknown, |package| Resolved::Package(package.clone()))
     }
@@ -194,7 +220,7 @@ pub fn record(env: &Env, runner: &dyn Runner, repo: &Repo, learned: &[(String, S
     };
     map.extend(learned.iter().cloned());
     let lines: String = map.iter().map(|(name, mapped)| format!("  {} = {};\n", attr_name(name), string(mapped))).collect();
-    let text = format!("# nixpkgs dependency -> void package, learned by `maw src new --from-nix`; maw writes this file\n{{\n{lines}}}\n");
+    let text = format!("# upstream dependency (nixpkgs or arch) -> void package, learned by `maw src new`; maw writes this file\n{{\n{lines}}}\n");
     fs::write(&file, text).map_err(io(&file))
 }
 
@@ -219,7 +245,7 @@ fn dep_words(text: &str) -> Vec<String> {
 
 // mappings to learn from an edit: TODOs the user removed, paired in order with the dependencies they added; only when the counts match
 pub fn learned(before: &str, after: &str, todos: &[String]) -> Vec<(String, String)> {
-    let removed: Vec<&String> = todos.iter().filter(|todo| !after.contains(&format!("# TODO: nix had '{todo}'"))).collect();
+    let removed: Vec<&String> = todos.iter().filter(|todo| !after.contains(&format!(" had '{todo}'"))).collect();
     let old = dep_words(before);
     let added: Vec<String> = dep_words(after).into_iter().filter(|word| !old.contains(word)).collect();
     if removed.len() != added.len() {
@@ -228,43 +254,84 @@ pub fn learned(before: &str, after: &str, todos: &[String]) -> Vec<(String, Stri
     removed.into_iter().cloned().zip(added).collect()
 }
 
-// the header line recording where a scaffolded template came from, and the attribute in it
-fn origin_attr(template: &str) -> Option<String> {
-    let line = template.lines().find(|line| line.starts_with("# scaffolded by maw from nixpkgs '"))?;
-    Some(line.split('\'').nth(1)?.to_string())
+// where a drafted template came from
+#[derive(Debug, PartialEq)]
+pub enum Upstream {
+    Nix(String),
+    Aur(String),
 }
 
-// writes srcpkgs/<name>/template from nixpkgs' <attr>; returns the file and what the emitter made
-pub fn from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, attr: &str, maintainer: &str) -> Result<(PathBuf, Emitted), ScaffoldError> {
+// the header line recording where a drafted template came from: "# scaffolded by maw from nixpkgs 'ripgrep' at abc"
+fn origin(template: &str) -> Option<Upstream> {
+    let line = template.lines().find_map(|line| line.strip_prefix("# scaffolded by maw from "))?;
+    let name = line.split('\'').nth(1)?.to_string();
+    match line.split_whitespace().next()? {
+        "nixpkgs" => Some(Upstream::Nix(name)),
+        "aur" => Some(Upstream::Aur(name)),
+        _ => None,
+    }
+}
+
+// the source package an upstream describes now; nixpkgs is pulled first when asked
+fn upstream_pkg(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, upstream: &Upstream, pull: bool) -> Result<SourcePkg, ScaffoldError> {
+    match upstream {
+        Upstream::Nix(attr) => {
+            let nixpkgs = nixpkgs::Nixpkgs::new(runner, env, &build::settings(env, runner, repo)?.nixpkgs(env));
+            if pull {
+                nixpkgs.pull()?;
+            }
+            nixpkgs.source_pkg(name, attr)
+        }
+        Upstream::Aur(aur_name) => {
+            let info = aur::info(runner, aur_name)?;
+            let text = aur::pkgbuild(runner, info["PackageBase"].as_str().unwrap_or(aur_name))?;
+            aur::source_pkg(&info, &text, name)
+        }
+    }
+}
+
+// the distfile's checksum, or none when the url still has an expansion to fix by hand
+fn distfile_checksum(env: &Env, runner: &dyn Runner, pkg: &SourcePkg) -> Result<String, ScaffoldError> {
+    match pkg.distfile.contains('$') {
+        true => Ok(String::new()),
+        false => checksum(env, runner, &pkg.distfile.replace("${version}", &pkg.version)),
+    }
+}
+
+// writes srcpkgs/<name>/template drafted from nixpkgs or the aur; returns the file and what the emitter made
+pub fn draft(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, upstream: &Upstream, maintainer: &str) -> Result<(PathBuf, Emitted), ScaffoldError> {
     let file = repo.srcpkgs_dir().join(name).join("template");
     if file.exists() {
         return Err(ScaffoldError::Exists(name.into()));
     }
-    let nixpkgs = nixpkgs::Nixpkgs::new(runner, env, &build::settings(env, runner, repo)?.nixpkgs(env));
-    let pkg = nixpkgs.source_pkg(name, attr)?;
-    let checksum = checksum(env, runner, &pkg.distfile.replace("${version}", &pkg.version))?;
-    let emitted = xbps_src::XbpsSrc.emit(&pkg, &load_deps(env, runner, repo)?, maintainer, &checksum);
+    // void-packages' own list when maw has cloned it; the repos otherwise, which also hold local builds
+    let deps = load_deps(env, runner, repo)?;
+    let src = SrcPkgs::new(runner, env, &repo.srcpkgs_dir(), &build::settings(env, runner, repo)?.void_packages(env));
+    if src.in_void(name).unwrap_or_else(|| deps.has(name)) {
+        return Err(ScaffoldError::InVoid(name.into()));
+    }
+    let pkg = upstream_pkg(env, runner, repo, name, upstream, false)?;
+    let checksum = distfile_checksum(env, runner, &pkg)?;
+    let emitted = xbps_src::XbpsSrc.emit(&pkg, &deps, maintainer, &checksum);
 
     fs::create_dir_all(file.parent().unwrap()).map_err(io(&file))?;
     fs::write(&file, &emitted.text).map_err(io(&file))?;
     Ok((file, emitted))
 }
 
-// pulls nixpkgs and moves a scaffolded template to nixpkgs' current version; Some((old, new)) if it moved
+// moves a drafted template to its upstream's current version; Some((old, new)) if it moved
 pub fn update(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str) -> Result<Option<(String, String)>, ScaffoldError> {
     let file = repo.srcpkgs_dir().join(name).join("template");
     let text = fs::read_to_string(&file).map_err(io(&file))?;
-    let attr = origin_attr(&text).ok_or_else(|| ScaffoldError::NotFromNix(name.into()))?;
+    let upstream = origin(&text).ok_or_else(|| ScaffoldError::NotDrafted(name.into()))?;
 
-    let nixpkgs = nixpkgs::Nixpkgs::new(runner, env, &build::settings(env, runner, repo)?.nixpkgs(env));
-    nixpkgs.pull()?;
-    let pkg = nixpkgs.source_pkg(name, &attr)?;
+    let pkg = upstream_pkg(env, runner, repo, name, &upstream, true)?;
     let old = text.lines().find_map(|line| line.strip_prefix("version=")).unwrap_or_default().trim_matches('"').to_string();
     if old == pkg.version {
         return Ok(None);
     }
 
-    let checksum = checksum(env, runner, &pkg.distfile.replace("${version}", &pkg.version))?;
+    let checksum = distfile_checksum(env, runner, &pkg)?;
     fs::write(&file, xbps_src::bump(&text, &pkg, &checksum)).map_err(io(&file))?;
     Ok(Some((old, pkg.version)))
 }
@@ -275,7 +342,7 @@ mod tests {
 
     fn deps() -> Deps {
         let map = BTreeMap::from([("pkg-config-wrapper".into(), Some("pkg-config".into())), ("go".into(), None)]);
-        Deps::new(map, ["pkg-config", "pcre2", "pcre2-devel", "scdoc", "tllist", "libXdmcp-devel"].map(String::from).into())
+        Deps::new(map, ["pkg-config", "pcre2", "pcre2-devel", "scdoc", "tllist", "libXdmcp-devel", "python3-requests"].map(String::from).into())
     }
 
     #[test]
@@ -288,6 +355,7 @@ mod tests {
         assert_eq!(deps.resolve("scdoc", false), Resolved::Package("scdoc".into()));
         assert_eq!(deps.resolve("nothing", true), Resolved::Unknown);
         assert_eq!(deps.resolve("libxdmcp", true), Resolved::Package("libXdmcp-devel".into()));
+        assert_eq!(deps.resolve("python-requests", false), Resolved::Package("python3-requests".into()));
     }
 
     #[test]
@@ -306,8 +374,9 @@ mod tests {
     }
 
     #[test]
-    fn scaffolded_templates_name_their_attribute() {
-        assert_eq!(origin_attr("# Template file for 'rg'\n# scaffolded by maw from nixpkgs 'ripgrep' at abc\n").as_deref(), Some("ripgrep"));
-        assert_eq!(origin_attr("pkgname=x\n"), None);
+    fn drafted_templates_name_their_upstream() {
+        assert_eq!(origin("# Template file for 'rg'\n# scaffolded by maw from nixpkgs 'ripgrep' at abc\n"), Some(Upstream::Nix("ripgrep".into())));
+        assert_eq!(origin("# scaffolded by maw from aur 'yay-bin' at 13.0.1-1\n"), Some(Upstream::Aur("yay-bin".into())));
+        assert_eq!(origin("pkgname=x\n"), None);
     }
 }

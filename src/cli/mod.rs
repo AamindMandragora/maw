@@ -179,13 +179,15 @@ pub enum SvAction {
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum SrcAction {
-    #[command(about = "write a srcpkgs/<name>/template, blank or drafted from nixpkgs, and open it")]
+    #[command(about = "write a srcpkgs/<name>/template, blank or drafted from nixpkgs or the aur, and open it")]
     New {
         name: String,
         #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "ATTR", help = "draft it from a nixpkgs package; the attribute defaults to the name")]
         from_nix: Option<String>,
+        #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PKG", conflicts_with = "from_nix", help = "draft it from an aur package; the package defaults to the name")]
+        from_aur: Option<String>,
     },
-    #[command(about = "move a template drafted from nixpkgs to nixpkgs' current version, then rebuild")]
+    #[command(about = "move a drafted template to its upstream's current version, then rebuild")]
     Update {
         #[arg(add = ArgValueCompleter::new(complete::templates))]
         name: String,
@@ -727,16 +729,22 @@ fn help_text(query: &str, color: bool) -> Option<String> {
 fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
     let repo = Repo::locate(env)?;
     match action {
-        SrcAction::New { name, from_nix } => {
+        SrcAction::New { name, from_nix, from_aur } => {
             let git = |key: &str| runner.run("git", &["-C".into(), repo.root.display().to_string(), "config".into(), key.into()]).unwrap_or_default().trim().to_string();
             let maintainer = format!("{} <{}>", git("user.name"), git("user.email"));
-            let Some(attr) = from_nix else {
-                let template = packages::srcpkgs(env, runner, &repo)?.new_template(&name, &maintainer)?;
-                println!("create {}", relative(&repo, &template));
-                return open_in_editor(runner, &template);
+
+            // an upstream name left empty means the template's own name
+            let named = |given: String| if given.is_empty() { name.clone() } else { given };
+            let upstream = match (from_nix, from_aur) {
+                (Some(attr), _) => scaffold::Upstream::Nix(named(attr)),
+                (_, Some(aur)) => scaffold::Upstream::Aur(named(aur)),
+                (None, None) => {
+                    let template = packages::srcpkgs(env, runner, &repo)?.new_template(&name, &maintainer)?;
+                    println!("create {}", relative(&repo, &template));
+                    return open_in_editor(runner, &template);
+                }
             };
-            let attr = if attr.is_empty() { name.clone() } else { attr };
-            scaffold_from_nix(env, runner, &repo, &name, &attr, &maintainer)
+            draft(env, runner, &repo, &name, &upstream, &maintainer)
         }
         SrcAction::Update { name } => match scaffold::update(env, runner, &repo, &name)? {
             None => {
@@ -761,9 +769,9 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
     }
 }
 
-// drafts a template from nixpkgs, opens it, and offers to remember the dependency names the user fixed
-fn scaffold_from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, attr: &str, maintainer: &str) -> Result<()> {
-    let (template, emitted) = scaffold::from_nix(env, runner, repo, name, attr, maintainer)?;
+// drafts a template from nixpkgs or the aur, opens it, and offers to remember the dependency names the user fixed
+fn draft(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, upstream: &scaffold::Upstream, maintainer: &str) -> Result<()> {
+    let (template, emitted) = scaffold::draft(env, runner, repo, name, upstream, maintainer)?;
     println!("create {}", relative(repo, &template));
     emitted.todos.iter().for_each(|todo| println!("todo {todo}: no void package"));
     open_in_editor(runner, &template)?;
@@ -771,11 +779,11 @@ fn scaffold_from_nix(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, at
     let after = std::fs::read_to_string(&template)?;
     let confirmed: Vec<(String, String)> = scaffold::learned(&emitted.text, &after, &emitted.todos)
         .into_iter()
-        .filter(|(nix, void)| Terminal.ask(&format!("record {nix} -> {void} in depmap? [Y/n] ")).is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n')))
+        .filter(|(upstream, void)| Terminal.ask(&format!("record {upstream} -> {void} in depmap? [Y/n] ")).is_some_and(|answer| !answer.trim().to_lowercase().starts_with('n')))
         .collect();
     if !confirmed.is_empty() {
         scaffold::record(env, runner, repo, &confirmed)?;
-        confirmed.iter().for_each(|(nix, void)| println!("record {nix} -> {void} in depmap.nix"));
+        confirmed.iter().for_each(|(upstream, void)| println!("record {upstream} -> {void} in depmap.nix"));
     }
     Ok(())
 }

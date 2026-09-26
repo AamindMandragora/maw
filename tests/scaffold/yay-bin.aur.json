@@ -1,0 +1,41 @@
+{
+  "Conflicts": [
+    "yay"
+  ],
+  "Depends": [
+    "pacman>6.1",
+    "git"
+  ],
+  "Description": "Yet another yogurt. Pacman wrapper and AUR helper written in go. Pre-compiled.",
+  "FirstSubmitted": 1480777574,
+  "ID": 2131229,
+  "Keywords": [
+    "AUR",
+    "go",
+    "helper",
+    "pacman",
+    "wrapper"
+  ],
+  "LastModified": 1781904582,
+  "License": [
+    "GPL-3.0-or-later"
+  ],
+  "Maintainer": "jguer",
+  "Name": "yay-bin",
+  "NumVotes": 368,
+  "OptDepends": [
+    "sudo",
+    "doas"
+  ],
+  "OutOfDate": null,
+  "PackageBase": "yay-bin",
+  "PackageBaseID": 117489,
+  "Popularity": 3.738138,
+  "Provides": [
+    "yay"
+  ],
+  "Submitter": "jguer",
+  "URL": "https://github.com/Jguer/yay",
+  "URLPath": "/cgit/aur.git/snapshot/yay-bin.tar.gz",
+  "Version": "13.0.1-1"
+}

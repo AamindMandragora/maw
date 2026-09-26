@@ -249,6 +249,11 @@ impl<'a> SrcPkgs<'a> {
         fs::read_to_string(self.clone.join(".git/info/exclude")).unwrap_or_default().lines().any(|existing| existing == line)
     }
 
+    // whether void-packages has this name: from the clone when there is one, else unknown
+    pub fn in_void(&self, name: &str) -> Option<bool> {
+        self.clone.join("srcpkgs").is_dir().then(|| self.is_official(name))
+    }
+
     // whether the clone has its own package by this name, not a copy of ours
     fn is_official(&self, name: &str) -> bool {
         fs::symlink_metadata(self.clone.join("srcpkgs").join(name)).is_ok() && !self.is_copied(name)

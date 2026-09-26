@@ -1,0 +1,19 @@
+# Template file for 'yay'
+# scaffolded by maw from aur 'yay' at 13.0.1-1
+pkgname=yay
+version=13.0.1
+revision=1
+build_style=go
+go_import_path="github.com/Jguer/yay"
+depends="git"
+# TODO: aur had 'pacman'
+short_desc="Yet another yogurt. Pacman wrapper and AUR helper written in go"
+maintainer="Maw Test <maw@test>"
+license="GPL-3.0-or-later"
+homepage="https://github.com/Jguer/yay"
+distfiles="https://github.com/Jguer/yay/archive/v${version}.tar.gz"
+checksum=CHECKSUM
+
+# the PKGBUILD's package(), for anything the build style doesn't cover:
+#	cd "$srcdir/$pkgname-$pkgver"
+#	make VERSION=$pkgver DESTDIR="$pkgdir" PREFIX="/usr" install

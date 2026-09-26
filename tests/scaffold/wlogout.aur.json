@@ -1,0 +1,33 @@
+{
+  "Depends": [
+    "gtk3",
+    "gobject-introspection",
+    "gtk-layer-shell"
+  ],
+  "Description": "Logout menu for wayland",
+  "FirstSubmitted": 1578550025,
+  "ID": 1453897,
+  "Keywords": [
+    "wayland"
+  ],
+  "LastModified": 1713820467,
+  "License": [
+    "MIT"
+  ],
+  "Maintainer": "ArtsyMacaw",
+  "MakeDepends": [
+    "meson",
+    "git",
+    "scdoc"
+  ],
+  "Name": "wlogout",
+  "NumVotes": 77,
+  "OutOfDate": null,
+  "PackageBase": "wlogout",
+  "PackageBaseID": 147989,
+  "Popularity": 1.107154,
+  "Submitter": "ArtsyMacaw",
+  "URL": "https://github.com/ArtsyMacaw/wlogout",
+  "URLPath": "/cgit/aur.git/snapshot/wlogout.tar.gz",
+  "Version": "1.2.2-0"
+}

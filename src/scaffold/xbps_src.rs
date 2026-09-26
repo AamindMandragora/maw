@@ -36,6 +36,9 @@ impl SourceEmitter for XbpsSrc {
         let (host, host_todos) = resolve_all(&pkg.host_deps, deps, false);
         let (make, make_todos) = resolve_all(&pkg.deps, deps, true);
         let make: Vec<String> = make.into_iter().filter(|package| !host.contains(package)).collect();
+
+        // mixed deps split into libraries to build against and programs to run with
+        let (make, run): (Vec<String>, Vec<String>) = make.into_iter().partition(|package| !pkg.mixed_deps || package.ends_with("-devel"));
         let todos: Vec<String> = host_todos.into_iter().chain(make_todos).collect();
 
         // optional lines, present only when there's something to say
@@ -43,11 +46,12 @@ impl SourceEmitter for XbpsSrc {
         let go_package = (!pkg.go_packages.is_empty()).then(|| format!("go_package={}\n", quote(&pkg.go_packages.join(" "))));
         let host_line = (!host.is_empty()).then(|| format!("hostmakedepends={}\n", quote(&host.join(" "))));
         let make_line = (!make.is_empty()).then(|| format!("makedepends={}\n", quote(&make.join(" "))));
-        let todo_lines: String = todos.iter().map(|todo| format!("# TODO: nix had '{todo}'\n")).collect();
-        let optional: String = [go_import_path, go_package, host_line, make_line].into_iter().flatten().collect();
+        let run_line = (!run.is_empty()).then(|| format!("depends={}\n", quote(&run.join(" "))));
+        let todo_lines: String = todos.iter().map(|todo| format!("# TODO: {} had '{todo}'\n", pkg.upstream)).chain(pkg.notes.iter().map(|note| format!("# TODO: {note}\n"))).collect();
+        let optional: String = [go_import_path, go_package, host_line, make_line, run_line].into_iter().flatten().collect();
 
         let text = format!(
-            "# Template file for '{name}'\n# scaffolded by maw from {origin}\npkgname={name}\nversion={version}\nrevision=1\nbuild_style={build}\n{optional}{todo_lines}short_desc={desc}\nmaintainer={maintainer}\nlicense={license}\nhomepage={homepage}\ndistfiles=\"{distfile}\"\nchecksum={checksum}\n",
+            "# Template file for '{name}'\n# scaffolded by maw from {origin}\npkgname={name}\nversion={version}\nrevision=1\nbuild_style={build}\n{optional}{todo_lines}short_desc={desc}\nmaintainer={maintainer}\nlicense={license}\nhomepage={homepage}\ndistfiles=\"{distfile}\"\nchecksum={checksum}\n{extra}",
             name = pkg.name,
             origin = pkg.origin,
             version = pkg.version,
@@ -57,6 +61,7 @@ impl SourceEmitter for XbpsSrc {
             license = quote(&pkg.licenses.join(", ")),
             homepage = quote(&pkg.homepage),
             distfile = templated(&pkg.distfile, &pkg.version),
+            extra = pkg.extra,
         );
         Emitted { text, todos }
     }

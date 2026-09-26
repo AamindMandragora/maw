@@ -1,0 +1,19 @@
+# Template file for 'wlogout'
+# scaffolded by maw from aur 'wlogout' at 1.2.2-0
+pkgname=wlogout
+version=1.2.2
+revision=1
+build_style=meson
+hostmakedepends="git scdoc"
+makedepends="gtk+3-devel gtk-layer-shell-devel"
+depends="gobject-introspection"
+short_desc="Logout menu for wayland"
+maintainer="Maw Test <maw@test>"
+license="MIT"
+homepage="https://github.com/ArtsyMacaw/wlogout"
+distfiles="https://github.com/ArtsyMacaw/wlogout/releases/download/${version}/wlogout.tar.gz"
+checksum=CHECKSUM
+
+# the PKGBUILD's package(), for anything the build style doesn't cover:
+#	DESTDIR="$pkgdir" ninja -C build install
+#	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

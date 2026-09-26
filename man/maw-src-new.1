@@ -2,15 +2,18 @@
 .el .ds Aq '
 .TH maw-src-new 1  "maw-src-new " 
 .SH NAME
-maw\-src\-new \- write a srcpkgs/<name>/template, blank or drafted from nixpkgs, and open it
+maw\-src\-new \- write a srcpkgs/<name>/template, blank or drafted from nixpkgs or the aur, and open it
 .SH SYNOPSIS
-\fBmaw src new\fR [\fB\-\-from\-nix\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
+\fBmaw src new\fR [\fB\-\-from\-nix\fR] [\fB\-\-from\-aur\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
 .SH DESCRIPTION
-write a srcpkgs/<name>/template, blank or drafted from nixpkgs, and open it
+write a srcpkgs/<name>/template, blank or drafted from nixpkgs or the aur, and open it
 .SH OPTIONS
 .TP
 \fB\-\-from\-nix\fR [\fI<ATTR>\fR]
 draft it from a nixpkgs package; the attribute defaults to the name
+.TP
+\fB\-\-from\-aur\fR [\fI<PKG>\fR]
+draft it from an aur package; the package defaults to the name
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
