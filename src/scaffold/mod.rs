@@ -17,13 +17,14 @@ use std::path::{Path, PathBuf};
 pub mod aur;
 pub mod nixos;
 pub mod nixpkgs;
+pub mod releases;
 pub mod xbps_src;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScaffoldError {
     #[error("srcpkgs/{0}/template already exists")]
     Exists(String),
-    #[error("srcpkgs/{0}/template wasn't drafted from nixpkgs or the aur")]
+    #[error("srcpkgs/{0}/template wasn't drafted from nixpkgs or the aur, and doesn't download a release from a git forge")]
     NotDrafted(String),
     #[error("{0} has no source url to fetch")]
     NoSource(String),
@@ -322,11 +323,18 @@ pub fn draft(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, upstream: 
     Ok((file, emitted))
 }
 
-// moves a drafted template to its upstream's current version; Some((old, new)) if it moved
+// moves a drafted template to its upstream's current version, or any template to its forge's newest release; Some((old, new)) if it moved
 pub fn update(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str) -> Result<Option<(String, String)>, ScaffoldError> {
     let file = repo.srcpkgs_dir().join(name).join("template");
     let text = fs::read_to_string(&file).map_err(io(&file))?;
-    let upstream = origin(&text).ok_or_else(|| ScaffoldError::NotDrafted(name.into()))?;
+
+    // a template maw didn't draft can still follow its releases
+    let Some(upstream) = origin(&text) else {
+        return match releases::tracked(&text) {
+            Some(_) => releases::update(env, runner, &file),
+            None => Err(ScaffoldError::NotDrafted(name.into())),
+        };
+    };
 
     let pkg = upstream_pkg(env, runner, repo, name, &upstream, true)?;
     let old = text.lines().find_map(|line| line.strip_prefix("version=")).unwrap_or_default().trim_matches('"').to_string();

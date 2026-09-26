@@ -223,7 +223,7 @@ pub enum SrcAction {
         #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PKG", conflicts_with = "from_nix", help = "draft it from an aur package; the package defaults to the name")]
         from_aur: Option<String>,
     },
-    #[command(about = "move a drafted template to its upstream's current version, then rebuild")]
+    #[command(about = "move a template to its upstream's current version or newest release, then rebuild")]
     Update {
         #[arg(add = ArgValueCompleter::new(complete::templates))]
         name: String,
@@ -871,8 +871,16 @@ fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     packages::upgrade(env, runner, &repo)?.iter().for_each(|target| println!("upgrade {target}"));
 
-    // source packages whose templates moved ahead, maw's own included, are rebuilt
+    // templates that follow a forge's releases move to the newest first, maw's own included; one that can't be checked is only a warning
     let (_, state) = edit::load(env, runner, &repo)?;
+    let templates = packages::declared(&state.here(&env.host), "xbps").into_iter().map(|name| (repo.srcpkgs_dir().join(&name).join("template"), name));
+    templates.filter(|(file, _)| file.is_file()).for_each(|(file, name)| match scaffold::releases::update(env, runner, &file) {
+        Ok(Some((old, new))) => println!("update {name} {old} -> {new}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("{} {name}: {error}", prefix(Tone::Warn, "warning:")),
+    });
+
+    // source packages whose templates moved ahead are rebuilt
     packages::outdated(env, runner, &repo, &state.here(&env.host))?.into_iter().try_for_each(|(name, installed, template)| {
         println!("rebuild {name} {installed} -> {template}");
         packages::build_source(env, runner, &repo, &name).map(|_| ())

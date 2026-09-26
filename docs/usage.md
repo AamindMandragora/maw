@@ -566,7 +566,7 @@ maw reads the AUR's metadata and the package's PKGBUILD. It never runs the PKGBU
 
 A `-bin` package that repackages prebuilt files gets no build style and a TODO to port its `package()` into `do_install()`. A `-git` package builds from a checkout, which xbps-src can't do; draft from the release package instead. Arch-only dependencies, like `pacman`, stay as TODOs to delete.
 
-`src update` works on templates drafted either way, which it recognizes by their `# scaffolded by maw` line; it touches only `version`, `revision`, `distfiles`, and `checksum`, so your other edits stay.
+`src update` works on templates drafted either way, which it recognizes by their `# scaffolded by maw` line; it touches only `version`, `revision`, `distfiles`, and `checksum`, so your other edits stay. On a template you wrote yourself, it follows the upstream's releases instead; see [updating](#updating).
 
 #### Patching Void's packages
 
@@ -602,7 +602,9 @@ While any source package is declared, maw also manages `/etc/xbps.d/10-maw-local
 maw sync
 ```
 
-Upgrades the system (`xbps-install -Su`), then every flatpak, crate, go, python, and npm program that isn't pinned to a version, then rebuilds every [source package](#source-packages) whose template is ahead of what's installed (this is how maw updates itself: bump `srcpkgs/maw/template`, then `maw sync`). Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
+Upgrades the system (`xbps-install -Su`), then every flatpak, crate, go, python, and npm program that isn't pinned to a version. Then it moves each [source package](#source-packages) template that follows releases to its upstream's newest, and rebuilds every source package whose template is ahead of what's installed. That's how maw updates itself: its template follows maw's releases.
+
+A template follows releases when it downloads a tagged release from GitHub, GitLab, Codeberg, or sourcehut with `${version}` in the url, like `distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"`. maw reads the repo's tags (`git ls-remote`), takes the newest plain version matching the url's tag (`v${version}` finds `v0.3.0`, skipping pre-releases like `v0.3.0-rc1`), and rewrites `version`, `revision`, and `checksum`. `maw src update <name>` does the same for one template. A `# maw: hold` line keeps a template where it is. Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
 
 ## Services
 

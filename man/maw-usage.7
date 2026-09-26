@@ -564,7 +564,7 @@ maw reads the AUR's metadata and the package's PKGBUILD. It never runs the PKGBU
 .PP
 A \fB-bin\fR package that repackages prebuilt files gets no build style and a TODO to port its \fBpackage()\fR into \fBdo_install()\fR. A \fB-git\fR package builds from a checkout, which xbps-src can't do; draft from the release package instead. Arch-only dependencies, like \fBpacman\fR, stay as TODOs to delete.
 .PP
-\fBsrc update\fR works on templates drafted either way, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay.
+\fBsrc update\fR works on templates drafted either way, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay. On a template you wrote yourself, it follows the upstream's releases instead; see updating.
 .PP
 
 .PP
@@ -599,7 +599,9 @@ While any source package is declared, maw also manages \fB/etc/xbps.d/10-maw-loc
 maw sync
 .EE
 .PP
-Upgrades the system (\fBxbps-install -Su\fR), then every flatpak, crate, go, python, and npm program that isn't pinned to a version, then rebuilds every source package whose template is ahead of what's installed (this is how maw updates itself: bump \fBsrcpkgs/maw/template\fR, then \fBmaw sync\fR). Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
+Upgrades the system (\fBxbps-install -Su\fR), then every flatpak, crate, go, python, and npm program that isn't pinned to a version. Then it moves each source package template that follows releases to its upstream's newest, and rebuilds every source package whose template is ahead of what's installed. That's how maw updates itself: its template follows maw's releases.
+.PP
+A template follows releases when it downloads a tagged release from GitHub, GitLab, Codeberg, or sourcehut with \fB${version}\fR in the url, like \fBdistfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"\fR. maw reads the repo's tags (\fBgit ls-remote\fR), takes the newest plain version matching the url's tag (\fBv${version}\fR finds \fBv0.3.0\fR, skipping pre-releases like \fBv0.3.0-rc1\fR), and rewrites \fBversion\fR, \fBrevision\fR, and \fBchecksum\fR. \fBmaw src update <name>\fR does the same for one template. A \fB# maw: hold\fR line keeps a template where it is. Pinned ones stay put until you install a different version, and so do xbps packages a rollback held back. \fBmaw sync --release\fR releases those first.
 .SH "SERVICES"
 .PP
 Services are supervised by runit. There are two kinds:

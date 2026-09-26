@@ -147,12 +147,7 @@ git push --follow-tags
 
 `tools/release.sh` bumps the version in `Cargo.toml`, `Cargo.lock` and `mawVersion` in `nix/lib.nix`, regenerates the man pages, commits, and tags `v<version>`. Pushing the tag runs the release workflow (`.github/workflows/release.yml`), which checksums GitHub's tarball of the tag and commits the template's new `version` and `checksum` to master; `git pull` afterwards. The workflow refuses a tag whose `Cargo.toml` doesn't carry its version. The repo has to be public, since xbps-src fetches the tarball without credentials.
 
-It also installs the shipped `depmap.nix`. To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; after each release, fetch the updated template and `maw sync` rebuilds and upgrades maw:
-
-```sh
-curl -fsSLo ~/dotfiles/srcpkgs/maw/template https://raw.githubusercontent.com/AamindMandragora/maw/master/srcpkgs/maw/template
-maw sync
-```
+It also installs the shipped `depmap.nix`. To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; after each release, `maw sync` finds the new tag, updates that template's version and checksum, and rebuilds and upgrades maw.
 
 ## Docs
 
