@@ -21,5 +21,10 @@ checksum=$(sha256sum "$tarball" | cut -d' ' -f1)
 
 # point the template at the new version
 sed -i -e "s/^version=.*/version=$version/" -e "s/^revision=.*/revision=1/" -e "s/^checksum=.*/checksum=$checksum/" srcpkgs/maw/template
+# a rerun finds the template already there, with nothing to commit
+if git diff --quiet srcpkgs/maw/template; then
+	echo "maw $version: template already at $version"
+	exit 0
+fi
 git commit -qm "srcpkgs/maw: update to $version" srcpkgs/maw/template
 echo "maw $version: checksum $checksum"

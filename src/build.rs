@@ -164,8 +164,10 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let state = raw_state.here(&env.host);
     let settings = eval_settings(env, runner, repo, &shared_hash)?;
 
-    // the wallpaper theme, brought up to date before any module reads it
-    theme::ensure(env, runner, repo, settings.theme.as_ref())?;
+    // the wallpaper theme, brought up to date before any module reads it; a dry run renders with the theme as it is
+    if !options.dry_run {
+        theme::ensure(env, runner, repo, settings.theme.as_ref())?;
+    }
     let theme_file = theme::file(env);
     let theme_hash = if theme_file.exists() { inputs.hash(&theme_file)? } else { String::new() };
 
@@ -215,6 +217,21 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
 }
 
 // places every file in out/, checked against the hash maw last wrote there, and records the new hashes
+// out/ files edited by hand since maw wrote them (through their links, usually), copied to the backups dir; for before
+// something replaces out/ wholesale, like a pull or a rollback. Returns (file, copy)
+pub fn save_edited_out(env: &Env, repo: &Repo) -> Result<Vec<(PathBuf, PathBuf)>, BuildError> {
+    let recorded: BTreeMap<PathBuf, String> = load_json(&env.state_dir.join("outputs"))?;
+    let edited = recorded.into_iter().filter(|(file, written)| file.starts_with(repo.out_dir()) && fs::read(file).is_ok_and(|bytes| hash_bytes(&bytes) != *written));
+    edited
+        .map(|(file, _)| {
+            let copy = crate::backup::next_target(env, &file);
+            fs::create_dir_all(copy.parent().unwrap()).map_err(io(&copy))?;
+            fs::copy(&file, &copy).map_err(io(&file))?;
+            Ok((file, copy))
+        })
+        .collect()
+}
+
 fn place_all(env: &Env, outputs: &[Output], options: Options) -> Result<Vec<Placement>, BuildError> {
     let recorded_file = env.state_dir.join("outputs");
     let recorded: BTreeMap<PathBuf, String> = load_json(&recorded_file)?;
@@ -247,7 +264,8 @@ pub fn index_file(repo: &Repo) -> PathBuf {
 fn local_repo(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> Option<Output> {
     let declared = state.packages.get("xbps")?;
     declared.iter().any(|name| srcpkgs::is_source(&repo.srcpkgs_dir(), name)).then(|| {
-        let content = format!("# written by maw: packages built from srcpkgs/\nrepository={}\n", settings.void_packages(env).join("hostdir/binpkgs").display());
+        let repos: String = srcpkgs::local_repos(&settings.void_packages(env)).iter().map(|repo| format!("repository={}\n", repo.display())).collect();
+        let content = format!("# written by maw: packages built from srcpkgs/\n{repos}");
         Output {
             name: ".maw".into(),
             key: "10-maw-local.conf".into(),
@@ -296,7 +314,6 @@ fn flatpak_wrappers(env: &Env, repo: &Repo, state: &MawState, settings: &Setting
         .collect()
 }
 
-// what every module depends on: config.nix, maw.nix, and the maw lib
 // this machine's name as a file nix reads, written from the hostname the first time
 fn ensure_host_file(env: &Env) -> Result<PathBuf, BuildError> {
     let file = env.host_file();
@@ -307,19 +324,39 @@ fn ensure_host_file(env: &Env) -> Result<PathBuf, BuildError> {
     Ok(file)
 }
 
+// what every module depends on: config.nix, maw.nix, the maw lib, and this machine's name and hosts file
 fn shared_hash(env: &Env, repo: &Repo, inputs: &mut Inputs) -> Result<String, BuildError> {
     let lib_hash = combine(&[
         &inputs.hash(&env.nix_dir().join("lib.nix"))?,
         &inputs.hash(&env.nix_dir().join("default.nix"))?,
         env!("CARGO_PKG_VERSION"),
     ]);
-    // this machine's name and its hosts/<name>.nix change what config.nix means
+    // this machine's name changes what config.nix means, and so does any nix file in the repo it or a module imports
     let host_hash = inputs.hash(&ensure_host_file(env)?)?;
-    let host_config = repo.root.join("hosts").join(format!("{}.nix", env.host));
-    let host_config_hash = if host_config.exists() { inputs.hash(&host_config)? } else { String::new() };
-    Ok(combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash, &host_hash, &host_config_hash]))
+    // modules themselves are keyed one by one; helpers beside them in subdirs count here
+    let modules = repo.root.join("modules");
+    let shared = repo_nix_files(&repo.root).into_iter().filter(|file| file.parent() != Some(modules.as_path()));
+    let repo_hashes = shared.map(|file| inputs.hash(&file)).collect::<Result<Vec<_>, _>>()?;
+    let repo_hash = combine(&repo_hashes.iter().map(String::as_str).collect::<Vec<_>>());
+    Ok(combine(&[&inputs.hash(&repo.maw_file())?, &lib_hash, &host_hash, &repo_hash]))
 }
 
+// every .nix file in the repo but rendered output, static files, and git's, in a fixed order
+fn repo_nix_files(dir: &Path) -> Vec<PathBuf> {
+    let skipped = ["out", "static", ".git"];
+    let entries = fs::read_dir(dir).into_iter().flatten().filter_map(|entry| entry.ok()).map(|entry| entry.path());
+    let mut files: Vec<PathBuf> = entries
+        .filter(|path| !(path.parent() == Some(dir) && path.file_name().is_some_and(|name| skipped.contains(&name.to_string_lossy().as_ref()))))
+        .flat_map(|path| match path.is_dir() {
+            true => repo_nix_files(&path),
+            false => path.extension().is_some_and(|ext| ext == "nix").then_some(path).into_iter().collect(),
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+// config.nix's maw attrset, evaluated and cached like a module
 fn eval_settings(env: &Env, runner: &dyn Runner, repo: &Repo, key: &str) -> Result<Settings, BuildError> {
     let value = eval::eval_settings(runner, env, &repo.root, key)?;
     Ok(serde_json::from_value(value).map_err(|source| EvalError::Shape { what: "config.nix maw".into(), source })?)
@@ -463,7 +500,7 @@ fn prune(dir: &Path, keep: &HashSet<PathBuf>, dry_run: bool) -> Result<Vec<PathB
 mod tests {
     use super::*;
     use crate::runner::fake::FakeRunner;
-    use crate::testing::fixture;
+    use crate::testing::{fixture, write};
 
     fn module_evals(runner: &FakeRunner) -> usize {
         runner.calls.borrow().iter().filter(|call| call.contains("-A modules.")).count()
@@ -553,6 +590,32 @@ mod tests {
         assert_eq!(report.written, [fixture.repo.out_dir().join("foot/foot.ini")]);
         assert!(!fixture.repo.out_dir().join("foot").exists());
         assert!(!fixture.env.state_dir.join("outputs").exists());
+    }
+
+    #[test]
+    fn an_imported_nix_file_changing_reevaluates_modules() {
+        let fixture = fixture(&["foot"]);
+        write(&fixture.repo.root.join("lib/colors.nix"), "{ }\n");
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
+        let before = module_evals(&fixture.runner);
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(fixture.repo.root.join("lib/colors.nix"), "{ a = 1; }\n").unwrap();
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
+        assert_eq!(module_evals(&fixture.runner), before + 1);
+    }
+
+    #[test]
+    fn hand_edits_in_out_are_saved_before_out_is_replaced() {
+        let fixture = fixture(&["foot"]);
+        build(&fixture.env, &fixture.runner, &fixture.repo, Options::default()).unwrap();
+        assert!(save_edited_out(&fixture.env, &fixture.repo).unwrap().is_empty());
+
+        let out = fixture.repo.out_dir().join("foot/foot.ini");
+        fs::write(&out, "my edit\n").unwrap();
+        let saved = save_edited_out(&fixture.env, &fixture.repo).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(fs::read_to_string(&saved[0].1).unwrap(), "my edit\n");
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub enum BackendError {
     TemplateExists(String),
 }
 
-// one package as a backend reports it; source is what maw.nix declares (crate name, git url, go path)
+// one package as a backend reports it; source is what maw.nix declares (crate name, git url, go path, flatpak id, pypi or npm name)
 // and manual is false for dependencies and repo results
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Pkg {
@@ -41,8 +41,10 @@ pub struct Pkg {
     pub manual: bool,
     // the executables it builds, when the backend can tell; an empty list means a library
     pub programs: Option<Vec<String>>,
-    // the exact build, when the version alone can't reinstall it: a flatpak commit
+    // the exact build, when the version alone can't reinstall it: a flatpak or git commit
     pub build: String,
+    // the git tag or branch it was installed from, when it came from one
+    pub reference: String,
 }
 
 // a source of packages: installed state, the repo, and changes to either
@@ -111,6 +113,22 @@ pub fn spec_base(spec: &str) -> &str {
     }
 }
 
+// whether what's installed meets a spec: something from its source, and for a pinned spec, at that pin. A pin is met by
+// the exact pin, a matching version ("0.24" by 0.24.1, "v1.2" by 1.2), the git ref it was installed from, or its commit
+pub fn satisfies(backend: &dyn Backend, installed: &[Pkg], spec: &str) -> bool {
+    let base = spec_base(spec);
+    let wanted = spec.strip_prefix(base).and_then(|rest| rest.strip_prefix('@'));
+    installed.iter().filter(|pkg| pkg.source == base).any(|pkg| wanted.is_none_or(|wanted| backend.pin(pkg) == spec || at_pin(pkg, wanted)))
+}
+
+// whether a package is at a pin, by version, git ref, or a commit either side abbreviates
+fn at_pin(pkg: &Pkg, wanted: &str) -> bool {
+    let (want, have) = (wanted.trim_start_matches('v'), pkg.version.trim_start_matches('v'));
+    let version = !have.is_empty() && (have == want || have.starts_with(&format!("{want}.")));
+    let commit = wanted.len() >= 7 && pkg.build.len() >= 7 && (pkg.build.starts_with(wanted) || wanted.starts_with(&pkg.build));
+    version || commit || (!pkg.reference.is_empty() && pkg.reference == wanted)
+}
+
 // the program a spec installs, for finding its registry entry: the last path segment, minus .git
 pub fn spec_program(spec: &str) -> String {
     let base = spec_base(spec).trim_end_matches('/');
@@ -152,6 +170,44 @@ mod tests {
         assert_eq!(spec_base("golang.org/x/tools/gopls@v0.16.0"), "golang.org/x/tools/gopls");
         assert_eq!(spec_base("git@github.com:user/tool.git"), "git@github.com:user/tool.git");
         assert_eq!(spec_base("https://github.com/vitali87/croft.git"), "https://github.com/vitali87/croft.git");
+    }
+
+    // a backend whose pins are name@version
+    struct Pins;
+
+    impl Backend for Pins {
+        fn name(&self) -> &str {
+            "pins"
+        }
+        fn list(&self) -> Result<Vec<Pkg>, BackendError> {
+            Ok(Vec::new())
+        }
+        fn search(&self, _: &str) -> Result<Vec<Pkg>, BackendError> {
+            Ok(Vec::new())
+        }
+        fn info(&self, _: &str) -> Result<Option<Pkg>, BackendError> {
+            Ok(None)
+        }
+        fn install(&self, _: &[String]) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn remove(&self, _: &[String]) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn pin(&self, pkg: &Pkg) -> String {
+            format!("{}@{}", pkg.source, pkg.version)
+        }
+    }
+
+    #[test]
+    fn pinned_specs_need_their_version() {
+        let pkg = |source: &str, version: &str| Pkg { source: source.into(), version: version.into(), ..Pkg::default() };
+        let installed = [pkg("bat", "0.24.1"), pkg("ruff", "0.6.9"), Pkg { build: "4c638f60".into(), reference: "main".into(), ..pkg("https://x/croft.git", "0.1.0") }];
+        assert!(satisfies(&Pins, &installed, "bat") && satisfies(&Pins, &installed, "bat@0.24") && satisfies(&Pins, &installed, "bat@0.24.1"));
+        assert!(!satisfies(&Pins, &installed, "bat@0.25") && !satisfies(&Pins, &installed, "bat@0.2") && !satisfies(&Pins, &installed, "ripgrep"));
+        assert!(satisfies(&Pins, &installed, "ruff@v0.6.9"));
+        assert!(satisfies(&Pins, &installed, "https://x/croft.git@main") && satisfies(&Pins, &installed, "https://x/croft.git@4c638f60aaaabbbbccccddddeeeeffff00001111"));
+        assert!(!satisfies(&Pins, &installed, "https://x/croft.git@dev"));
     }
 
     #[test]

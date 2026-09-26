@@ -6,7 +6,7 @@ use crate::runner::Runner;
 // templates that follow their upstream's releases: ones whose download is a tagged release on a git forge, with
 // ${version} in its url. New versions are the repo's tags, read with git ls-remote (no api, no rate limit)
 
-const FORGES: [&str; 4] = ["github.com", "gitlab.com", "codeberg.org", "git.sr.ht"];
+pub const FORGES: [&str; 4] = ["github.com", "gitlab.com", "codeberg.org", "git.sr.ht"];
 
 // a line that keeps a template where it is
 const HOLD: &str = "# maw: hold";
@@ -27,14 +27,35 @@ pub fn field(template: &str, key: &str) -> Option<String> {
     Some(value.trim().trim_matches(|char| char == '"' || char == '\'').to_string())
 }
 
-// the release a template follows, if it downloads one from a forge and isn't held
+// a field's whole value, a quoted one followed across lines until it closes, quotes removed
+fn full_field(template: &str, key: &str) -> Option<String> {
+    // the byte offset of each line, to read on past the line the field starts on
+    let offsets = template.lines().scan(0, |offset, line| {
+        let start = *offset;
+        *offset += line.len() + 1;
+        Some((start, line))
+    });
+    let (start, line) = offsets.into_iter().find(|(_, line)| line.strip_prefix(key).is_some_and(|rest| rest.starts_with('=')))?;
+    let rest = &template[start + key.len() + 1..];
+    match rest.chars().next() {
+        Some(quote @ ('"' | '\'')) => Some(rest[1..].split(quote).next()?.to_string()),
+        _ => Some(line[key.len() + 1..].trim().to_string()),
+    }
+}
+
+// the release a template follows, if it downloads one from a forge and isn't held; one with several downloads or
+// checksums isn't followed, since only the first would move
 pub fn tracked(template: &str) -> Option<Tracked> {
     if template.lines().any(|line| line.trim() == HOLD) {
         return None;
     }
+    let (distfiles, checksum) = (full_field(template, "distfiles")?, full_field(template, "checksum").unwrap_or_default());
+    if distfiles.split_whitespace().count() != 1 || checksum.split_whitespace().count() > 1 || checksum.trim().contains('\n') {
+        return None;
+    }
 
-    // the first download, with the fields it's written in terms of filled in
-    let distfile = field(template, "distfiles")?.split_whitespace().next()?.split('>').next()?.to_string();
+    // the download, with the fields it's written in terms of filled in
+    let distfile = distfiles.split_whitespace().next()?.split('>').next()?.to_string();
     let filled = ["homepage", "pkgname"].iter().fold(distfile, |url, key| match field(template, key) {
         Some(value) => url.replace(&format!("${{{key}}}"), &value),
         None => url,
@@ -72,18 +93,31 @@ pub fn update(env: &Env, runner: &dyn Runner, file: &std::path::Path) -> Result<
     let Some(latest) = latest(runner, &tracked)?.filter(|latest| newer(latest, &current)) else { return Ok(None) };
 
     let sum = checksum(env, runner, &tracked.url.replace("${version}", &latest))?;
-    let bumped: String = text
-        .lines()
-        .map(|line| match line.split_once('=').map(|(key, _)| key) {
-            Some("version") => format!("version={latest}"),
-            Some("revision") => "revision=1".to_string(),
-            Some("checksum") => format!("checksum={sum}"),
-            _ => line.to_string(),
-        })
-        .map(|line| line + "\n")
-        .collect();
+    let bumped = rewrite(&text, &[("version", latest.clone()), ("revision", "1".into()), ("checksum", sum)]);
     std::fs::write(file, bumped).map_err(|source| ScaffoldError::Io { path: file.into(), source })?;
     Ok(Some((current, latest)))
+}
+
+// the template with these fields' values replaced, each "key=value" line swapping in the value as written; a quoted
+// value that runs over several lines is replaced whole
+pub fn rewrite(template: &str, fields: &[(&str, String)]) -> String {
+    let mut lines = template.lines();
+    let mut out = String::new();
+    while let Some(line) = lines.next() {
+        let key = line.split_once('=').map(|(key, _)| key);
+        let Some((key, value)) = fields.iter().find(|(name, _)| Some(*name) == key) else {
+            out += &format!("{line}\n");
+            continue;
+        };
+
+        // an open quote swallows the lines up to the one that closes it
+        let after = &line[key.len() + 1..];
+        if let Some(quote) = after.chars().next().filter(|char| ['"', '\''].contains(char) && !after[1..].contains(*char)) {
+            lines.by_ref().find(|line| line.contains(quote));
+        }
+        out += &format!("{key}={value}\n");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -104,6 +138,23 @@ mod tests {
         assert_eq!((yay.prefix.as_str(), yay.suffix.as_str()), ("v", ""));
         assert!(tracked("distfiles=\"https://download.gnome.org/sources/x/${version}.tar.xz\"\n").is_none());
         assert!(tracked(&format!("{MAW}{HOLD}\n")).is_none());
+    }
+
+    #[test]
+    fn several_downloads_or_checksums_are_not_tracked() {
+        let two = "distfiles=\"https://github.com/a/b/archive/v${version}.tar.gz\n https://github.com/a/c/archive/v1.tar.gz\"\nchecksum=\"x\n y\"\n";
+        assert!(tracked(two).is_none());
+        let one_download = "distfiles=\"https://github.com/a/b/archive/v${version}.tar.gz\"\nchecksum=\"x\n y\"\n";
+        assert!(tracked(one_download).is_none());
+        let spread = "distfiles=\"\n https://github.com/a/b/archive/v${version}.tar.gz\n\"\nchecksum=x\n";
+        assert_eq!(tracked(spread).unwrap().repo, "https://github.com/a/b");
+    }
+
+    #[test]
+    fn rewrites_replace_multiline_values_whole() {
+        let template = "version=1\ndistfiles=\"a\n b\"\nchecksum=\"x\n y\"\nshort_desc=\"z\"\n";
+        let rewritten = rewrite(template, &[("distfiles", "\"c\"".into()), ("checksum", "w".into())]);
+        assert_eq!(rewritten, "version=1\ndistfiles=\"c\"\nchecksum=w\nshort_desc=\"z\"\n");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 ```sh
 maw help              # list topics
-maw help usage        # this guide; also modules, formats
+maw help usage        # this guide; also migrating, modules, formats
 maw help drift        # any section, by its heading
 maw help add          # a command's options
 ```
@@ -256,7 +256,7 @@ encrypt ~/.config/rclone/rclone.conf -> static/rclone/rclone.conf.age
 
 Files are encrypted with [age](https://age-encryption.org) to your SSH key: `~/.ssh/id_ed25519`, else `~/.ssh/id_rsa`, or `maw.secretKey = "~/.ssh/other";` in `config.nix`. Each machine's public key is in the repo as `hosts/<name>.pub` (written the first time a machine encrypts), and every file is encrypted to all of them, so each machine decrypts with its own key and no private key leaves its machine. It needs `age` (`maw install age`); maw itself doesn't depend on it.
 
-On activation, an encrypted file is decrypted into `~/.local/state/maw/secrets/` (readable only by you) and the live file links to that copy; the plaintext never enters the repo. It's decrypted again only when the encrypted file changes, so a key with a passphrase is asked for rarely. Edits made through the live file last until the encrypted file next changes; `maw secret edit` is how an edit reaches the repo.
+On activation, an encrypted file is decrypted into `~/.local/state/maw/secrets/` (readable only by you) and the live file links to that copy; the plaintext never enters the repo. It's decrypted again only when the encrypted file changes, so a key with a passphrase is asked for rarely; `status`, `diff`, and dry runs never decrypt. If decrypting fails (a mistyped passphrase, age missing), the last decrypted copy stays linked and activation notes why; it's tried again next time. Edits made through the live file stay until the encrypted file next changes; then the edited copy is moved to the backups dir, and activation says where. `maw secret edit` is how an edit reaches the repo.
 
 A new machine can't decrypt anything until it's a recipient. Its first activation skips encrypted files with a note (`skip static/rclone/rclone.conf.age: ... isn't encrypted for this machine`). To add it: run `maw secret rekey` there, which records its key as `hosts/<name>.pub` (and warns about each file it can't open yet), push; then `maw secret rekey` and push on a machine that can decrypt, and pull on the new one.
 
@@ -286,7 +286,7 @@ The one report of everything out of sync, one line each, or `clean`. First what 
 | `orphan` | a module or `static/` dir for a program that isn't installed |
 | `outdated` | a source package whose template is at a newer version than what's installed, or whose patches aren't built into the installed package yet; see [source packages](#source-packages) |
 
-A program counts as installed when any source has a package by that name or a command by that name is on your `PATH`, so `static/nvim/` is fine with the `neovim` package. Data dirs like `fonts` and `wallpapers` are never orphans.
+A program counts as installed when any source has a package by that name or a command by that name is on your `PATH`, so `static/nvim/` isn't an orphan while `neovim` is installed. Data dirs like `fonts` and `wallpapers` are never orphans.
 
 ```sh
 maw diff
@@ -296,16 +296,16 @@ A unified diff of each live file against what maw would put there, the same as `
 
 ### More than one machine
 
-One repo can serve several machines that are mostly alike, like a laptop and a desktop. Each machine has a name: `maw init` asks for it (your hostname by default), and `maw host` shows it, or renames the machine and activates for what the new name gets (not a generation, since the name belongs to the machine):
+One repo can serve several machines that are mostly alike, like a laptop and a desktop. Each machine has a name of letters, digits, `-`, `_`, and `.`: `maw init` asks for it (your hostname by default), and `maw host` shows it, or renames the machine and activates for what the new name gets (without a generation; if that activation fails, the old name stays):
 
 ```sh
 maw host            # laptop, with hosts/laptop.nix
 maw host desktop    # this machine is now desktop
 ```
 
-The name is kept in `~/.config/maw/host`, and each machine renders into `out/<name>/`. (A repo from before machines had names keeps its rendered files straight under `out/`; the first activation moves them into this machine's dir.) What differs between machines goes in three places:
+The name is kept in `~/.config/maw/host`, and each machine renders into `out/<name>/`. What differs between machines goes in three places:
 
-- **Config values**: `hosts/<name>.nix` is merged over `config.nix` on that machine only, key by key, so it holds just what differs:
+- **Config values**: `hosts/<name>.nix` is merged over `config.nix` on that machine only, key by key (attrsets merge; a list or any other value replaces the one in `config.nix`), so it holds just what differs:
 
   ```nix
   # hosts/laptop.nix
@@ -355,7 +355,7 @@ update ~/.config/waybar/style.css
 reload waybar
 ```
 
-An image has a few candidate colors a palette can grow from, most dominant first; each `maw wallpaper` picks one at random, so the same wallpaper can come back in a different color. Then maw activates, so modules that use the theme rebuild and their programs reload. Changing the wallpaper isn't a generation: the current theme is this machine's state, not history, and themed files in `out/` are committed with your next real change. `pull` and `rollback` rebuild `out/` anyway, so those changes never get in their way.
+An image has a few candidate colors a palette can grow from, most dominant first; each `maw wallpaper` picks one at random, so the same wallpaper can come back in a different color. Then maw activates, so modules that use the theme rebuild and their programs reload. Changing the wallpaper isn't a generation; themed files in `out/` are committed with your next change, and `pull` and `rollback` rebuild `out/` either way.
 
 In `config.nix`, the palette's settings, with their defaults (setting `maw.theme` also themes a fresh machine from the first wallpaper):
 
@@ -396,14 +396,14 @@ maw adopt --dry-run    # print the checklist instead
 Lists everything `status` calls `undeclared` in your editor, one line each, every line starting as `keep`:
 
 ```
-# maw adopt: `keep` records it in maw.nix, `skip` (or deleting the line) ignores it from now on
+# maw adopt: `keep` records it in maw.nix, `here` for this machine only, `skip` (or deleting the line) ignores it from now on
 
 # packages (xbps)
 keep firefox
 skip base-devel
 
 # packages (cargo)
-keep https://github.com/vitali87/croft.git
+keep https://github.com/user/tool.git
 
 # services (system)
 keep NetworkManager
@@ -432,8 +432,8 @@ Packages you want on the machine are declared in `maw.nix`, one list per source:
 ```nix
 packages = {
   xbps = [ "foot" "niri" ];
-  flatpak = [ "com.slack.Slack" "com.tomjwatson.Emote" ];
-  cargo = [ "bat" "typos-cli@1.24" "https://github.com/vitali87/croft.git" ];
+  flatpak = [ "com.slack.Slack" "org.gnome.Calculator" ];
+  cargo = [ "bat" "typos-cli@1.24" "https://github.com/user/tool.git" ];
   go = [ "github.com/jesseduffield/lazygit" ];
   uv = [ "ruff" "httpie@3.2.3" ];
   npm = [ "prettier" ];
@@ -482,7 +482,7 @@ cargo installs into `~/.cargo/bin`, go into `$GOBIN` (or `$GOPATH/bin`, or `~/go
 
 #### Flatpak apps
 
-Flatpaks come from Flathub (maw adds the remote if it's missing) and are installed system-wide, for every user. Each declared app also gets a wrapper in `~/.local/bin` named after the last part of its id, so configs and shells can run it by that name: `emote` runs `flatpak run com.tomjwatson.Emote`. To pick another name, in `config.nix`:
+Flatpaks come from Flathub (maw adds the remote if it's missing) and are installed system-wide, for every user. Each declared app also gets a wrapper in `~/.local/bin` named after the last part of its id, so configs and shells can run it by that name: `calculator` runs `flatpak run org.gnome.Calculator`. To pick another name, in `config.nix`:
 
 ```nix
 maw.flatpakNames = { "us.zoom.Zoom" = "zoom-meet"; };
@@ -496,7 +496,7 @@ App launchers like fuzzel find flatpaks through their desktop entries either way
 maw remove foot
 maw remove bat          # a crate, found by name
 maw remove lazygit      # a go program, by its binary or path
-maw remove emote        # a flatpak, by its id or wrapper name
+maw remove calculator   # a flatpak, by its id or wrapper name
 ```
 
 Removes the package and drops it from `maw.nix`. xbps also removes dependencies nothing else needs, and flatpak runtimes nothing uses any more; go programs are deleted from the bin dir. Its module stays, so reinstalling brings the config back; delete `modules/foot.nix` yourself if you're done with it. `--dry-run` prints the plan.
@@ -602,9 +602,9 @@ While any source package is declared, maw also manages `/etc/xbps.d/10-maw-local
 maw sync
 ```
 
-Upgrades the system (`xbps-install -Su`), then every flatpak, crate, go, python, and npm program that isn't pinned to a version. Then it moves each [source package](#source-packages) template that follows releases to its upstream's newest, and rebuilds every source package whose template is ahead of what's installed. That's how maw updates itself: its template follows maw's releases.
+Upgrades the system (`xbps-install -Su`), then every flatpak, crate, go, python, and npm program that isn't pinned to a version. Then it moves each [source package](#source-packages) template that follows releases to its upstream's newest, and rebuilds every source package whose template is ahead of what's installed. That's how maw updates itself: its template follows maw's releases. Moved templates are repo changes, so sync then activates and records them as a generation. A source package that fails to build is a warning, and the rest of sync goes on; sync exits with an error at the end, naming what didn't build. Pinned packages stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back; `maw sync --release` releases those first.
 
-A template follows releases when it downloads a tagged release from GitHub, GitLab, Codeberg, or sourcehut with `${version}` in the url, like `distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"`. maw reads the repo's tags (`git ls-remote`), takes the newest plain version matching the url's tag (`v${version}` finds `v0.3.0`, skipping pre-releases like `v0.3.0-rc1`), and rewrites `version`, `revision`, and `checksum`. `maw src update <name>` does the same for one template. A `# maw: hold` line keeps a template where it is. Pinned ones stay put until you install a different version, and so do xbps packages a [rollback](#rolling-back) held back. `maw sync --release` releases those first.
+A template follows releases when it downloads a tagged release from GitHub, GitLab, Codeberg, or sourcehut with `${version}` in the url, like `distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"`. maw reads the repo's tags (`git ls-remote`), takes the newest plain version matching the url's tag (`v${version}` finds `v0.3.0`, skipping pre-releases like `v0.3.0-rc1`), and rewrites `version`, `revision`, and `checksum`. `maw src update <name>` does the same for one template. A `# maw: hold` line keeps a template where it is.
 
 ## Services
 
@@ -700,17 +700,17 @@ maw rollback --dry-run
 restore generation 11 (e761146)
 remove cargo:bat
 install libportal-0.10.0_1
-keep firefox: firefox-150.0_1 isn't in the cache or the repo
+keep firefox: firefox-150.0_1 isn't in the cache, binpkgs, or the repo
 hold libportal
 ```
 
 A rollback is itself a new generation, so history only moves forward and you can roll back a rollback. It:
 
-1. restores the repo to that generation's commit (it needs no uncommitted changes, so `maw commit` first),
+1. restores the repo to that generation's commit (it needs no uncommitted changes, so `maw commit` first): everything shared, and this machine's own `maw.nix` lists, `hosts/<name>` files, and `out/<name>/`; other machines' parts stay as they are, so a rollback here never undoes their changes. An encrypted file taken back to an earlier version is named, since it may not be encrypted for machines added since (`maw secret rekey` fixes that),
 2. removes packages declared now but not then, and puts every package declared then back at the version that generation recorded,
 3. activates, which relinks config and re-enables services the way they were.
 
-Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's `hostdir/binpkgs`, or from the repo if it's still current there. A version found in neither stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and everything else is reinstalled at its recorded version.
+Only declared packages change; ones you installed by hand and never adopted are left alone. An old xbps version comes from xbps's download cache in `/var/cache/xbps` (which xbps keeps unless you clean it), from an earlier build of your own in the void-packages clone's `hostdir/binpkgs`, or from the repo if it's still current there. A version found in none of them stays as it is, and the plan says so. Flatpaks go back to their recorded commit, and everything else is reinstalled at its recorded version.
 
 xbps packages left behind the repo's newest version are held, so `maw sync` doesn't undo the rollback. They stay held until `maw sync --release`, or until a later rollback puts them back at the newest version.
 
@@ -723,7 +723,7 @@ maw pull      # fast-forward only, then activate
 
 Both need a remote: `git -C ~/dotfiles remote add origin <url>`. `pull` refuses to merge; if both sides changed, sort it out with git, then `maw activate`.
 
-Each machine renders into its own `out/<machine>/`, so machines never rewrite each other's output: a pull brings the other machines' source changes and their dirs, and the activation after it renders this machine's.
+Each machine renders into its own `out/<machine>/`, so machines never rewrite each other's output: a pull brings the other machines' source changes and their dirs, and the activation after it renders this machine's. A file in `out/` you edited through its link is copied to the backups dir before a pull or a [rollback](#rolling-back) replaces it (`backup out/laptop/foot/foot.ini -> ~/.local/state/maw/backups/...`).
 
 ## Where files go
 
@@ -760,6 +760,11 @@ maw keeps its own bookkeeping outside the repo:
 ~/.local/state/maw/backups/  # files moved aside, mirrored by path under home (system/ for the rest)
 ~/.local/state/maw/generations  # one line per generation: number, time, commit, message, package versions
 ~/.local/state/maw/held      # xbps packages a rollback is holding back
+~/.local/state/maw/patched   # packages built with patches, held so upgrades keep them
+~/.local/state/maw/theme.json   # the wallpaper theme: image, chosen color, palette
+~/.local/state/maw/secrets/  # decrypted copies of encrypted files, readable only by you
+~/.local/state/maw/secrets.json # which encrypted files were decrypted, by content hash
+~/.config/maw/host           # this machine's name
 ```
 
 `inputs` and `cache/` are safe to delete. Deleting `outputs` or `manifest` makes maw forget what it wrote, so drift goes unnoticed until the next activation.

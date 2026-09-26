@@ -299,7 +299,8 @@ impl App {
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => self.tab = (self.tab + 1) % TABS.len(),
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => self.tab = (self.tab + TABS.len() - 1) % TABS.len(),
             KeyCode::Char(digit @ '1'..='7') => self.tab = digit as usize - '1' as usize,
-            KeyCode::Char('/') => self.filtering = true,
+            // the diff tab draws every line, so it isn't filtered
+            KeyCode::Char('/') if TABS[self.tab] != Tab::Diff => self.filtering = true,
             KeyCode::Char('o') => self.show_output = !self.show_output,
             KeyCode::Char('?') => self.popup = Some(Popup::Help),
             KeyCode::Char('R') => return Some(Some(Request::Reload)),
@@ -327,7 +328,8 @@ impl App {
                 return run(Command::Install { packages: vec![row_key.clone()], dry_run: false, here: false }, format!("install {row_key}"));
             }
             (Tab::Packages, KeyCode::Char('f')) => self.popup = Some(input("find in the repos", InputFor::Find)),
-            (Tab::Packages, KeyCode::Char('r')) if !row_key.is_empty() => {
+            // search results are installed, not removed
+            (Tab::Packages, KeyCode::Char('r')) if !row_key.is_empty() && self.finding.is_none() => {
                 self.popup = Some(confirm(format!("remove {row_key}?"), Command::Remove { packages: vec![row_key.clone()], dry_run: false }, format!("remove {row_key}")));
             }
             (Tab::Packages, KeyCode::Char('s')) => return run(Command::Sync { release: false }, "sync".into()),

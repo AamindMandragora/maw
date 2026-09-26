@@ -5,51 +5,58 @@
 ```path
 src/
   cli/            # command tree; each command is a thin wrapper over a library fn
-  env.rs          # Env: every path maw touches
+  env.rs          # Env: every path maw touches, and this machine's name
   runner.rs       # Runner: every external command
   inputs.rs       # file stamps and hashes
   eval.rs         # nix-instantiate calls and the eval cache
   registry.rs     # name + file role -> destination
   repo.rs         # locate and scaffold the dotfiles repo
-  build.rs        # incremental build into out/
-  activate.rs     # link plan against the manifest, drift, loose static/ files
+  build.rs        # incremental build into out/<machine>/
+  activate.rs     # link plan against the manifest, drift, loose and encrypted static/ files, reloads
   backup.rs       # moves files aside before maw replaces them
-  state.rs        # maw.nix: read from nix, written in a fixed shape
+  state.rs        # maw.nix: read from nix, written in a fixed shape, shared and per-machine lists
   edit.rs         # edit, new (with live-file import), add
   status.rs       # status and diff, planned without writing
   help.rs         # maw help: the user docs, compiled in and rendered for the terminal
-  packages.rs     # install and remove: plan, run the backend, record in maw.nix, scaffold modules
-  backend/        # Backend and SystemBackend traits; xbps.rs, cargo.rs, go.rs, srcpkgs.rs (xbps-src builds)
+  packages.rs     # install, remove, search: plan, run the backend, record in maw.nix, scaffold modules
+  backend/        # Backend and SystemBackend traits; xbps, flatpak, cargo, go, uv, npm, and srcpkgs (xbps-src builds and patches)
   init/           # InitBackend trait and runit.rs: service files, links, sv control
   system.rs       # activation's root half: sudo copies, service enable/disable/restart
   services.rs     # maw sv: list, enable, disable, status, restart, log
+  desktop.rs      # dconf settings: plan, drift, write
+  secrets.rs      # encrypted files: keys, recipients, age
+  theme.rs        # wallpaper themes: matugen palettes and the current theme
   adopt.rs        # undeclared packages and services, the adopt checklist
   generations.rs  # auto-commit, the generations log, commit/push/pull
   rollback.rs     # restore a generation: repo, package versions, holds
-  index.rs        # out/.maw/index.json: activating without nix
-  scaffold/       # src new --from-nix: nixpkgs metadata -> SourcePkg -> xbps-src template (SourceEmitter)
+  index.rs        # out/<machine>/.maw/index.json: activating without nix
+  scaffold/       # src new and update: nixpkgs (nixpkgs.rs), the aur (aur.rs), release tags (releases.rs), search.nixos.org (nixos.rs), and the xbps-src emitter
   complete.rs     # tab completion: repo names for the dynamic completer, and the shell scripts
   style.rs        # the palette: tones by meaning, shared by the cli and the tui
   man.rs          # man pages: maw(1) and subcommands from clap, docs through markdown -> roff
+  testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
   tui/            # `maw` alone: app.rs (state and keys, no io), data.rs (tab loaders), view.rs (drawing), term.rs (tty and fds), mod.rs (event loop)
-nix/nixpkgs-meta.nix   # one nixpkgs package's metadata as plain data
-depmap.nix        # shipped nixpkgs -> void dependency names, installed to /usr/share/maw
+nix/
+  default.nix     # entry point: takes { dotfiles }, exposes modules.<name>; hosts/<machine>.nix, theme, host
+  lib.nix         # maw's lib: program, service, dconf, color, raw, generators
+  nixpkgs-meta.nix   # one nixpkgs package's metadata as plain data
+  nixpkgs-lib/    # pinned copy of nixpkgs lib/ (commit in REV)
+registry.nix      # shipped registry
+depmap.nix        # shipped nixpkgs and arch -> void dependency names, installed to /usr/share/maw
 srcpkgs/maw/      # maw's own xbps-src template
 man/              # generated man pages (committed)
 completions/      # generated completion scripts (committed)
+tools/release.sh  # bumps the version and tags a release
 tools/scrape-registry/   # grows registry.nix from home-manager (a separate crate in the workspace)
-  testing.rs      # shared unit-test fixture: tempdir repo over a fake nix
-registry.nix      # shipped registry
-nix/
-  default.nix     # entry point: takes { dotfiles }, exposes modules.<name>
-  lib.nix         # maw's lib: program, raw, generators
-  nixpkgs-lib/    # pinned copy of nixpkgs lib/ (commit in REV)
 tests/
   golden.rs       # golden tests for modules and generators
   build.rs        # end-to-end build of the fixture repo with real nix
   activate.rs     # end-to-end activate of the fixture repo, then a no-op rerun
   edit.rs         # imported configs render unchanged; added files link back in place
-  scaffold.rs     # templates from real nixpkgs metadata (go, rust, meson) against goldens
+  rollback.rs     # a rollback restores shared and this machine's parts, not other machines'
+  nix.rs          # generators, lib.service, and hosts merging with real nix
+  scaffold.rs     # templates from real nixpkgs metadata and aur PKGBUILDs against goldens
+  color.rs        # lib.color with real nix
   generated.rs    # man/ and completions/ match what maw generates
   scaffold/       # the metadata fixtures, void names, and expected templates
   fixtures/dotfiles/   # example dotfiles repo
@@ -59,7 +66,7 @@ tests/
 
 ## Testing seams
 
-Two seams keep everything testable without touching the machine:
+These seams keep everything testable without touching the machine:
 
 - `Env` holds every path: home, system root, state, and maw's share dir. Tests build one over a tempdir.
 - `Runner` runs every external command. Unit tests use `FakeRunner`, which records calls and answers with canned output.
@@ -78,10 +85,10 @@ A root without `var/db/xbps` counts as having nothing installed. Root copies and
 
 Source builds are only ever faked in tests: the fixture pre-creates the clone's `xbps-src`, so nothing is cloned, and `xbps-src` calls are recorded rather than run.
 
-cargo and go follow `HOME`, so a scratch `HOME` keeps their installs out of your real `~/.cargo` and go dir. rustup reads `HOME` too; point it back at your toolchains and unset any `GOPATH` from your shell:
+cargo and go follow `HOME`, so a scratch `HOME` keeps their installs out of your real `~/.cargo` and go dir. rustup reads `HOME` too, so point it at your toolchains before moving `HOME`, and unset any `GOPATH` from your shell:
 
 ```sh
-export HOME=/tmp/maw-home RUSTUP_HOME=$OLDHOME/.rustup CARGO_HOME=/tmp/maw-home/.cargo
+export RUSTUP_HOME=$HOME/.rustup HOME=/tmp/maw-home CARGO_HOME=/tmp/maw-home/.cargo
 unset GOPATH GOBIN
 ```
 
@@ -92,7 +99,7 @@ Running the binary picks these up from the environment:
 | `HOME` | | home directory for destinations and state |
 | `MAW_SYSROOT` | `/` | prefix for system paths like `/etc` |
 
-The share dir (the nix lib, registry, and depmap) is the checkout a binary was built from while that checkout exists, so a development build never mixes with an installed maw's files; the packaged binary uses `/usr/share/maw`. To try maw without touching your real home, build first, then point `HOME` at a scratch dir. rustup reads `HOME` too, so run the built binary directly rather than `cargo run`:
+The share dir (the nix lib, registry, and depmap) is the checkout a binary was built from while that checkout exists, so a development build never mixes with an installed maw's files; the packaged binary uses `/usr/share/maw`. To try maw without touching your real home, build first, then point `HOME` at a scratch dir and run the built binary directly rather than `cargo run`:
 
 ```sh
 cargo build
@@ -138,7 +145,7 @@ Every color maw shows comes from `src/style.rs`, the same for the CLI (on a term
 
 ## Releasing
 
-maw ships as an xbps package built from `srcpkgs/maw/template` (`build_style=cargo`). It installs the binary, plus `nix/` and `registry.nix` into `/usr/share/maw`, where the installed maw looks for them. To release a version:
+maw ships as an xbps package built from `srcpkgs/maw/template` (`build_style=cargo`). It installs the binary, plus `nix/`, `registry.nix`, and `depmap.nix` into `/usr/share/maw`, where the installed maw looks for them. To release a version:
 
 ```sh
 tools/release.sh 0.2.0
@@ -147,7 +154,7 @@ git push --follow-tags
 
 `tools/release.sh` bumps the version in `Cargo.toml`, `Cargo.lock` and `mawVersion` in `nix/lib.nix`, regenerates the man pages, commits, and tags `v<version>`. Pushing the tag runs the release workflow (`.github/workflows/release.yml`), which checksums GitHub's tarball of the tag and commits the template's new `version` and `checksum` to master; `git pull` afterwards. The workflow refuses a tag whose `Cargo.toml` doesn't carry its version. The repo has to be public, since xbps-src fetches the tarball without credentials.
 
-It also installs the shipped `depmap.nix`. To install it through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; after each release, `maw sync` finds the new tag, updates that template's version and checksum, and rebuilds and upgrades maw.
+To install maw through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcpkgs/` and `maw install maw`; after each release, `maw sync` finds the new tag, updates that template's version and checksum, and rebuilds and upgrades maw.
 
 ## Docs
 

@@ -40,7 +40,7 @@ Each copy lands back exactly where it came from; see "Adding verbatim files" in 
 ### What to leave out
 
 - Files an app rewrites on its own, like a GUI's settings file or a plugin lockfile. Linked, they turn into drift every time the app saves.
-- Anything holding secrets or tokens (`gh/hosts.yml`, `rclone.conf`, `.claude.json`). The repo is meant to be committed and pushed.
+- Anything holding secrets or tokens (`gh/hosts.yml`, `rclone.conf`), unless you encrypt it with `maw add --secret`; see "Encrypted files" in `maw help usage`.
 - Configs for programs you no longer have installed.
 
 ## 3. Check before touching anything

@@ -39,7 +39,7 @@ Each copy lands back exactly where it came from; see "Adding verbatim files" in 
 .IP \(bu 2
 Files an app rewrites on its own, like a GUI's settings file or a plugin lockfile. Linked, they turn into drift every time the app saves.
 .IP \(bu 2
-Anything holding secrets or tokens (\fBgh/hosts.yml\fR, \fBrclone.conf\fR, \fB.claude.json\fR). The repo is meant to be committed and pushed.
+Anything holding secrets or tokens (\fBgh/hosts.yml\fR, \fBrclone.conf\fR), unless you encrypt it with \fBmaw add --secret\fR; see "Encrypted files" in \fBmaw help usage\fR.
 .IP \(bu 2
 Configs for programs you no longer have installed.
 .SH "3. CHECK BEFORE TOUCHING ANYTHING"

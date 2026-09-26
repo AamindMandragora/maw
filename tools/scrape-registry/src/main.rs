@@ -128,9 +128,12 @@ fn package_name(line: &str) -> Option<String> {
     Some(pkgver.rsplit_once('-')?.0.to_lowercase())
 }
 
+// programs home-manager describes with a directory where a config file should be, left out of the registry
+const SKIPPED: [&str; 2] = ["nnn", "rbenv"];
+
 // scraped programs Void packages and the registry doesn't have yet
 fn additions(programs: &Programs, existing: &HashSet<String>, packaged: &HashSet<String>) -> Programs {
-    let wanted = |name: &String| packaged.contains(&name.to_lowercase()) && !existing.contains(&name.to_lowercase());
+    let wanted = |name: &String| packaged.contains(&name.to_lowercase()) && !existing.contains(&name.to_lowercase()) && !SKIPPED.contains(&name.to_lowercase().as_str());
     programs.iter().filter(|(name, _)| wanted(name)).map(|(name, specs)| (name.clone(), specs.clone())).collect()
 }
 

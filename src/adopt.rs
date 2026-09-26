@@ -38,7 +38,7 @@ impl Candidate {
         }
     }
 
-    // xbps, cargo, go, then system and user services, names alphabetical within each
+    // backends in NAMES order, then system and user services, names alphabetical within each
     fn order(&self) -> (usize, String) {
         let rank = match self {
             Candidate::Package { backend, .. } => NAMES.iter().position(|name| name == backend).unwrap_or(NAMES.len()),

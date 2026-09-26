@@ -19,10 +19,12 @@ impl Pkgbuild {
         let mut vars = BTreeMap::new();
         let mut lines = text.lines();
 
-        // assignments at the top level; function bodies (closed by a "}" in the first column) are skipped
+        // assignments at the top level; function bodies (closed by a "}" in the first column, or on their own line) are skipped
         while let Some(line) = lines.next() {
             if function_name(line).is_some() {
-                lines.by_ref().find(|line| line.starts_with('}'));
+                if one_line_body(line).is_none() {
+                    lines.by_ref().find(|line| line.starts_with('}'));
+                }
                 continue;
             }
             let Some((name, value)) = assignment(line) else { continue };
@@ -106,7 +108,9 @@ impl Pkgbuild {
     // a function's body, as written
     pub fn function(&self, name: &str) -> Option<String> {
         let mut lines = self.text.lines().skip_while(|line| function_name(line) != Some(name));
-        lines.next()?;
+        if let Some(body) = one_line_body(lines.next()?) {
+            return Some(body.to_string());
+        }
         Some(lines.take_while(|line| !line.starts_with('}')).collect::<Vec<_>>().join("\n"))
     }
 }
@@ -117,6 +121,19 @@ fn function_name(line: &str) -> Option<&str> {
     let name = name.trim_end();
     let valid = !name.is_empty() && name.chars().all(|char| char.is_ascii_alphanumeric() || char == '_') && !line.starts_with(char::is_whitespace);
     (valid && rest.trim_start().starts_with(')')).then_some(name)
+}
+
+// the body of a function opened and closed on one line, like "prepare() { cd x; }" -> "cd x;"
+fn one_line_body(line: &str) -> Option<&str> {
+    let unquoted = strip_quoted(line);
+    let (opens, closes) = (unquoted.matches('{').count(), unquoted.matches('}').count());
+    let (start, end) = (line.find('{')?, line.rfind('}')?);
+    (opens > 0 && closes >= opens && start < end).then(|| line[start + 1..end].trim())
+}
+
+// text for a url: everything but letters, digits, and -._~ percent-encoded, so "libc++" is "libc%2B%2B"
+fn encode(text: &str) -> String {
+    text.bytes().map(|byte| if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) { (byte as char).to_string() } else { format!("%{byte:02X}") }).collect()
 }
 
 // "name=value" at the start of a line
@@ -214,7 +231,7 @@ fn reference(name: &str, body: &str) -> String {
 
 // the aur's metadata for a package, from its rpc api
 pub fn info(runner: &dyn Runner, name: &str) -> Result<Value, ScaffoldError> {
-    let url = format!("https://aur.archlinux.org/rpc/v5/info?arg[]={name}");
+    let url = format!("https://aur.archlinux.org/rpc/v5/info?arg[]={}", encode(name));
     let body = runner.run("curl", &["-fsSL".into(), url])?;
     let response: Value = serde_json::from_str(&body).map_err(|source| ScaffoldError::Meta { attr: name.into(), source })?;
     response["results"].get(0).cloned().ok_or_else(|| ScaffoldError::NotInAur(name.into()))
@@ -228,7 +245,7 @@ fn to_pkg(result: &Value) -> Pkg {
 
 // aur packages whose name or description matches, most voted first; checkouts are left out, since they can't be drafted
 pub fn search(runner: &dyn Runner, term: &str) -> Result<Vec<Pkg>, ScaffoldError> {
-    let url = format!("https://aur.archlinux.org/rpc/v5/search/{term}?by=name-desc");
+    let url = format!("https://aur.archlinux.org/rpc/v5/search/{}?by=name-desc", encode(term));
     let body = runner.run("curl", &["-fsSL".into(), url])?;
     let response: Value = serde_json::from_str(&body).map_err(|source| ScaffoldError::Meta { attr: term.into(), source })?;
     let mut results: Vec<Value> = response["results"].as_array().cloned().unwrap_or_default();
@@ -244,7 +261,7 @@ pub fn find(runner: &dyn Runner, name: &str) -> Option<Pkg> {
 
 // the PKGBUILD of a package base, from the aur's git web view
 pub fn pkgbuild(runner: &dyn Runner, base: &str) -> Result<String, ScaffoldError> {
-    Ok(runner.run("curl", &["-fsSL".into(), format!("https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={base}")])?)
+    Ok(runner.run("curl", &["-fsSL".into(), format!("https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={}", encode(base))])?)
 }
 
 // a source package from an aur package's metadata and PKGBUILD
@@ -337,6 +354,25 @@ package() {
         assert_eq!(pkgbuild.array("source_x86_64"), ["https://x.org/tool_1.2.3_x86_64.tar.gz"]);
         assert_eq!(pkgbuild.array("depends"), ["glibc", "gtk3>=3.24"]);
         assert_eq!(pkgbuild.function("build").unwrap(), "  cd \"$srcdir/$_name-$pkgver\"\n  make");
+    }
+
+    #[test]
+    fn one_line_functions_end_on_their_own_line() {
+        let pkgbuild = Pkgbuild::parse("pkgver=1\nprepare() { cd x; }\nurl=\"https://x.org\"\nbuild() {\n  make\n}\nlate=1\n");
+        assert_eq!((pkgbuild.var("url").as_deref(), pkgbuild.var("late").as_deref()), (Some("https://x.org"), Some("1")));
+        assert_eq!(pkgbuild.function("prepare").unwrap(), "cd x;");
+        assert_eq!(pkgbuild.function("build").unwrap(), "  make");
+    }
+
+    #[test]
+    fn rpc_urls_are_encoded() {
+        let runner = crate::runner::fake::FakeRunner::new(|_, _| r#"{"results":[]}"#.into());
+        search(&runner, "libc++").unwrap();
+        assert!(info(&runner, "a b").is_err());
+        assert_eq!(*runner.calls.borrow(), [
+            "curl -fsSL https://aur.archlinux.org/rpc/v5/search/libc%2B%2B?by=name-desc",
+            "curl -fsSL https://aur.archlinux.org/rpc/v5/info?arg[]=a%20b"
+        ]);
     }
 
     #[test]

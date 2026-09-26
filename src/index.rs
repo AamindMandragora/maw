@@ -70,7 +70,7 @@ pub fn write(env: &Env, repo: &Repo, build: &Report, wanted: &[Wanted]) -> Resul
         .iter()
         .map(|file| Entry {
             // a decrypted file is recorded by its encrypted one, which is in the repo
-            source: file.secret.as_ref().unwrap_or(&file.source).strip_prefix(&repo.root).unwrap_or(&file.source).to_path_buf(),
+            source: file.secret.as_ref().unwrap_or(&file.source).strip_prefix(&repo.root).unwrap_or(file.secret.as_ref().unwrap_or(&file.source)).to_path_buf(),
             secret: file.secret.is_some(),
             destination: portable(env, &file.destination),
             root: file.root,
@@ -106,7 +106,7 @@ pub fn load(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<(Report, Vec<
         .map(|entry| {
             let file = repo.root.join(&entry.source);
             let (source, secret) = match entry.secret {
-                true => (secrets::plaintext(env, runner, repo, &secrets::key(env, index.secret_key.as_deref())?, &file, &mut inputs)?, Some(file)),
+                true => (secrets::plaintext(env, runner, repo, &secrets::key(env, index.secret_key.as_deref())?, &file, &mut inputs, true)?.plain, Some(file)),
                 false => (file, None),
             };
             let bytes = fs::read(&source).map_err(|error| IndexError::Io { path: source.clone(), source: error })?;

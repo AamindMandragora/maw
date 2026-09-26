@@ -48,7 +48,7 @@ pub enum RollbackError {
 #[derive(Debug)]
 pub struct Plan {
     pub generation: Generation,
-    // exact versions to install: xbps pkgvers, cargo name@version, go path@version
+    // exact versions to install: xbps pkgvers, flatpak id@commit, everything else spec@version
     pub versions: Vec<Target>,
     // declared now but not then
     pub removes: Vec<Target>,
@@ -118,7 +118,7 @@ fn plan_backend(env: &Env, runner: &dyn Runner, src: &SrcPkgs, backend: &dyn Bac
         .cloned()
         .collect();
 
-    // xbps versions come from the cache, an earlier source build, or the repo; cargo and go fetch any version themselves
+    // xbps versions come from the cache, an earlier source build, or the repo; other backends fetch any version themselves
     let (versions, kept): (Vec<String>, Vec<String>) = wanted.into_iter().partition(|pin| name != "xbps" || available(env, runner, src, pin));
     let kept = kept.into_iter().map(|pin| (target(&pin_base(name, &pin)), format!("{pin} isn't in the cache, binpkgs, or the repo"))).collect();
     Ok((versions.iter().map(|pin| target(pin)).collect(), removes, kept))
@@ -180,12 +180,15 @@ pub fn release(env: &Env, runner: &dyn Runner) -> Result<Vec<String>, RollbackEr
 }
 
 // restores the repo to the generation's tree, then removes, installs versions, and updates holds; activating is up to the caller
-pub fn rollback(env: &Env, runner: &dyn Runner, repo: &Repo, plan: &Plan) -> Result<(), RollbackError> {
+// returns the encrypted files the restore took back to an earlier version, which may not be encrypted for every machine
+pub fn rollback(env: &Env, runner: &dyn Runner, repo: &Repo, plan: &Plan) -> Result<Vec<String>, RollbackError> {
     // out/ is restored and rebuilt anyway, so a wallpaper theme's changes there don't count
     if !git(runner, repo, &["status", "--porcelain", "--", ".", ":!out"])?.trim().is_empty() {
         return Err(RollbackError::Dirty(repo.root.display().to_string()));
     }
-    git(runner, repo, &["restore", &format!("--source={}", plan.generation.commit), "--staged", "--worktree", "--", ":/"])?;
+    restore(env, runner, repo, &plan.generation.commit)?;
+    let changed = git(runner, repo, &["diff", "--cached", "--name-only", "--", "static"])?;
+    let encrypted = changed.lines().filter(|path| path.ends_with(".age")).map(String::from).collect();
 
     by_backend(&plan.removes).into_iter().try_for_each(|(name, specs)| backend::for_name(&name, runner, env).unwrap().remove(&specs))?;
 
@@ -201,6 +204,35 @@ pub fn rollback(env: &Env, runner: &dyn Runner, repo: &Repo, plan: &Plan) -> Res
         xbps.hold(&plan.holds, true)?;
         save_json(&held_file(env), &plan.holds)?;
     }
+    Ok(encrypted)
+}
+
+// the repo as it was at a commit, for what's shared and what's this machine's own; other machines' out/ dirs,
+// hosts/ files, and maw.nix lists stay as they are now, so a rollback here never undoes their changes
+pub fn restore(env: &Env, runner: &dyn Runner, repo: &Repo, commit: &str) -> Result<(), RollbackError> {
+    let (_, now) = edit::load(env, runner, repo)?;
+    git(runner, repo, &["restore", &format!("--source={commit}"), "--staged", "--worktree", "--", ":/", ":!out", ":!hosts"])?;
+
+    // this machine's own paths come back as they were, or go if they didn't exist then
+    let host = &repo.host;
+    let own = [format!("out/{host}"), format!("hosts/{host}.nix"), format!("hosts/{host}.pub")];
+    own.iter().try_for_each(|path| -> Result<(), RollbackError> {
+        match git(runner, repo, &["cat-file", "-e", &format!("{commit}:{path}")]) {
+            Ok(_) => git(runner, repo, &["restore", &format!("--source={commit}"), "--staged", "--worktree", "--", path]).map(drop)?,
+            Err(_) => git(runner, repo, &["rm", "-rq", "--ignore-unmatch", "--", path]).map(drop)?,
+        }
+        Ok(())
+    })?;
+
+    // maw.nix's lists for other machines, as they are now
+    let (_, mut then) = edit::load(env, runner, repo)?;
+    let others = |lists: &BTreeMap<String, crate::state::Lists>| lists.iter().filter(|(name, _)| *name != host).map(|(name, lists)| (name.clone(), lists.clone())).collect::<BTreeMap<_, _>>();
+    if others(&then.hosts) != others(&now.hosts) {
+        then.hosts.retain(|name, _| name == host);
+        then.hosts.extend(others(&now.hosts));
+        then.tidy();
+        then.write(&repo.maw_file())?;
+    }
     Ok(())
 }
 
@@ -210,7 +242,7 @@ fn install_xbps_versions(xbps: &Xbps, src: &SrcPkgs, pkgvers: &[String]) -> Resu
     let patched = |pkgver: &String| split_pkgver(pkgver).is_some_and(|(name, _)| src.patches(&name));
     let (built, others): (Vec<String>, Vec<String>) = pkgvers.iter().cloned().partition(|pkgver| src.built(pkgver).is_some() && (xbps.cached(pkgver).is_none() || patched(pkgver)));
     if !built.is_empty() {
-        xbps.install_from(&src.binpkgs(), &built, true)?;
+        src.install_built(&built, true)?;
     }
     if !others.is_empty() {
         xbps.install_versions(&others)?;

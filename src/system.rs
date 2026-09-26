@@ -24,16 +24,16 @@ pub struct Record {
     pub services: Services,
 }
 
-// root files to copy or delete, and the record of copies they leave behind
-pub fn plan_copies(record: &Record, copies: &[Wanted], force: bool) -> (Vec<Step>, BTreeMap<PathBuf, String>) {
+// root files to copy or delete, and the record of copies they leave behind; linked is every destination now wanted as a link
+pub fn plan_copies(record: &Record, copies: &[Wanted], linked: &HashSet<&PathBuf>, force: bool) -> (Vec<Step>, BTreeMap<PathBuf, String>) {
     let wanted: HashSet<&PathBuf> = copies.iter().map(|file| &file.destination).collect();
     let live_hash = |path: &Path| fs::read(path).ok().map(|bytes| hash_bytes(&bytes));
 
-    // copies no longer wanted are deleted, unless someone changed them since
+    // copies no longer wanted are deleted, unless someone changed them since or a link takes their place
     let deletes = record
         .copied
         .iter()
-        .filter(|(destination, hash)| !wanted.contains(destination) && live_hash(destination).as_ref() == Some(*hash))
+        .filter(|(destination, hash)| !wanted.contains(destination) && !linked.contains(destination) && live_hash(destination).as_ref() == Some(*hash))
         .map(|(destination, _)| Step::Delete { destination: destination.clone() });
 
     let decisions: Vec<(Option<Step>, &Wanted)> = copies.iter().map(|file| (decide_copy(record.copied.get(&file.destination), file, force), file)).collect();
@@ -49,13 +49,14 @@ pub fn plan_copies(record: &Record, copies: &[Wanted], force: bool) -> (Vec<Step
     (deletes.chain(decisions.into_iter().filter_map(|(step, _)| step)).collect(), copied)
 }
 
-// a root file is copied when missing or still what maw last put there; anything else is drift or needs a backup
+// a root file is copied when missing, a link (a file that used to be linked), or still what maw last put there; anything
+// else is drift or needs a backup
 fn decide_copy(previous: Option<&String>, file: &Wanted, force: bool) -> Option<Step> {
     let destination = file.destination.clone();
-    let exists = fs::symlink_metadata(&file.destination).is_ok();
+    let metadata = fs::symlink_metadata(&file.destination).ok();
     let live = fs::read(&file.destination).ok().map(|bytes| hash_bytes(&bytes));
 
-    if !exists {
+    if metadata.as_ref().is_none_or(|metadata| metadata.file_type().is_symlink()) {
         Some(Step::Copy { destination, backup: false })
     } else if live.as_ref() == Some(&file.hash) {
         None
@@ -75,13 +76,15 @@ pub fn declared_services(build: &Report) -> Services {
     listed.chain(defined.map(|service| (service.scope, service.name.clone()))).collect()
 }
 
-// services to enable, disable, purge, and restart, and the set maw has enabled afterwards; placed is every file maw put down last time
-pub fn plan_services(env: &Env, build: &Report, record: &Record, changed: &HashSet<PathBuf>, placed: &HashSet<PathBuf>) -> Result<(Vec<Step>, Services), ActivateError> {
+// services to enable, disable, purge, and restart, and the set maw has enabled afterwards; placed is every file maw put down
+// last time, and installing whether packages go in first (a package can bring a service's definition)
+pub fn plan_services(env: &Env, build: &Report, record: &Record, changed: &HashSet<PathBuf>, placed: &HashSet<PathBuf>, installing: bool) -> Result<(Vec<Step>, Services), ActivateError> {
     let declared = declared_services(build);
     let is_enabled = |(scope, name): &(Scope, String)| fs::symlink_metadata(Runit.enabled_link(env, *scope, name)).is_ok();
 
-    // a declared service needs a definition, already on disk or about to be written
-    if let Some((scope, name)) = declared.iter().find(|(scope, name)| !Runit.definition(env, *scope, name).exists() && rendered(build, *scope, name).next().is_none()) {
+    // a declared service needs a definition, already on disk, about to be written, or perhaps from a package being installed
+    let undefined = declared.iter().find(|(scope, name)| !Runit.definition(env, *scope, name).exists() && rendered(build, *scope, name).next().is_none());
+    if let Some((scope, name)) = undefined.filter(|_| !installing) {
         return Err(ActivateError::UnknownService { scope: *scope, name: name.clone() });
     }
 
@@ -89,10 +92,11 @@ pub fn plan_services(env: &Env, build: &Report, record: &Record, changed: &HashS
     let dropped: Vec<&(Scope, String)> = record.services.difference(&declared).collect();
     let disables = dropped.iter().copied().filter(|service| is_enabled(service)).map(step(|scope, name| Step::Disable { scope, name }));
 
-    // a dropped service whose files maw wrote leaves only runit's state behind, so its dir goes too; stock ones stay
+    // a dropped service maw generated (it placed the run script) leaves only runit's state behind, so its dir goes too;
+    // stock ones stay, even with config files maw placed in them
     let wrote = |(scope, name): &(Scope, String)| {
         let definition = Runit.definition(env, *scope, name);
-        rendered(build, *scope, name).next().is_none() && placed.iter().any(|path| path.starts_with(&definition)) && definition.exists()
+        rendered(build, *scope, name).next().is_none() && placed.contains(&definition.join("run")) && definition.exists()
     };
     let purges = dropped.iter().copied().filter(|service| wrote(service)).map(step(|scope, name| Step::Purge { scope, name }));
     let enables = declared.iter().filter(|service| !is_enabled(service)).map(step(|scope, name| Step::Enable { scope, name }));
@@ -206,6 +210,7 @@ pub fn disable(env: &Env, runner: &dyn Runner, scope: Scope, name: &str) -> Resu
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::activate::{Activation, Ask, Options, Step, activate};
     use crate::init::Scope;
     use crate::testing::{Fixture, fixture, write};
@@ -237,6 +242,52 @@ mod tests {
         fs::write(fixture.repo.maw_file(), text).unwrap();
     }
 
+
+    fn wanted_copy(destination: &Path, hash: &str) -> Wanted {
+        Wanted { destination: destination.into(), source: "/src".into(), hash: hash.into(), root: true, secret: None }
+    }
+
+    #[test]
+    fn a_link_where_a_copy_goes_is_replaced_and_a_copy_where_a_link_goes_isnt_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("etc/x.conf");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::write(dir.path().join("target"), "same\n").unwrap();
+        symlink(dir.path().join("target"), &destination).unwrap();
+
+        // the old link reads the same content, but it's a link, so the copy still goes in
+        let hash = hash_bytes(b"same\n");
+        assert_eq!(decide_copy(None, &wanted_copy(&destination, &hash), false), Some(Step::Copy { destination: destination.clone(), backup: false }));
+
+        // a copy maw made that's now wanted as a link isn't deleted out from under the link
+        let record = Record { copied: BTreeMap::from([(destination.clone(), hash)]), ..Record::default() };
+        let linked = HashSet::from([&destination]);
+        assert!(plan_copies(&record, &[], &linked, false).0.is_empty());
+    }
+
+    #[test]
+    fn only_services_maw_generated_are_purged() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::new(&dir.path().join("home"), &dir.path().join("root"), Path::new("/s"));
+        let definition = Runit.definition(&env, Scope::System, "sshd");
+        fs::create_dir_all(&definition).unwrap();
+        let record = Record { services: Services::from([(Scope::System, "sshd".to_string())]), ..Record::default() };
+        let plan = |placed: HashSet<PathBuf>| plan_services(&env, &Report::default(), &record, &HashSet::new(), &placed, false).unwrap().0;
+
+        // a stock service where maw only placed a config file keeps its dir; one whose run maw wrote goes
+        assert!(plan(HashSet::from([definition.join("conf")])).is_empty());
+        assert_eq!(plan(HashSet::from([definition.join("run")])), [Step::Purge { scope: Scope::System, name: "sshd".into() }]);
+    }
+
+    #[test]
+    fn an_undefined_service_waits_for_packages_being_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::new(&dir.path().join("home"), &dir.path().join("root"), Path::new("/s"));
+        let mut build = Report::default();
+        build.state.services.insert("system".into(), vec!["NetworkManager".into()]);
+        assert!(plan_services(&env, &build, &Record::default(), &HashSet::new(), &HashSet::new(), false).is_err());
+        assert!(plan_services(&env, &build, &Record::default(), &HashSet::new(), &HashSet::new(), true).is_ok());
+    }
     #[test]
     fn root_files_are_copied_once() {
         let fixture = fixture(&["greetd"]);

@@ -122,8 +122,10 @@ pub enum Step {
     SettingsSkipped { reason: String },
     // a program whose config changed, told to read it again
     Reload { name: String, command: String },
-    // an encrypted file this machine can't decrypt now, and why
+    // an encrypted file this machine can't decrypt now, and why; its last decrypted copy, if any, stays in place
     SecretSkipped { file: String, reason: String },
+    // a decrypted copy edited through its link, moved aside before a new decrypt replaced it
+    SecretBackedUp { file: String, backup: PathBuf },
 }
 
 #[derive(Debug, Default)]
@@ -185,7 +187,7 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
         let build = build::build(env, runner, repo, options)?;
         let inputs_file = env.state_dir.join("inputs");
         let mut inputs = Inputs::load(&inputs_file)?;
-        let (statics, unplaced, skipped) = static_files(env, runner, repo, &build.registry, build.settings.secret_key.as_deref(), &mut inputs)?;
+        let (statics, unplaced, skipped) = static_files(env, runner, repo, &build.registry, build.settings.secret_key.as_deref(), &mut inputs, !options.dry_run)?;
         inputs.save(&inputs_file)?;
         (build, statics, unplaced, skipped)
     };
@@ -194,12 +196,14 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
     let edited: HashSet<PathBuf> = build.drifted.iter().map(|output| output.out.clone()).collect();
     let manifest: Manifest = load_json(&env.state_dir.join("manifest"))?;
     let (links, mut next) = plan(&manifest, &wanted, &edited, options.force);
-    let (copy_steps, copied) = system::plan_copies(&manifest.system, &copies, options.force);
+    let linked: HashSet<&PathBuf> = wanted.iter().map(|file| &file.destination).collect();
+    let (copy_steps, copied) = system::plan_copies(&manifest.system, &copies, &linked, options.force);
 
     // services restart when any file they're made of is written or changes behind its link
     let changed: HashSet<PathBuf> = links.iter().chain(&copy_steps).filter_map(written).cloned().collect();
     let placed: HashSet<PathBuf> = manifest.files.keys().chain(manifest.system.copied.keys()).cloned().collect();
-    let (service_steps, services) = system::plan_services(env, &build, &manifest.system, &changed, &placed)?;
+    let installs = missing_packages(env, runner, &build.state)?;
+    let (service_steps, services) = system::plan_services(env, &build, &manifest.system, &changed, &placed, !installs.is_empty())?;
     next.system = system::Record { copied, services };
     let (setting_steps, dconf) = desktop::plan(runner, env.session_bus, &build.dconf, &manifest.dconf, options.force);
     next.dconf = dconf;
@@ -207,19 +211,17 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
     // packages, links, root copies, services, settings, loose files nobody placed, then reloads once everything is in place
     let unplaced = unplaced.into_iter().map(|file| Step::Unplaced { file });
     let reloads = reload_steps(&build, &changed);
-    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(setting_steps).chain(skipped).chain(unplaced).chain(reloads).collect();
+    let steps = installs.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(setting_steps).chain(skipped).chain(unplaced).chain(reloads).collect();
     Ok(Planned { build, wanted, copies, steps, manifest, next })
 }
 
-// out/ from before each machine had its own dir under it: once this machine's links point into out/<machine>/, everything
-// at the top that isn't a machine's dir (one holding .maw/index.json) is the old layout and goes
+// rendered files straight under out/ rather than in a machine's dir: once this machine's links point into out/<machine>/,
+// what that old layout's index lists at the top of out/ is removed, and the index itself; machines' dirs are never touched
 fn migrate_out(repo: &Repo) -> Result<(), ActivateError> {
     let out = repo.root.join("out");
-    if !out.join(".maw/index.json").exists() {
-        return Ok(());
-    }
-    let entries = fs::read_dir(&out).map_err(io(&out))?.filter_map(|entry| entry.ok()).map(|entry| entry.path());
-    let old: Vec<PathBuf> = entries.filter(|path| !(path.is_dir() && path.join(".maw/index.json").exists())).collect();
+    let Ok(old_index) = load_json::<index::Index>(&out.join(".maw/index.json")) else { return Ok(()) };
+    let tops: HashSet<PathBuf> = old_index.files.iter().filter_map(|entry| Some(out.join(entry.source.strip_prefix("out").ok()?.components().next()?))).collect();
+    let old: Vec<PathBuf> = tops.into_iter().chain([out.join(".maw")]).filter(|path| fs::symlink_metadata(path).is_ok()).collect();
     old.iter().try_for_each(|path| match path.is_dir() {
         true => fs::remove_dir_all(path).map_err(io(path)),
         false => fs::remove_file(path).map_err(io(path)),
@@ -232,7 +234,7 @@ fn reload_steps(build: &Report, changed: &HashSet<PathBuf>) -> Vec<Step> {
     commands.into_iter().map(|(name, command)| Step::Reload { name: name.clone(), command: command.clone() }).collect()
 }
 
-// runs each reload; a program that isn't running fails its reload, which is fine
+// runs each reload; a program that isn't running fails its reload, and that failure is ignored
 fn reload(runner: &dyn Runner, steps: &[Step]) {
     let commands = steps.iter().filter_map(|step| match step {
         Step::Reload { command, .. } => Some(command),
@@ -257,8 +259,9 @@ fn missing_packages(env: &Env, runner: &dyn Runner, state: &MawState) -> Result<
         .filter(|(_, names)| !names.is_empty())
         .map(|(name, names)| {
             let backend = backend::for_name(name, runner, env).ok_or_else(|| ActivateError::UnknownBackend(name.clone()))?;
-            let installed: HashSet<String> = backend.list()?.into_iter().map(|pkg| pkg.source).collect();
-            let missing = names.iter().filter(|package| !installed.contains(backend::spec_base(package)));
+            // missing, or pinned at a version other than what's installed
+            let installed = backend.list()?;
+            let missing = names.iter().filter(|package| !backend::satisfies(backend.as_ref(), &installed, package));
             Ok(missing.map(|package| Step::Install { backend: name.clone(), package: package.clone() }).collect::<Vec<_>>())
         })
         .collect::<Result<Vec<_>, ActivateError>>()?;
@@ -382,12 +385,12 @@ fn wanted(build: &Report, statics: Vec<Wanted>) -> Result<Vec<Wanted>, ActivateE
     Ok(by_destination.into_values().collect())
 }
 
-// static/<name>/<path> goes where the registry puts <name>'s <path>; loose files go by answer or heuristic
-// static files where they go, loose ones with no destination, and encrypted ones this machine can't decrypt; an encrypted
-// file (<file>.age) is placed as its decrypted copy in the state dir, under its name without .age
+// static files where they go, loose ones with no destination, and encrypted ones this machine can't decrypt
 type Statics = (Vec<Wanted>, Vec<PathBuf>, Vec<Step>);
 
-fn static_files(env: &Env, runner: &dyn Runner, repo: &Repo, registry: &Registry, secret_key: Option<&str>, inputs: &mut Inputs) -> Result<Statics, ActivateError> {
+// static/<name>/<path> goes where the registry puts <name>'s <path>; loose files go by answer or heuristic; an encrypted
+// file (<file>.age) is placed as its decrypted copy in the state dir, under its name without .age
+fn static_files(env: &Env, runner: &dyn Runner, repo: &Repo, registry: &Registry, secret_key: Option<&str>, inputs: &mut Inputs, decrypt_now: bool) -> Result<Statics, ActivateError> {
     let root = repo.static_dir();
     let mut unplaced = Vec::new();
 
@@ -427,14 +430,26 @@ fn static_files(env: &Env, runner: &dyn Runner, repo: &Repo, registry: &Registry
             continue;
         }
         let destination = registry::resolve(env, &registry.spec(&name, key_name.trim_end_matches(".age")));
-        let decrypted = match &key {
-            Some(Ok(key)) => secrets::plaintext(env, runner, repo, key, &path, inputs).map_err(|error| secrets::reason(repo, &error)),
+        let placed = match &key {
+            Some(Ok(key)) => secrets::plaintext(env, runner, repo, key, &path, inputs, decrypt_now).map_err(|error| secrets::reason(repo, &error)),
             Some(Err(error)) => Err(error.to_string()),
             None => Err("no key".into()),
         };
-        match decrypted {
-            Ok(plain) => wanted.push(Wanted { destination, hash: inputs.hash(&plain)?, source: plain, root, secret: Some(path) }),
-            Err(reason) => skipped.push(Step::SecretSkipped { file: path.strip_prefix(&repo.root).unwrap_or(&path).display().to_string(), reason }),
+        let file = path.strip_prefix(&repo.root).unwrap_or(&path).display().to_string();
+        match placed {
+            Ok(placed) => {
+                skipped.extend(placed.backup.map(|backup| Step::SecretBackedUp { file, backup }));
+                wanted.push(Wanted { destination, hash: inputs.hash(&placed.plain)?, source: placed.plain, root, secret: Some(path) });
+            }
+
+            // the last decrypted copy stays linked, so a failed decrypt never takes the live file away
+            Err(reason) => {
+                let old = secrets::plain_path(env, repo, &path);
+                if old.is_file() {
+                    wanted.push(Wanted { destination, hash: inputs.hash(&old)?, source: old, root, secret: Some(path) });
+                }
+                skipped.push(Step::SecretSkipped { file, reason });
+            }
         }
     }
     Ok((wanted, unplaced, skipped))
@@ -552,14 +567,17 @@ mod tests {
     fn the_old_shared_out_moves_under_this_machine_leaving_other_machines_alone() {
         let fixture = fixture();
         let out = fixture.repo.root.join("out");
-        write(&out.join(".maw/index.json"), "{}");
+        let old_index = r#"{"files":[{"source":"out/foot/foot.ini","destination":"~/.config/foot/foot.ini","root":false,"service":null}],"state":{},"auto_commit":true,"void_packages":null}"#;
+        write(&out.join(".maw/index.json"), old_index);
         write(&out.join("foot/foot.ini"), "old\n");
         write(&out.join("desktop/.maw/index.json"), "{}");
+        write(&out.join("builtonly/foot/foot.ini"), "a machine that only ran maw build\n");
 
         run(&fixture, Options::default());
         assert_eq!(fs::read_link(foot(&fixture)).unwrap(), fixture.repo.out_dir().join("foot/foot.ini"));
         assert!(!out.join(".maw").exists() && !out.join("foot").exists());
         assert!(out.join("desktop/.maw/index.json").exists() && fixture.repo.out_dir().join(".maw/index.json").exists());
+        assert!(out.join("builtonly/foot/foot.ini").exists());
     }
 
     #[test]

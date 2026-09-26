@@ -10,14 +10,14 @@ declarative system manager for void linux
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+print help
 .TP
 \fB\-V\fR, \fB\-\-version\fR
-Print version
+print version
 .SH SUBCOMMANDS
 .TP
 maw\-init(1)
-create a dotfiles repo, or adopt an existing one
+create a dotfiles repo, use an existing one, or clone one
 .TP
 maw\-build(1)
 render changed modules into out/
@@ -59,7 +59,7 @@ maw\-info(1)
 a package\*(Aqs details, and whether maw manages it
 .TP
 maw\-sync(1)
-upgrade the system, then every unpinned cargo and go package
+upgrade the system, every unpinned package, and source packages
 .TP
 maw\-rollback(1)
 restore a generation\*(Aqs repo and package versions, as a new generation
@@ -68,7 +68,7 @@ maw\-sv(1)
 services: list, enable, disable, status, restart, log
 .TP
 maw\-host(1)
-show or set this machine\*(Aqs name, which picks its hosts/<name>.nix and own packages
+show or set this machine\*(Aqs name
 .TP
 maw\-secret(1)
 encrypted files in static/: edit one, or re\-encrypt all for every machine

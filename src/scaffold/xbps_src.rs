@@ -1,3 +1,4 @@
+use super::releases::{FORGES, rewrite};
 use super::{Deps, Emitted, Resolved, SourceEmitter, SourcePkg};
 
 // void's xbps-src template format
@@ -9,9 +10,22 @@ fn quote(text: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-// the distfile url with the version as ${version}, so a version bump is one line
+// the distfile url with the version as ${version}, so a version bump is one line; the host, and a forge's
+// owner/repo, are left as they are, since a version like "3" can be part of a name
 fn templated(distfile: &str, version: &str) -> String {
-    if version.is_empty() { distfile.to_string() } else { distfile.replace(version, "${version}") }
+    if version.is_empty() {
+        return distfile.to_string();
+    }
+    let fixed = fixed_len(distfile);
+    format!("{}{}", &distfile[..fixed], distfile[fixed..].replace(version, "${version}"))
+}
+
+// how much of a url never holds the version: scheme and host, and on a forge the owner and repo after it
+fn fixed_len(url: &str) -> usize {
+    let Some(after_scheme) = url.find("://").map(|index| index + 3) else { return 0 };
+    let host = url[after_scheme..].split('/').next().unwrap_or_default();
+    let segments = if FORGES.contains(&host) { 3 } else { 1 };
+    url[after_scheme..].match_indices('/').nth(segments - 1).map_or(url.len(), |(index, _)| after_scheme + index)
 }
 
 // each upstream dependency resolved, in order and without repeats, plus the names nothing matched
@@ -67,20 +81,17 @@ impl SourceEmitter for XbpsSrc {
     }
 }
 
-// an existing template moved to a new version: version, revision, distfiles, checksum, and the origin line; nothing else is touched
+// an existing template moved to a new version: version, revision, distfiles, checksum (multi-line values replaced
+// whole), and the origin line; nothing else is touched
 pub fn bump(template: &str, pkg: &SourcePkg, checksum: &str) -> String {
-    template
-        .lines()
-        .map(|line| match line.split_once('=').map(|(key, _)| key) {
-            Some("version") => format!("version={}", pkg.version),
-            Some("revision") => "revision=1".to_string(),
-            Some("distfiles") => format!("distfiles=\"{}\"", templated(&pkg.distfile, &pkg.version)),
-            Some("checksum") => format!("checksum={checksum}"),
-            _ if line.starts_with("# scaffolded by maw from ") => format!("# scaffolded by maw from {}", pkg.origin),
-            _ => line.to_string(),
-        })
-        .map(|line| line + "\n")
-        .collect()
+    let fields = [
+        ("version", pkg.version.clone()),
+        ("revision", "1".to_string()),
+        ("distfiles", format!("\"{}\"", templated(&pkg.distfile, &pkg.version))),
+        ("checksum", checksum.to_string()),
+    ];
+    let origin = |line: &str| if line.starts_with("# scaffolded by maw from ") { format!("# scaffolded by maw from {}\n", pkg.origin) } else { format!("{line}\n") };
+    rewrite(template, &fields).lines().map(origin).collect()
 }
 
 #[cfg(test)]
@@ -95,5 +106,35 @@ mod tests {
     #[test]
     fn versions_in_urls_become_the_variable() {
         assert_eq!(templated("https://x.org/a/archive/v1.2.tar.gz", "1.2"), "https://x.org/a/archive/v${version}.tar.gz");
+    }
+
+    #[test]
+    fn versions_in_forge_owners_and_repos_are_kept() {
+        assert_eq!(templated("https://github.com/x/py3lib/archive/3.tar.gz", "3"), "https://github.com/x/py3lib/archive/${version}.tar.gz");
+        assert_eq!(templated("https://files3.org/3/a-3.tar.gz", "3"), "https://files3.org/${version}/a-${version}.tar.gz");
+    }
+
+    #[test]
+    fn bumps_replace_multiline_distfiles_and_checksums() {
+        let template = "# scaffolded by maw from nixpkgs 'a' at 1\npkgname=a\nversion=1\nrevision=2\ndistfiles=\"https://x.org/a-1.tar.gz\n https://x.org/extra.tar.gz\"\nchecksum=\"old\n older\"\nshort_desc=\"a\"\n";
+        let pkg = SourcePkg {
+            name: "a".into(),
+            version: "2".into(),
+            description: String::new(),
+            homepage: String::new(),
+            licenses: Vec::new(),
+            distfile: "https://x.org/a-2.tar.gz".into(),
+            build: String::new(),
+            host_deps: Vec::new(),
+            deps: Vec::new(),
+            go_import_path: None,
+            go_packages: Vec::new(),
+            origin: "nixpkgs 'a' at 2".into(),
+            upstream: "nix".into(),
+            mixed_deps: false,
+            notes: Vec::new(),
+            extra: String::new(),
+        };
+        assert_eq!(bump(template, &pkg, "new"), "# scaffolded by maw from nixpkgs 'a' at 2\npkgname=a\nversion=2\nrevision=1\ndistfiles=\"https://x.org/a-${version}.tar.gz\"\nchecksum=new\nshort_desc=\"a\"\n");
     }
 }

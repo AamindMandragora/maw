@@ -8,6 +8,7 @@ use crate::inputs::load_json;
 use crate::packages::Target;
 use crate::repo::Repo;
 use clap_complete::CompletionCandidate;
+use clap_complete::engine::{PathCompleter, ValueCompleter};
 use clap_complete::env::{Bash, EnvCompleter, Fish, Zsh};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -53,13 +54,15 @@ pub fn package_names(env: &Env) -> Vec<String> {
     targets.collect()
 }
 
-// declared services and ones modules define
+// declared services, ones modules define, and every definition on the system and in the user's sv dir, for enabling
 pub fn service_names(env: &Env) -> Vec<String> {
-    let Some(repo) = repo(env) else { return Vec::new() };
+    let dirs = [env.sysroot.join("etc/sv"), env.home.join(".config/sv")];
+    let on_disk = dirs.iter().flat_map(|dir| fs::read_dir(dir).into_iter().flatten().filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned())));
+    let Some(repo) = repo(env) else { return on_disk.collect::<BTreeSet<_>>().into_iter().collect() };
     let index = index(&repo);
     let listed = index.state.here(&env.host).services.into_values().flatten();
     let defined = index.files.iter().filter_map(|entry| entry.service.as_ref().map(|(name, _, _)| name.clone()));
-    listed.chain(defined).collect::<BTreeSet<_>>().into_iter().collect()
+    listed.chain(defined).chain(on_disk).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
 // source packages in srcpkgs/, templates or patches, for `maw src build` and `maw src update`
@@ -102,8 +105,10 @@ pub fn templates(current: &OsStr) -> Vec<CompletionCandidate> {
     matching(current, plain(template_names(&Env::from_process())))
 }
 
+// names already in static/wallpapers/ and random, then image paths anywhere
 pub fn wallpapers(current: &OsStr) -> Vec<CompletionCandidate> {
-    matching(current, plain(wallpaper_names(&Env::from_process())))
+    let known = matching(current, plain(wallpaper_names(&Env::from_process())));
+    known.into_iter().chain(PathCompleter::file().complete(current)).collect()
 }
 
 pub fn generations(current: &OsStr) -> Vec<CompletionCandidate> {

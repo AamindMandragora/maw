@@ -67,7 +67,7 @@ Describes a runit service. maw writes its `run` and `log/run` files and enables 
 
 | option | default | meaning |
 |---|---|---|
-| `scope` | `"system"` | `"system"` runs from boot as root, `"user"` runs as you from login |
+| `scope` | `"system"` | `"system"` runs from boot as root, `"user"` runs as you from login; anything else is an error |
 | `run` | | the script: shell text, or a whole script with its own `#!` line |
 | `log` | `true` | log through svlogd to `/var/log/<name>/` or `~/.local/state/log/<name>/` |
 | `enable` | `true` | link it into place; `false` writes the definition but leaves it off |
@@ -79,7 +79,7 @@ lib.service "rclone" {
   scope = "user";
   env.RCLONE_VFS_CACHE_MODE = "full";
   run = ''
-    exec rclone --config "$HOME/.config/rclone/rclone.conf" mount "Google Drive:" "$HOME/Google Drive"
+    exec rclone --config "$HOME/.config/rclone/rclone.conf" mount "remote:" "$HOME/remote"
   '';
 }
 ```
@@ -108,7 +108,7 @@ lib.program "waybar" {
 }
 ```
 
-The command runs through `sh -c` as you. A program that isn't running fails its reload, which is fine. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see `lib.service`.
+The command runs through `sh -c` as you. A program that isn't running fails its reload, and the failure is ignored. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see `lib.service`.
 
 ## `lib.dconf { ... }`
 
@@ -184,7 +184,7 @@ Then `config.colors.text` in fuzzel, waybar, and niri all read the same value. W
 }
 ```
 
- Plain `let` bindings and functions work too, for repetition inside one module:
+Plain `let` bindings and functions work too, for repetition inside one module:
 
 ```nix
 let
@@ -195,16 +195,15 @@ in
 binds = workspaceBinds "Mod+" "focus-workspace" // { "Mod+Q".close-window = null; };
 ```
 
-
-`tests/fixtures/dotfiles/modules/` has complete real-world modules for niri, waybar, and fuzzel.
+[maw's test fixtures](https://github.com/AamindMandragora/maw/tree/master/tests/fixtures/dotfiles/modules) have complete real-world modules for niri, waybar, fuzzel, and bash.
 
 ## Rendering a module by hand
 
-`-I maw=` points at maw's `nix/` directory:
+`-I maw=` points at maw's `nix/` directory (`/usr/share/maw/nix` when installed):
 
 ```sh
 nix-instantiate --eval --strict --raw -I maw=./nix \
   -E '(builtins.head (import ./path/to/dotfiles).modules.fuzzel).content'
 ```
 
-Each module evaluates to a list of `{ name, key, content, executable, scope }`, one entry per file.
+Each module evaluates to a list of `{ name, key, content, executable, scope, reload }`, one entry per file.

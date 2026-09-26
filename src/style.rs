@@ -42,7 +42,7 @@ pub fn paint(tone: Tone, text: &str, bold: bool) -> String {
 // a status label's tone: pending work is accent, drift and problems warn, things outside maw's reach are dim
 pub fn label_tone(label: &str) -> Option<Tone> {
     match label {
-        "new" | "changed" | "moved" | "restart" | "outdated" | "clean" => Some(Tone::Accent),
+        "new" | "changed" | "moved" | "restart" | "reload" | "outdated" | "clean" => Some(Tone::Accent),
         "blocked" | "replaced" | "edited" | "missing" | "stale" | "disabled" | "skipped" => Some(Tone::Warn),
         "undeclared" | "orphan" | "unplaced" => Some(Tone::Dim),
         _ => None,

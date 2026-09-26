@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH maw-sv-restart 1  "maw-sv-restart " 
 .SH NAME
-maw\-sv\-restart \- sv restart
+maw\-sv\-restart \- restart a service
 .SH SYNOPSIS
 \fBmaw sv restart\fR [\fB\-\-user\fR] [\fB\-\-system\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
 .SH DESCRIPTION
-sv restart
+restart a service
 .SH OPTIONS
 .TP
 \fB\-\-user\fR
@@ -16,7 +16,9 @@ the user service run by your session
 the system service run from boot
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help
+print help
 .TP
 <\fINAME\fR>
-
+a service, by its name in /etc/sv or ~/.config/sv
+.SH EXTRA
+see: maw help service commands

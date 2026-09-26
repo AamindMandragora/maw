@@ -118,7 +118,7 @@ A key can hold several selectors (`"#clock, #cpu"`), so a helper can share prope
 each = selectors: properties: { ${lib.concatStringsSep ",\n" selectors} = properties; };
 ```
 
-Property lists are joined with `, `. Values are written as-is, so quote font names yourself when they need it. Nesting under a comma selector (`"a, b"`) isn't expanded per selector; write those rules out flat.
+Property lists are joined with `, `. Values are written as-is, so quote font names yourself when they need it. Nesting under a comma selector expands per selector: `.c` under `".a, .b"` is `.a .c, .b .c`, and `"&:hover, .d"` under it is `.a:hover, .b:hover, .a .d, .b .d`. An `@media` block nested inside a rule applies to that rule: `".a"."@media (max-width: 800px)".color = "blue"` becomes `@media (max-width: 800px) { .a { color: blue; } }`.
 
 ## shell (`lib.toShell`)
 

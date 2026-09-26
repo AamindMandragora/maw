@@ -20,6 +20,12 @@ fn read_all(runner: &dyn Runner, keys: impl Iterator<Item = String>) -> Result<B
     keys.map(|key| Ok((key.clone(), dconf(runner, &["read", &key])?.trim().to_string()))).collect()
 }
 
+// whether two GVariant texts hold the same value: equal, or the same number however it's printed (dconf prints 0.1 as
+// 0.10000000000000001)
+fn same(a: &str, b: &str) -> bool {
+    a == b || matches!((a.parse::<f64>(), b.parse::<f64>()), (Ok(x), Ok(y)) if x == y)
+}
+
 // the steps that bring dconf to what's declared, and the record they leave; nothing is read or written when nothing is
 // declared. dconf reads its database directly, but writing goes through the session bus, so without one nothing is planned
 pub fn plan(runner: &dyn Runner, session_bus: bool, wanted: &BTreeMap<String, String>, record: &Record, force: bool) -> (Vec<Step>, Record) {
@@ -38,13 +44,13 @@ pub fn plan(runner: &dyn Runner, session_bus: bool, wanted: &BTreeMap<String, St
 
     // declared keys: in place already, changed by hand since maw wrote them, or to write
     let declared = wanted.iter().map(|(key, value)| match record.get(key) {
-        _ if now(key) == *value => (None, Some((key.clone(), value.clone()))),
-        Some(last) if now(key) != *last && !force => (Some(Step::SettingEdited { key: key.clone() }), Some((key.clone(), last.clone()))),
+        _ if same(&now(key), value) => (None, Some((key.clone(), value.clone()))),
+        Some(last) if !same(&now(key), last) && !force => (Some(Step::SettingEdited { key: key.clone() }), Some((key.clone(), last.clone()))),
         _ => (Some(Step::Setting { key: key.clone(), value: value.clone() }), Some((key.clone(), value.clone()))),
     });
 
     // keys nothing declares anymore are reset while they still hold what maw wrote, and forgotten either way
-    let dropped = record.iter().filter(|(key, _)| !wanted.contains_key(*key)).map(|(key, last)| ((now(key) == *last).then(|| Step::SettingReset { key: key.clone() }), None));
+    let dropped = record.iter().filter(|(key, _)| !wanted.contains_key(*key)).map(|(key, last)| (same(&now(key), last).then(|| Step::SettingReset { key: key.clone() }), None));
 
     let (steps, next): (Vec<Option<Step>>, Vec<Option<Setting>>) = declared.chain(dropped).unzip();
     (steps.into_iter().flatten().collect(), next.into_iter().flatten().collect())
@@ -89,6 +95,14 @@ mod tests {
 
         apply(&runner, &steps).unwrap();
         assert!(runner.calls.borrow().contains(&format!("dconf write {DARK} 'prefer-dark'")));
+    }
+
+    #[test]
+    fn floats_match_however_dconf_prints_them() {
+        const SCALE: &str = "/org/gnome/desktop/interface/text-scaling-factor";
+        let runner = dconf_with(&[(SCALE, "0.10000000000000001")]);
+        let record = wanted(&[(SCALE, "0.1")]);
+        assert!(plan(&runner, true, &record, &record, false).0.is_empty());
     }
 
     #[test]

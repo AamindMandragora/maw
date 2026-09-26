@@ -22,7 +22,7 @@ use crate::runner::{Runner, SystemRunner};
 use crate::status;
 use crate::style::{self, Tone};
 use anyhow::Result;
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::ArgValueCompleter;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ struct Cli {
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum Command {
-    #[command(about = "create a dotfiles repo, or adopt an existing one", after_help = "see: maw help setting up")]
+    #[command(about = "create a dotfiles repo, use an existing one, or clone one", after_help = "see: maw help setting up")]
     Init {
         #[arg(help = "a path for a new or existing repo, or a git url to clone")]
         target: String,
@@ -56,7 +56,7 @@ pub enum Command {
         force: bool,
         #[arg(long, help = "don't commit or record a generation this time")]
         no_commit: bool,
-        #[arg(long, help = "skip nix: activate the committed out/ from its index, e.g. on a fresh machine")]
+        #[arg(long, help = "skip nix: activate the committed out/<machine>/ from its index")]
         no_build: bool,
     },
     #[command(about = "open a module, static dir, or config.nix (`config`) in $EDITOR, then activate", after_help = "see: maw help editing")]
@@ -97,7 +97,7 @@ pub enum Command {
     },
     #[command(about = "install packages, record them in maw.nix, scaffold their modules, then activate", after_help = "see: maw help installing")]
     Install {
-        #[arg(required = true, help = "names or flatpak app ids, or cargo:<crate|git url>, go:<path>, uv:<pypi name|git url>, npm:<package>, flatpak:<app id>, xbps:<name>; @version pins")]
+        #[arg(required = true, help = "names or flatpak app ids, or cargo:<crate|git url>, go:<path>, uv:<pypi name|git url>, npm:<package>, flatpak:<app id>, xbps:<name>; aur:<name> or nixpkgs:<attr> drafts a template; @version pins")]
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,
@@ -106,14 +106,14 @@ pub enum Command {
     },
     #[command(about = "remove packages and drop them from maw.nix; their modules stay", after_help = "see: maw help removing")]
     Remove {
-        #[arg(required = true, add = ArgValueCompleter::new(complete::packages))]
+        #[arg(required = true, add = ArgValueCompleter::new(complete::packages), help = "declared or installed packages, by name or with their source's prefix")]
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,
     },
     #[command(about = "list packages you installed, or show one", after_help = "see: maw help looking things up")]
     Query {
-        #[arg(add = ArgValueCompleter::new(complete::packages))]
+        #[arg(add = ArgValueCompleter::new(complete::packages), help = "one package; all of them without it")]
         package: Option<String>,
     },
     #[command(about = "search every package source, then the aur and nixpkgs when none has it", after_help = "see: maw help looking things up")]
@@ -123,10 +123,10 @@ pub enum Command {
     },
     #[command(about = "a package's details, and whether maw manages it", after_help = "see: maw help looking things up")]
     Info {
-        #[arg(add = ArgValueCompleter::new(complete::packages))]
+        #[arg(add = ArgValueCompleter::new(complete::packages), help = "a package, installed or not")]
         package: String,
     },
-    #[command(about = "upgrade the system, then every unpinned cargo and go package", after_help = "see: maw help updating")]
+    #[command(about = "upgrade the system, every unpinned package, and source packages", after_help = "see: maw help updating")]
     Sync {
         #[arg(long, help = "first release the packages a rollback held back")]
         release: bool,
@@ -143,7 +143,7 @@ pub enum Command {
         #[command(subcommand)]
         action: SvAction,
     },
-    #[command(about = "show or set this machine's name, which picks its hosts/<name>.nix and own packages", after_help = "see: maw help more than one machine")]
+    #[command(about = "show or set this machine's name", after_help = "see: maw help more than one machine")]
     Host {
         #[arg(help = "a new name for this machine")]
         name: Option<String>,
@@ -176,68 +176,69 @@ pub enum Command {
     },
     #[command(about = "read the docs: a topic, a command, or any section by its heading")]
     Help {
-        #[arg(help = "usage, modules, formats, a command, or a heading like `drift`", add = ArgValueCompleter::new(complete::topics))]
+        #[arg(help = "usage, migrating, modules, formats, a command, or a heading like `drift`", add = ArgValueCompleter::new(complete::topics))]
         query: Vec<String>,
     },
 }
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum SvAction {
-    #[command(about = "declared and enabled services, and whether they run")]
+    #[command(about = "declared and enabled services, and whether they run", after_help = "see: maw help service commands")]
     List,
-    #[command(about = "record a service in maw.nix and link it into place")]
+    #[command(about = "record a service in maw.nix and link it into place", after_help = "see: maw help service commands")]
     Enable {
         #[command(flatten)]
         service: ServiceName,
         #[arg(long, help = "record it for this machine only")]
         here: bool,
     },
-    #[command(about = "stop and unlink a service, and drop it from maw.nix")]
+    #[command(about = "stop and unlink a service, and drop it from maw.nix", after_help = "see: maw help service commands")]
     Disable(ServiceName),
-    #[command(about = "sv status")]
+    #[command(about = "show a service's state", after_help = "see: maw help service commands")]
     Status(ServiceName),
-    #[command(about = "sv restart")]
+    #[command(about = "restart a service", after_help = "see: maw help service commands")]
     Restart(ServiceName),
-    #[command(about = "follow a service's log")]
+    #[command(about = "follow a service's log", after_help = "see: maw help service commands")]
     Log(ServiceName),
 }
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum SecretAction {
-    #[command(about = "decrypt a file into your editor, then encrypt it back and activate")]
+    #[command(about = "decrypt a file into your editor, then encrypt it back and activate", after_help = "see: maw help encrypted files")]
     Edit {
         #[arg(help = "the live file, or its static/<name>/<file>.age")]
         file: PathBuf,
     },
-    #[command(about = "re-encrypt every file for every machine in hosts/*.pub, after adding one")]
+    #[command(about = "re-encrypt every file for every machine in hosts/*.pub, after adding one", after_help = "see: maw help encrypted files")]
     Rekey,
 }
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum SrcAction {
-    #[command(about = "write a srcpkgs/<name>/template, blank or drafted from nixpkgs or the aur, and open it")]
+    #[command(about = "write a srcpkgs/<name>/template, blank or drafted from nixpkgs or the aur, and open it", after_help = "see: maw help source packages")]
     New {
+        #[arg(help = "the package's name, and srcpkgs/<name>/")]
         name: String,
         #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "ATTR", help = "draft it from a nixpkgs package; the attribute defaults to the name")]
         from_nix: Option<String>,
         #[arg(long, num_args = 0..=1, default_missing_value = "", value_name = "PKG", conflicts_with = "from_nix", help = "draft it from an aur package; the package defaults to the name")]
         from_aur: Option<String>,
     },
-    #[command(about = "move a template to its upstream's current version or newest release, then rebuild")]
+    #[command(about = "move a template to its upstream's current version or newest release, then rebuild", after_help = "see: maw help source packages")]
     Update {
-        #[arg(add = ArgValueCompleter::new(complete::templates))]
+        #[arg(add = ArgValueCompleter::new(complete::templates), help = "a template in srcpkgs/")]
         name: String,
     },
-    #[command(about = "build a template with xbps-src; an installed package is upgraded to the new build")]
+    #[command(about = "build a template with xbps-src; an installed package is upgraded to the new build", after_help = "see: maw help source packages")]
     Build {
-        #[arg(add = ArgValueCompleter::new(complete::templates))]
+        #[arg(add = ArgValueCompleter::new(complete::templates), help = "a template in srcpkgs/")]
         name: String,
     },
 }
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct ServiceName {
-    #[arg(add = ArgValueCompleter::new(complete::services))]
+    #[arg(add = ArgValueCompleter::new(complete::services), help = "a service, by its name in /etc/sv or ~/.config/sv")]
     pub name: String,
     #[arg(long, conflicts_with = "system", help = "the user service run by your session")]
     pub user: bool,
@@ -259,9 +260,10 @@ impl ServiceName {
 // `maw` alone opens the tui; anything else is a command
 pub fn main() -> Result<()> {
     // with COMPLETE set, the shell is asking what completes; this answers and exits
-    clap_complete::CompleteEnv::with_factory(Cli::command).complete();
+    clap_complete::CompleteEnv::with_factory(command).complete();
     let env = Env::from_process();
-    match Cli::parse().command {
+    let cli = Cli::from_arg_matches(&command().get_matches()).unwrap_or_else(|error| error.exit());
+    match cli.command {
         Some(command) => run(&env, &SystemRunner, command),
         None => crate::tui::run(&env),
     }
@@ -273,9 +275,16 @@ pub type AskHook = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 // opens a file in the editor and waits for it to close
 pub type EditHook = Box<dyn Fn(&Path) -> Result<()> + Send + Sync>;
 
-// the whole command tree, for man pages
+// the whole command tree, for parsing, completion, and man pages, with maw's lowercase -h and -V
 pub fn command() -> clap::Command {
-    Cli::command()
+    let version = clap::Arg::new("version").short('V').long("version").action(clap::ArgAction::Version).help("print version");
+    lowercase_help(Cli::command()).disable_version_flag(true).arg(version)
+}
+
+// a command and all its subcommands with `-h, --help  print help` in place of clap's capitalized one
+fn lowercase_help(command: clap::Command) -> clap::Command {
+    let help = clap::Arg::new("help").short('h').long("help").action(clap::ArgAction::Help).help("print help");
+    command.disable_help_flag(true).arg(help).mut_subcommands(lowercase_help)
 }
 
 // what the tui plugs into the cli while it's running: popups for questions, and stepping aside for the editor
@@ -324,6 +333,7 @@ pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
         Command::Push => Ok(generations::push(runner, &Repo::locate(env)?)?),
         Command::Pull => {
             let repo = Repo::locate(env)?;
+            save_edited_out(env, &repo)?;
             let moved = generations::pull(runner, &repo)?;
             activate_after(env, runner, &repo, if moved { vec!["pull".into()] } else { Vec::new() })
         }
@@ -357,17 +367,21 @@ impl Ask for Terminal {
         if !std::io::stdin().is_terminal() {
             return None;
         }
-        print!("{question}");
-        std::io::stdout().flush().ok()?;
+        // on stderr, so the question shows even when output is piped; end of input (^D) is no answer, not the default
+        eprint!("{question}");
+        std::io::stderr().flush().ok()?;
         let mut answer = String::new();
-        std::io::stdin().lock().read_line(&mut answer).ok()?;
-        Some(answer)
+        let read = std::io::stdin().lock().read_line(&mut answer).ok()?;
+        (read > 0).then_some(answer)
     }
 }
 
 // scaffolds a repo at a path, or clones one from a url and offers to activate it
 fn init(env: &Env, runner: &dyn Runner, target: &str, clone_to: Option<&Path>) -> Result<()> {
     let is_url = target.contains("://") || target.starts_with("git@") || target.ends_with(".git");
+    if clone_to.is_some() && !is_url {
+        anyhow::bail!("a second path is only for cloning: maw init <git url> <path>");
+    }
     let (repo, created) = match is_url {
         true => Repo::clone(env, runner, target, &clone_to.map_or_else(|| env.home.join("dotfiles"), Path::to_path_buf))?,
         false => Repo::init(env, runner, Path::new(target))?,
@@ -402,8 +416,12 @@ fn name_machine(env: &Env, repo: &Repo) -> Result<Env> {
     Ok(Env { host, ..env.clone() })
 }
 
-// keeps this machine's name where maw and nix read it
+// keeps this machine's name where maw and nix read it; a name is letters, digits, - _ and ., as it names hosts/ files
 fn set_host(env: &Env, host: &str) -> Result<()> {
+    let valid = !host.is_empty() && !host.starts_with('.') && host.chars().all(|char| char.is_ascii_alphanumeric() || "-_.".contains(char));
+    if !valid {
+        anyhow::bail!("{host:?} can't name a machine; use letters, digits, - _ and .");
+    }
     std::fs::create_dir_all(&env.config_dir)?;
     std::fs::write(env.host_file(), format!("{host}\n"))?;
     Ok(())
@@ -420,10 +438,17 @@ fn host(env: &Env, runner: &dyn Runner, name: Option<&str>) -> Result<()> {
     };
     set_host(env, name)?;
     println!("host {name}");
-    let env = &Env { host: name.to_string(), ..env.clone() };
+    let renamed = &Env { host: name.to_string(), ..env.clone() };
     let repo = repo.for_host(name);
-    let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
-    finish(env, runner, &repo, &activation, false, false, &[])
+
+    // the old name comes back if activating under the new one fails
+    match activate::activate(renamed, runner, &repo, &Terminal, Options::default()) {
+        Ok(activation) => finish(renamed, runner, &repo, &activation, false, false, &[]),
+        Err(error) => {
+            set_host(env, &env.host)?;
+            Err(error.into())
+        }
+    }
 }
 
 // on a freshly cloned repo: show the plan, then activate if asked; without nix, from the committed index
@@ -541,7 +566,7 @@ fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>, activate
 fn diff(env: &Env, runner: &dyn Runner) -> Result<()> {
     let repo = Repo::locate(env)?;
     let text = diff_text(env, runner, &repo)?;
-    print!("{}", if std::io::stdout().is_terminal() { colorize(&text) } else { text });
+    print!("{}", if colored(&std::io::stdout()) { colorize(&text) } else { text });
     Ok(())
 }
 
@@ -555,7 +580,7 @@ pub fn diff_text(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<String> 
     Ok(texts.collect())
 }
 
-// + lines green, - lines red, hunk headers cyan
+// + lines accent, - lines bad, hunk headers dim
 fn colorize(diff: &str) -> String {
     diff.lines().map(|line| format!("{}\n", painted(style::diff_tone(line), line))).collect()
 }
@@ -565,15 +590,20 @@ fn painted(tone: Option<Tone>, text: &str) -> String {
     tone.map_or(text.to_string(), |tone| style::paint(tone, text, false))
 }
 
-// the `error:` or `warning:` prefix, painted when stderr is a terminal
+// whether to paint what goes to a stream: a terminal, and NO_COLOR unset
+fn colored(stream: &impl IsTerminal) -> bool {
+    stream.is_terminal() && std::env::var_os("NO_COLOR").is_none()
+}
+
+// the `error:` or `warning:` prefix, painted when stderr takes color
 pub fn prefix(tone: Tone, word: &str) -> String {
-    if std::io::stderr().is_terminal() { style::paint(tone, word, true) } else { word.to_string() }
+    if colored(&std::io::stderr()) { style::paint(tone, word, true) } else { word.to_string() }
 }
 
 // one line per out-of-sync file, like git status --short
 fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let color = std::io::stdout().is_terminal();
+    let color = colored(&std::io::stdout());
     status_lines(env, runner, &repo)?.iter().for_each(|line| println!("{}", if color { painted(style::status_tone(line), line) } else { line.clone() }));
     Ok(())
 }
@@ -608,6 +638,7 @@ pub fn status_lines(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<S
         Step::SettingsSkipped { reason } => line("skipped", format!("settings: {reason}")),
         Step::Reload { name, .. } => line("reload", name.clone()),
         Step::SecretSkipped { file, reason } => line("skipped", format!("{file}: {reason}")),
+        Step::SecretBackedUp { file, backup } => line("edited", format!("{file}: edited copy at {}", path(backup))),
     });
 
     // source packages behind their template, things maw.nix doesn't know about, then config for programs that aren't installed
@@ -676,21 +707,27 @@ fn activate_after(env: &Env, runner: &dyn Runner, repo: &Repo, done: Vec<String>
 fn secret(env: &Env, runner: &dyn Runner, action: SecretAction) -> Result<()> {
     let repo = Repo::locate(env)?;
     let key = secrets::key(env, build::settings(env, runner, &repo)?.secret_key.as_deref())?;
-    if let Some(published) = secrets::ensure_recipient(&repo, &key)? {
-        println!("record {}", relative(&repo, &published));
-    }
+    let published = secrets::ensure_recipient(&repo, &key)?.map(|published| relative(&repo, &published));
+    published.iter().for_each(|published| println!("record {published}"));
     match action {
         SecretAction::Edit { file } => {
             // decrypted into a private scratch file, and encrypted back only if it changed
             let encrypted = secrets::find(env, &repo, &file)?;
             let temp = secrets::scratch(env, &encrypted)?;
+            if temp.exists() {
+                anyhow::bail!("{} holds unsaved edits from last time; move them into the file, then delete it", env.pretty(&temp));
+            }
             secrets::decrypt(runner, &repo, &key, &encrypted, &temp)?;
             let before = std::fs::read(&temp)?;
             let edited = open_in_editor(runner, &temp).map(|_| std::fs::read(&temp));
             let changed = matches!(&edited, Ok(Ok(after)) if *after != before);
+
+            // a failure to save keeps the edits in the scratch file rather than losing them
             if changed {
-                secrets::encrypt(runner, &repo, &temp, &encrypted)?;
-                secrets::store(env, &repo, &encrypted, &temp, &mut crate::inputs::Inputs::default())?;
+                let saved = secrets::encrypt(runner, &repo, &temp, &encrypted).and_then(|_| secrets::store(env, &repo, &encrypted, &temp, &mut crate::inputs::Inputs::default()));
+                if let Err(error) = saved {
+                    anyhow::bail!("{error}; your edits are in {}", env.pretty(&temp));
+                }
             }
             std::fs::remove_file(&temp)?;
             edited??;
@@ -705,7 +742,13 @@ fn secret(env: &Env, runner: &dyn Runner, action: SecretAction) -> Result<()> {
             let (done, skipped) = secrets::rekey(env, runner, &repo, &key)?;
             done.iter().for_each(|file| println!("rekey {}", relative(&repo, file)));
             skipped.iter().for_each(|error| eprintln!("{} {error}", prefix(Tone::Warn, "warning:")));
-            activate_after(env, runner, &repo, vec![format!("rekey {} files", done.len())])
+
+            // a generation only when the repo changed: files rekeyed or this machine's key recorded
+            let summary: Vec<String> = published.map(|published| format!("record {published}")).into_iter().chain((!done.is_empty()).then(|| format!("rekey {} files", done.len()))).collect();
+            if summary.is_empty() {
+                return Ok(());
+            }
+            activate_after(env, runner, &repo, summary)
         }
     }
 }
@@ -749,7 +792,7 @@ fn change_summary(change: &Change, verb: &str, record_verb: &str) -> Vec<String>
     changed.chain(only_recorded).collect()
 }
 
-// prints the plan (asking before any crates.io fallback), then installs, records, scaffolds, and activates
+// prints the plan (asking before using another source than xbps), then installs, records, scaffolds, and activates
 fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool, here: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let ask: Option<&dyn Ask> = if dry_run { None } else { Some(&Terminal) };
@@ -804,8 +847,13 @@ fn query(env: &Env, runner: &dyn Runner, package: Option<&str>) -> Result<()> {
     let mut rows = packages::overview(env, runner, &repo)?;
     rows.retain(|row| package.is_none_or(|wanted| row.name == wanted || row.target.spec == wanted || row.target.to_string() == wanted));
     rows.sort_by_key(|row| (row.target.backend != "xbps", row.name.to_lowercase()));
-    if rows.is_empty() {
-        anyhow::bail!("{} isn't installed", package.unwrap_or("nothing"));
+    match (rows.is_empty(), package) {
+        (true, Some(package)) => anyhow::bail!("{package} isn't installed or declared"),
+        (true, None) => {
+            println!("nothing installed or declared");
+            return Ok(());
+        }
+        _ => {}
     }
 
     rows.iter().for_each(|row| {
@@ -815,7 +863,7 @@ fn query(env: &Env, runner: &dyn Runner, package: Option<&str>) -> Result<()> {
             (Some(_), false) => "  (undeclared)",
             _ => "",
         };
-        let note = if std::io::stdout().is_terminal() { painted(style::note_tone(note), note) } else { note.to_string() };
+        let note = if colored(&std::io::stdout()) { painted(style::note_tone(note), note) } else { note.to_string() };
         println!("{} {}{backend}{note}", row.name, row.version.as_deref().unwrap_or("-"));
     });
     Ok(())
@@ -866,7 +914,7 @@ fn info(env: &Env, runner: &dyn Runner, request: &str) -> Result<()> {
     Ok(())
 }
 
-// upgrades the system through xbps, then every unpinned cargo and go package
+// upgrades the system through xbps, every unpinned package, then templates that follow releases and outdated source packages
 fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
     if release {
         rollback::release(env, runner)?.iter().for_each(|name| println!("release {name}"));
@@ -878,31 +926,58 @@ fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
     // templates that follow a forge's releases move to the newest first, maw's own included; one that can't be checked is only a warning
     let (_, state) = edit::load(env, runner, &repo)?;
     let templates = packages::declared(&state.here(&env.host), "xbps").into_iter().map(|name| (repo.srcpkgs_dir().join(&name).join("template"), name));
-    templates.filter(|(file, _)| file.is_file()).for_each(|(file, name)| match scaffold::releases::update(env, runner, &file) {
-        Ok(Some((old, new))) => println!("update {name} {old} -> {new}"),
-        Ok(None) => {}
-        Err(error) => eprintln!("{} {name}: {error}", prefix(Tone::Warn, "warning:")),
-    });
+    let updated: Vec<(String, String)> = templates
+        .filter(|(file, _)| file.is_file())
+        .filter_map(|(file, name)| match scaffold::releases::update(env, runner, &file) {
+            Ok(Some((old, new))) => {
+                println!("update {name} {old} -> {new}");
+                Some((name, new))
+            }
+            Ok(None) => None,
+            Err(error) => {
+                eprintln!("{} {name}: {error}", prefix(Tone::Warn, "warning:"));
+                None
+            }
+        })
+        .collect();
 
-    // source packages whose templates moved ahead are rebuilt
-    packages::outdated(env, runner, &repo, &state.here(&env.host))?.into_iter().try_for_each(|(name, installed, template)| {
-        println!("rebuild {name} {installed} -> {template}");
-        packages::build_source(env, runner, &repo, &name).map(|_| ())
-    })?;
+    // source packages whose templates moved ahead are rebuilt; one that fails is a warning, and the rest still go
+    let outdated = packages::outdated(env, runner, &repo, &state.here(&env.host))?;
+    let failed: Vec<String> = outdated
+        .into_iter()
+        .filter_map(|(name, installed, template)| {
+            println!("rebuild {name} {installed} -> {template}");
+            let error = packages::build_source(env, runner, &repo, &name).err()?;
+            eprintln!("{} {name}: {error}", prefix(Tone::Warn, "warning:"));
+            Some(name)
+        })
+        .collect();
     packages::srcpkgs(env, runner, &repo)?.unpatch()?.iter().for_each(|name| println!("unpatch {name}"));
+
+    // moved templates are repo changes, so they're activated and recorded like any
+    if !updated.is_empty() {
+        activate_after(env, runner, &repo, updated.iter().map(|(name, new)| format!("update {name} to {new}")).collect())?;
+    }
+    if !failed.is_empty() {
+        anyhow::bail!("{} didn't build; `maw src build <name>` shows why", failed.join(", "));
+    }
     Ok(())
 }
 
 // a topic, a command's --help, or a doc section, paged on a terminal
 fn show_help(runner: &dyn Runner, query: &str) -> Result<()> {
     let terminal = std::io::stdout().is_terminal();
-    let color = terminal && std::env::var_os("NO_COLOR").is_none();
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -FRX".into());
+
+    // color only through a pager that shows it: less given -R (on the command line or in $LESS), or none at all
+    let less_colors = std::env::var("LESS").unwrap_or_default().contains(['R', 'r']) || pager.split_whitespace().any(|word| word.starts_with('-') && word.contains(['R', 'r']));
+    let shows_color = !pager.split_whitespace().next().is_some_and(|program| program.ends_with("less")) || less_colors;
+    let color = colored(&std::io::stdout()) && shows_color;
     let Some(text) = help_text(query, color) else {
         anyhow::bail!("no help on {query}; `maw help` lists topics");
     };
 
     // $PAGER, else less; printing directly if there's no terminal or no pager
-    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -FRX".into());
     let mut words = pager.split_whitespace().map(String::from);
     let paged = terminal && words.next().is_some_and(|program| runner.pipe(&program, &words.collect::<Vec<_>>(), &text).is_ok());
     if !paged {
@@ -922,11 +997,13 @@ fn help_text(query: &str, color: bool) -> Option<String> {
         return help::find(query).map(render);
     }
 
-    let mut command = Cli::command();
+    // a command by its words (`sv enable`), unless its help only points back at a docs section of the same name
+    let mut command = self::command();
     command.build();
-    match command.find_subcommand_mut(query) {
-        Some(subcommand) => Some(subcommand.render_long_help().to_string()),
-        None => help::find(query).map(render),
+    let found = query.split_whitespace().try_fold(&mut command, |command, word| command.find_subcommand_mut(word));
+    match found {
+        Some(subcommand) if subcommand.get_after_help().is_none_or(|after| after.to_string() != format!("see: maw help {query}")) => Some(subcommand.render_long_help().to_string()),
+        _ => help::find(query).map(render),
     }
 }
 
@@ -1050,7 +1127,7 @@ fn sv_list(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<()> {
             _ => "",
         };
         let state = row.state.as_deref().unwrap_or(if row.enabled { "?" } else { "-" });
-        let note = if std::io::stdout().is_terminal() { painted(style::note_tone(note), note) } else { note.to_string() };
+        let note = if colored(&std::io::stdout()) { painted(style::note_tone(note), note) } else { note.to_string() };
         println!("{:<24}{:<8}{state}{note}", row.name, row.scope);
     });
     Ok(())
@@ -1071,8 +1148,16 @@ fn rollback(env: &Env, runner: &dyn Runner, number: Option<u32>, dry_run: bool) 
         return Ok(());
     }
 
-    rollback::rollback(env, runner, &repo, &plan)?;
+    save_edited_out(env, &repo)?;
+    let encrypted = rollback::rollback(env, runner, &repo, &plan)?;
+    encrypted.iter().for_each(|file| println!("restore {file}; `maw secret rekey` encrypts it for every machine again"));
     activate_after(env, runner, &repo, vec![format!("rollback to generation {}", generation.number)])
+}
+
+// copies out/ files edited by hand to the backups dir, before a pull or rollback replaces out/
+fn save_edited_out(env: &Env, repo: &Repo) -> Result<()> {
+    build::save_edited_out(env, repo)?.iter().for_each(|(file, copy)| println!("backup {} -> {}", relative(repo, file), env.pretty(copy)));
+    Ok(())
 }
 
 // one line per generation, newest last: number, time, commit, message
@@ -1124,7 +1209,7 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
         Step::Unlink { destination } => println!("unlink {}", env.pretty(destination)),
         Step::Replaced { destination } => println!("drift {}: replaced by another file; --force to relink", env.pretty(destination)),
         Step::Edited { destination } => println!("drift {}: edited in place; --force to overwrite", env.pretty(destination)),
-        Step::Unplaced { file } => println!("skip static/{}: no destination; activate in a terminal to choose one", file.display()),
+        Step::Unplaced { file } => println!("skip static/{}: no destination; `maw activate` in a terminal asks for one", file.display()),
         Step::Copy { destination, backup: true } => {
             let target = moved_to(destination).map(|moved| format!(" -> {moved}")).unwrap_or_default();
             println!("backup {}{target}", env.pretty(destination));
@@ -1142,10 +1227,11 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
         Step::SettingsSkipped { reason } => println!("skip settings: {reason}"),
         Step::Reload { name, .. } => println!("reload {name}"),
         Step::SecretSkipped { file, reason } => println!("skip {file}: {reason}"),
+        Step::SecretBackedUp { file, backup } => println!("backup {file}'s edited copy -> {}; `maw secret edit` keeps edits", env.pretty(backup)),
     });
 
     if dry_run && !activation.steps.is_empty() {
-        println!("dry run, nothing linked");
+        println!("dry run, nothing changed");
     }
 }
 
@@ -1155,7 +1241,7 @@ mod tests {
 
     #[test]
     fn every_see_pointer_resolves() {
-        Cli::command().get_subcommands().filter_map(|subcommand| subcommand.get_after_help()).for_each(|after| {
+        command().get_subcommands().filter_map(|subcommand| subcommand.get_after_help()).for_each(|after| {
             let query = after.to_string().trim_start_matches("see: maw help ").to_string();
             assert!(help::find(&query).is_some(), "{query}");
         });

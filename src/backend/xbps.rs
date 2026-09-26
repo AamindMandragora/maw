@@ -34,8 +34,14 @@ impl<'a> Xbps<'a> {
 
     // installs names or exact versions with a local repo added, like xbps-src's hostdir/binpkgs; force allows downgrades
     pub fn install_from(&self, repo: &Path, specs: &[String], force: bool) -> Result<(), BackendError> {
+        self.install_from_all(&[repo.to_path_buf()], specs, force)
+    }
+
+    // install_from with several local repos added, like binpkgs and its nonfree subdir
+    pub fn install_from_all(&self, repos: &[PathBuf], specs: &[String], force: bool) -> Result<(), BackendError> {
         let flags = if force { "-fy" } else { "-y" };
-        let args: Vec<String> = ["-R".to_string(), repo.display().to_string(), flags.into()].into_iter().chain(specs.iter().cloned()).collect();
+        let repo_args = repos.iter().flat_map(|repo| ["-R".to_string(), repo.display().to_string()]);
+        let args: Vec<String> = repo_args.chain([flags.to_string()]).chain(specs.iter().cloned()).collect();
         Ok(self.privileged("xbps-install", &args)?)
     }
 
@@ -133,8 +139,10 @@ impl Backend for Xbps<'_> {
 }
 
 impl SystemBackend for Xbps<'_> {
+    // xbps itself first, since xbps refuses to upgrade anything else while it's outdated
     fn sync(&self) -> Result<(), BackendError> {
-        Ok(self.privileged("xbps-install", &["-Suy".into()])?)
+        self.privileged("xbps-install", &["-Suy".into(), "xbps".into()])?;
+        Ok(self.privileged("xbps-install", &["-uy".into()])?)
     }
 
     // <pkgver>.<arch>.xbps in the cache
@@ -233,6 +241,13 @@ mod tests {
             format!("xbps-install -r {root} -R {} -fy foot-1.20_1 bash-5.1_1", cache.display()),
             format!("xbps-pkgdb -r {root} -m hold foot"),
         ]);
+    }
+
+    #[test]
+    fn sync_updates_xbps_before_everything_else() {
+        let runner = FakeRunner::new(fake);
+        Xbps::new(&runner, &env("/")).sync().unwrap();
+        assert_eq!(*runner.calls.borrow(), ["sudo xbps-install -Suy xbps", "sudo xbps-install -uy"]);
     }
 
     #[test]

@@ -35,6 +35,18 @@ fn programs(name: &str, bin: &Value) -> Vec<String> {
     }
 }
 
+// what a package was installed as and its commit: its name when it came from a registry tarball, else the spec it
+// was asked for (from), or where it resolved to without the commit
+fn origin(name: &str, resolved: &str, from: &str) -> (String, String) {
+    let registry = resolved.is_empty() || (resolved.starts_with("https://") && resolved.contains("/-/") && resolved.ends_with(".tgz"));
+    if registry {
+        return (name.into(), String::new());
+    }
+    let (url, commit) = resolved.split_once('#').unwrap_or((resolved, ""));
+    let source = if from.is_empty() { url } else { from };
+    (source.into(), commit.into())
+}
+
 impl Backend for Npm<'_> {
     fn name(&self) -> &str {
         "npm"
@@ -45,15 +57,16 @@ impl Backend for Npm<'_> {
         if !self.prefix.join("lib/node_modules").is_dir() {
             return Ok(Vec::new());
         }
-        let body = match self.npm(&["ls", "-g", "--depth=0", "--json"]) {
+        let body = match self.npm(&["ls", "-g", "--depth=0", "--json", "--long"]) {
             Err(RunError::Spawn { .. }) => return Ok(Vec::new()),
             body => body?,
         };
         let tree: Value = serde_json::from_str(&body).map_err(|_| self.parse_error(&body))?;
         let dependencies = tree["dependencies"].as_object().cloned().unwrap_or_default();
         let pkgs = dependencies.into_iter().map(|(name, dependency)| {
-            let version = dependency["version"].as_str().unwrap_or_default().to_string();
-            Pkg { source: name.clone(), name, version, manual: true, ..Pkg::default() }
+            let field = |key: &str| dependency[key].as_str().unwrap_or_default().to_string();
+            let (source, build) = origin(&name, &field("resolved"), &field("from"));
+            Pkg { source, build, name, version: field("version"), manual: true, ..Pkg::default() }
         });
         Ok(pkgs.collect())
     }
@@ -85,8 +98,11 @@ impl Backend for Npm<'_> {
         Ok(self.runner.interactive("npm", &args)?)
     }
 
+    // uninstalls by package name, found from the spec's source for ones from git or a url
     fn remove(&self, specs: &[String]) -> Result<(), BackendError> {
-        let names = specs.iter().map(|spec| spec_base(spec).to_string());
+        let installed = self.list()?;
+        let name = |spec: &String| installed.iter().find(|pkg| pkg.source == spec_base(spec)).map_or(spec_base(spec).to_string(), |pkg| pkg.name.clone());
+        let names = specs.iter().map(name);
         let args: Vec<String> = ["uninstall", "-g"].into_iter().map(String::from).chain(names).chain(["--prefix".into(), self.prefix.display().to_string()]).collect();
         Ok(self.runner.interactive("npm", &args)?)
     }
@@ -95,8 +111,9 @@ impl Backend for Npm<'_> {
         Some(("npm", "nodejs"))
     }
 
+    // a registry package at its version; one from git or a url has no @ pin, so stays bare
     fn pin(&self, pkg: &Pkg) -> String {
-        format!("{}@{}", pkg.source, pkg.version)
+        if pkg.source == pkg.name { format!("{}@{}", pkg.source, pkg.version) } else { pkg.source.clone() }
     }
 
     fn bin_dir(&self) -> Option<PathBuf> {
@@ -112,9 +129,11 @@ mod tests {
 
     const VIEW: &str = r#"{"version":"1.6.0","bin":{"cowsay":"cli.js","cowthink":"cli.js"},"description":"a talking cow","homepage":"https://x"}"#;
 
+    const LS: &str = r#"{"name":"lib","dependencies":{"cowsay":{"version":"1.5.0","resolved":"https://registry.npmjs.org/cowsay/-/cowsay-1.5.0.tgz"},"@scope/tool":{"version":"2.0.0"},"mytool":{"version":"0.1.0","resolved":"git+ssh://git@github.com/user/mytool.git#4c638f60aaaabbbbccccddddeeeeffff00001111","from":"github:user/mytool"}}}"#;
+
     fn fake(_: &str, args: &[String]) -> String {
         match args[0].as_str() {
-            "ls" => r#"{"name":"lib","dependencies":{"cowsay":{"version":"1.5.0"},"@scope/tool":{"version":"2.0.0"}}}"#.into(),
+            "ls" => LS.into(),
             "view" if args[1] == "lodash" => r#"{"version":"4.18.1"}"#.into(),
             "view" => VIEW.into(),
             _ => String::new(),
@@ -133,8 +152,13 @@ mod tests {
     fn list_reads_the_global_tree() {
         let (_dir, runner, env) = setup();
         let pkgs = Npm::new(&runner, &env).list().unwrap();
-        assert_eq!(pkgs.iter().map(|pkg| (pkg.source.as_str(), pkg.version.as_str())).collect::<Vec<_>>(), [("@scope/tool", "2.0.0"), ("cowsay", "1.5.0")]);
+        assert_eq!(pkgs.iter().map(|pkg| (pkg.source.as_str(), pkg.version.as_str())).collect::<Vec<_>>(), [
+            ("@scope/tool", "2.0.0"),
+            ("cowsay", "1.5.0"),
+            ("github:user/mytool", "0.1.0")
+        ]);
         assert_eq!(Npm::new(&runner, &env).pin(&pkgs[0]), "@scope/tool@2.0.0");
+        assert_eq!((Npm::new(&runner, &env).pin(&pkgs[2]).as_str(), pkgs[2].build.as_str()), ("github:user/mytool", "4c638f60aaaabbbbccccddddeeeeffff00001111"));
     }
 
     #[test]
@@ -152,6 +176,13 @@ mod tests {
         assert_eq!(npm.info("cowsay").unwrap().unwrap().programs, Some(vec!["cowsay".to_string(), "cowthink".to_string()]));
         assert_eq!(npm.info("lodash").unwrap().unwrap().programs, Some(Vec::new()));
         assert_eq!(programs("@scope/tool", &Value::String("cli.js".into())), ["tool"]);
+    }
+
+    #[test]
+    fn remove_uninstalls_git_packages_by_name() {
+        let (dir, runner, env) = setup();
+        Npm::new(&runner, &env).remove(&["github:user/mytool".into(), "cowsay@1.5.0".into()]).unwrap();
+        assert_eq!(runner.calls.borrow().last().unwrap(), &format!("npm uninstall -g mytool cowsay --prefix {}", dir.path().join(".local").display()));
     }
 
     #[test]

@@ -31,6 +31,31 @@ let
 
   indentOf = depth: concatStrings (replicate depth "    ");
 
+  # the control characters a nix string can hold (all but nul), with their codes
+  controlCodes = builtins.genList (index: index + 1) 31 ++ [ 127 ];
+  controlChar = code: builtins.fromJSON ''"\u${lowerHex 4 code}"'';
+
+  # a number as lowercase hex, zero-padded to width digits
+  lowerHex =
+    width: number:
+    let
+      digits = nixpkgs.toLower (nixpkgs.toHexString number);
+    in
+    concatStrings (replicate (width - builtins.stringLength digits) "0") + digits;
+
+  # escapes a string: named escapes first, then every other control character through unicode
+  escapeWith =
+    named: unicode: text:
+    let
+      others = builtins.filter (code: !(named ? ${controlChar code})) controlCodes;
+    in
+    builtins.replaceStrings (builtins.attrNames named ++ map controlChar others) (
+      builtins.attrValues named ++ map unicode others
+    ) text;
+
+  # a nix path renders as its literal text, never copied into the store
+  unpath = value: if builtins.isPath value then toString value else value;
+
   # renders a scalar leaf, passing raw through untouched
   valueString =
     value:
@@ -93,29 +118,44 @@ let
               renderAll (mapAttrsToList (key: item: "${builtins.toJSON key}: ${render (depth + 1) item}") value)
             }\n${close}}"
         else
-          builtins.toJSON value;
+          builtins.toJSON (unpath value);
       indentOf' = depth: concatStrings (replicate depth "  ");
     in
     if isRaw settings then settings.text else render 0 settings + "\n";
 
-  # kdl scalar: strings and numbers via json escaping, null as a bare word
+  # a kdl string literal: backslash, quote, and whitespace escapes, other control characters as \u{hex}
+  kdlString =
+    text:
+    "\"${
+      escapeWith {
+        "\\" = "\\\\";
+        "\"" = "\\\"";
+        "\n" = "\\n";
+        "\r" = "\\r";
+        "\t" = "\\t";
+      } (code: "\\u{${nixpkgs.toLower (nixpkgs.toHexString code)}}") text
+    }\"";
+
+  # kdl scalar: strings escaped for kdl, numbers and bools as json, null as a bare word
   kdlValue =
     value:
     if isRaw value then
       value.text
     else if value == null then
       "null"
+    else if builtins.isString value || builtins.isPath value then
+      kdlString (toString value)
     else
       builtins.toJSON value;
 
-  # node names are quoted only when kdl requires it
+  # node and property names are quoted only when kdl requires it
   kdlName =
     name:
     let
       bare = builtins.match "[A-Za-z_][A-Za-z0-9_+.:-]*" name != null;
       keyword = builtins.elem name [ "true" "false" "null" ];
     in
-    if bare && !keyword then name else builtins.toJSON name;
+    if bare && !keyword then name else kdlString name;
 
   # renders one node; the value's shape decides args, props, children, or repetition
   kdlEntry =
@@ -125,9 +165,10 @@ let
       head = args: props: concatStringsSep " " (
         [ (kdlName name) ]
         ++ map kdlValue args
-        ++ mapAttrsToList (key: prop: "${key}=${kdlValue prop}") props
+        ++ mapAttrsToList (key: prop: "${kdlName key}=${kdlValue prop}") props
       );
       block = children: if children == { } then "" else " {\n${kdlBody (depth + 1) children}${indentOf depth}}";
+      isBlock = item: isAttrs item && !isRaw item || isList item;
     in
     if isRaw value then
       line value.text
@@ -136,6 +177,8 @@ let
     else if isList value && value != [ ] && builtins.all (item: isAttrs item || isList item) value then
       # a list of blocks or arg lists repeats the node
       concatMapStrings (kdlEntry depth name) value
+    else if isList value && builtins.any isBlock value then
+      throw "maw: toKDL node ${name} mixes values and blocks in one list; use lib.kdl.node"
     else if isList value then
       line (head value { })
     else if isAttrs value then
@@ -167,15 +210,43 @@ let
   # css value: lists are comma-separated, everything else is written as-is
   cssValue = value: if isRaw value then value.text else if isList value then concatMapStringsSep ", " cssValue value else valueString value;
 
-  # selector of a nested rule; & stands for the parent, otherwise it's a descendant
+  # a selector list split at its top-level commas, so :is(.a, .b) stays whole
+  splitSelectors =
+    text:
+    let
+      depthChange = char: if char == "(" || char == "[" then 1 else if char == ")" || char == "]" then -1 else 0;
+      step =
+        state: char:
+        if char == "," && state.depth == 0 then
+          state // { parts = state.parts ++ [ state.current ]; current = ""; }
+        else
+          state // { current = state.current + char; depth = state.depth + depthChange char; };
+      final = builtins.foldl' step { parts = [ ]; current = ""; depth = 0; } (nixpkgs.stringToCharacters text);
+    in
+    map nixpkgs.trim (final.parts ++ [ final.current ]);
+
+  # selector of a nested rule; & stands for each parent, otherwise it's a descendant of each
   cssSelector =
     parent: key:
-    if parent == "" then
-      key
-    else if hasInfix "&" key then
-      builtins.replaceStrings [ "&" ] [ parent ] key
+    let
+      nest = child: map (outer: if hasInfix "&" child then builtins.replaceStrings [ "&" ] [ outer ] child else "${outer} ${child}") (splitSelectors parent);
+    in
+    if parent == "" then key else concatStringsSep ", " (nixpkgs.concatMap nest (splitSelectors key));
+
+  # the inside of an @-block: under a rule its properties stay wrapped in that rule's selector
+  cssAtBody =
+    indent: parent: value:
+    let
+      isProperty = key: item: !hasPrefix "@" key && !(isAttrs item && !isRaw item);
+      propertyLines = concatStrings (mapAttrsToList (name: item: "${indent}${name}: ${cssValue item};\n") (filterAttrs isProperty value));
+      rest = filterAttrs (key: item: !isProperty key item) value;
+    in
+    if isList value then
+      concatLists (map (cssAtBody indent parent) value)
+    else if parent != "" then
+      cssEntry indent "" parent value
     else
-      "${parent} ${key}";
+      (if propertyLines == "" then [ ] else [ propertyLines ]) ++ cssRules indent "" rest;
 
   # one entry as a list of rule blocks; nested rules flatten after their parent
   cssEntry =
@@ -191,7 +262,7 @@ let
     if isRaw value then
       [ value.text ]
     else if hasPrefix "@" key && (isAttrs value || isList value) then
-      [ "${indent}${key} {\n${concatStringsSep "\n" (cssRules "${indent}  " "" value)}${indent}}\n" ]
+      [ "${indent}${key} {\n${concatStringsSep "\n" (cssAtBody "${indent}  " parent value)}${indent}}\n" ]
     else if !isAttrs value then
       # a scalar at rule level is a statement, e.g. "@define-color bg" = "#000"
       [ "${indent}${key} ${cssValue value};\n" ]
@@ -213,18 +284,25 @@ let
   # css from selector -> properties, with nesting and @-blocks
   toCSS = settings: if isRaw settings then settings.text else concatStringsSep "\n" (cssRules "" "" settings);
 
-  # toml keys are bare when toml allows it
-  tomlKey = key: if builtins.match "[A-Za-z0-9_-]+" key != null then key else builtins.toJSON key;
+  # a toml basic string: json escaping plus del, which toml forbids raw
+  tomlString = text: builtins.replaceStrings [ (controlChar 127) ] [ "\\u007F" ] (builtins.toJSON text);
 
-  # inline toml value: json covers strings, numbers, and bools; attrsets become inline tables
+  # toml keys are bare when toml allows it
+  tomlKey = key: if builtins.match "[A-Za-z0-9_-]+" key != null then key else tomlString key;
+
+  # inline toml value under key: json covers numbers and bools; attrsets become inline tables
   tomlValue =
-    value:
+    key: value:
     if isRaw value then
       value.text
+    else if value == null then
+      throw "maw: toTOML has no null (key ${key}); leave the key out"
+    else if builtins.isString value || builtins.isPath value then
+      tomlString (toString value)
     else if isList value then
-      "[${concatMapStringsSep ", " tomlValue value}]"
+      "[${concatMapStringsSep ", " (tomlValue key) value}]"
     else if isAttrs value then
-      "{ ${concatStringsSep ", " (mapAttrsToList (key: item: "${tomlKey key} = ${tomlValue item}") value)} }"
+      "{ ${concatStringsSep ", " (mapAttrsToList (name: item: "${tomlKey name} = ${tomlValue name item}") value)} }"
     else
       builtins.toJSON value;
 
@@ -237,7 +315,7 @@ let
     let
       header = concatMapStringsSep "." tomlKey path;
       pairs = concatStrings (
-        mapAttrsToList (key: value: "${tomlKey key} = ${tomlValue value}\n") (
+        mapAttrsToList (key: value: "${tomlKey key} = ${tomlValue key value}\n") (
           filterAttrs (_: value: !isTable value && !isTableArray value) table
         )
       );
@@ -297,8 +375,29 @@ let
       content = renderFile (if isAttrs format then format.${key} else format) fileSettings;
     }) files;
 
-  # a nix value as GVariant text, the way dconf read prints it: strings in single quotes (double when they hold one)
-  toGVariant =
+  # a gvariant string as g_variant_print writes it: double quotes when it holds a single quote, else single
+  gvariantString =
+    text:
+    let
+      quote = if hasInfix "'" text then "\"" else "'";
+      named = {
+        "\\" = "\\\\";
+        ${quote} = "\\${quote}";
+        ${controlChar 7} = "\\a";
+        ${controlChar 8} = "\\b";
+        ${controlChar 12} = "\\f";
+        "\n" = "\\n";
+        "\r" = "\\r";
+        "\t" = "\\t";
+        ${controlChar 11} = "\\v";
+      };
+    in
+    quote + escapeWith named (code: "\\u${lowerHex 4 code}") text + quote;
+
+  # a nix value as gvariant text, exactly as dconf read prints it; an empty list is typed @as, so
+  # other empty array types need lib.raw
+  toGVariant = value: if value == [ ] then "@as []" else gvariantValue value;
+  gvariantValue =
     value:
     if isRaw value then
       value.text
@@ -309,28 +408,28 @@ let
     else if builtins.isFloat value then
       builtins.toJSON value
     else if builtins.isString value then
-      (
-        let
-          escape = quote: builtins.replaceStrings [ "\\" quote ] [ "\\\\" "\\${quote}" ];
-        in
-        if hasInfix "'" value && !hasInfix "\"" value then
-          "\"${escape "\"" value}\""
-        else
-          "'${escape "'" value}'"
-      )
+      gvariantString value
     else if builtins.isList value then
-      "[${concatMapStringsSep ", " toGVariant value}]"
+      "[${concatMapStringsSep ", " gvariantValue value}]"
     else
       throw "maw: dconf values are strings, numbers, booleans, lists, or lib.raw GVariant text";
 
   # colors as "#rrggbb" (or without the #), for deriving one from another: a hue turned, lightness moved, an ansi escape
   color =
     let
+      # the color itself, or an error when it isn't six hex digits
+      checked =
+        hex:
+        if builtins.isString hex && builtins.match "#?[0-9A-Fa-f]{6}" hex != null then
+          hex
+        else
+          throw "maw: lib.color wants #rrggbb, got ${if builtins.isString hex then hex else builtins.typeOf hex}";
+
       # 0-255 channels, and back to two hex digits
       channels =
         hex:
         let
-          digits = nixpkgs.removePrefix "#" hex;
+          digits = nixpkgs.removePrefix "#" (checked hex);
           byte = at: nixpkgs.fromHexString (builtins.substring at 2 digits);
         in
         {
@@ -390,7 +489,7 @@ let
         byte (hue + 1 / 3.0) + byte hue + byte (hue - 1 / 3.0);
 
       # the result keeps the input's # or lack of one
-      like = hex: result: if nixpkgs.hasPrefix "#" hex then "#${result}" else result;
+      like = hex: result: if nixpkgs.hasPrefix "#" (checked hex) then "#${result}" else result;
     in
     {
       inherit toHsl;
@@ -427,18 +526,21 @@ let
       enable ? true,
       env ? { },
     }:
-    [
-      {
-        inherit name scope;
-        key = "service";
-        content = "";
-        executable = false;
-        service = {
-          inherit run log enable;
-          env = builtins.mapAttrs (_: toString) env;
-        };
-      }
-    ];
+    if !builtins.elem scope [ "system" "user" ] then
+      throw "maw: service ${name} has scope ${toString scope}; use \"system\" or \"user\""
+    else
+      [
+        {
+          inherit name scope;
+          key = "service";
+          content = "";
+          executable = false;
+          service = {
+            inherit run log enable;
+            env = builtins.mapAttrs (_: toString) env;
+          };
+        }
+      ];
 in
 nixpkgs
 // {

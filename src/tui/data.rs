@@ -136,6 +136,9 @@ fn git_rows(runner: &dyn Runner, repo: &Repo) -> Result<Vec<Row>> {
 // what the side pane shows for a row: a module's rendered or static file, a service's log
 pub fn preview(env: &Env, tab: Tab, key: &str) -> Vec<String> {
     let Ok(repo) = Repo::locate(env) else { return Vec::new() };
+    if key.is_empty() {
+        return Vec::new();
+    }
     match tab {
         Tab::Modules => {
             let files: Vec<_> = [repo.out_dir().join(key), repo.static_dir().join(key)].iter().flat_map(|dir| walk(dir).unwrap_or_default()).collect();

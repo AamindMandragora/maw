@@ -20,6 +20,24 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> BackendError + '_ {
     move |source| BackendError::Io { path: path.into(), source }
 }
 
+// whether a dir is an xbps repo: it has an <arch>-repodata index
+fn is_repo(dir: &Path) -> bool {
+    fs::read_dir(dir).into_iter().flatten().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().ends_with("-repodata"))
+}
+
+// every local repo xbps-src has built into under a clone: binpkgs itself, and the subdirs it uses for nonfree, multilib,
+// or a clone off master (binpkgs/<branch>/nonfree and the like) once they hold a repo index
+pub fn local_repos(clone: &Path) -> Vec<PathBuf> {
+    let binpkgs = clone.join("hostdir/binpkgs");
+    let subdirs = |dir: &Path| -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().filter_map(|entry| Some(entry.ok()?.path())).filter(|path| path.is_dir()).collect();
+        dirs.sort();
+        dirs
+    };
+    let nested = subdirs(&binpkgs).into_iter().flat_map(|dir| std::iter::once(dir.clone()).chain(subdirs(&dir)));
+    std::iter::once(binpkgs.clone()).chain(nested.filter(|dir| is_repo(dir))).collect()
+}
+
 // whether srcpkgs/<name> makes a source package: a template of its own, or patches for void's template
 pub fn is_source(templates: &Path, name: &str) -> bool {
     templates.join(name).join("template").is_file() || is_patches(templates, name)
@@ -94,13 +112,21 @@ impl<'a> SrcPkgs<'a> {
         }
     }
 
-    // a built package file of an exact version in binpkgs, if one is there
+    // every local repo xbps-src has built into; see local_repos
+    pub fn repos(&self) -> Vec<PathBuf> {
+        local_repos(&self.clone)
+    }
+
+    // a built package file of an exact version in any of the local repos, if one is there
     pub fn built(&self, pkgver: &str) -> Option<PathBuf> {
         let prefix = format!("{pkgver}.");
-        fs::read_dir(self.binpkgs())
-            .ok()?
-            .filter_map(|entry| Some(entry.ok()?.path()))
-            .find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&prefix)) && path.extension().is_some_and(|ext| ext == "xbps"))
+        let files = self.repos().into_iter().flat_map(|repo| fs::read_dir(repo).into_iter().flatten().filter_map(|entry| Some(entry.ok()?.path())));
+        files.into_iter().find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(&prefix)) && path.extension().is_some_and(|ext| ext == "xbps"))
+    }
+
+    // installs from every local repo, so a nonfree or branch build is found wherever xbps-src put it
+    pub fn install_built(&self, specs: &[String], force: bool) -> Result<(), BackendError> {
+        Xbps::new(self.runner, &self.env).install_from_all(&self.repos(), specs, force)
     }
 
     // clones void-packages shallowly and bootstraps its build root, the first time only
@@ -125,7 +151,7 @@ impl<'a> SrcPkgs<'a> {
             return Err(BackendError::Taken(name.into()));
         }
 
-        // clear the last copy, or a link from before maw copied
+        // clear the last copy, or a link
         match fs::symlink_metadata(&copy) {
             Ok(meta) if meta.is_dir() => fs::remove_dir_all(&copy).map_err(io(&copy))?,
             Ok(_) => fs::remove_file(&copy).map_err(io(&copy))?,
@@ -206,7 +232,7 @@ impl<'a> SrcPkgs<'a> {
         let xbps = Xbps::new(self.runner, &self.env);
         let (patching, own): (Vec<String>, Vec<String>) = names.iter().cloned().partition(|name| self.patches(name));
         if !own.is_empty() {
-            xbps.install_from(&self.binpkgs(), &own, force)?;
+            self.install_built(&own, force)?;
         }
         if patching.is_empty() {
             return Ok(());
@@ -217,15 +243,15 @@ impl<'a> SrcPkgs<'a> {
         if !installed.is_empty() {
             xbps.hold(&installed, false)?;
         }
-        xbps.install_from(&self.binpkgs(), &patching, true)?;
+        self.install_built(&patching, true)?;
         xbps.hold(&patching, true)?;
         let recorded: Vec<String> = patched(&self.env).into_iter().chain(patching).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
         save_patched(&self.env, &recorded)
     }
 
-    // whether an installed package came from our binpkgs rather than void's repos
+    // whether an installed package came from one of our local repos rather than void's
     pub fn is_ours(&self, name: &str) -> bool {
-        Xbps::new(self.runner, &self.env).origin(name).is_some_and(|origin| Path::new(&origin) == self.binpkgs())
+        Xbps::new(self.runner, &self.env).origin(name).is_some_and(|origin| self.repos().iter().any(|repo| Path::new(&origin) == repo))
     }
 
     // packages built with patches whose srcpkgs/ dir is gone: released and put back to void's build; returns them
@@ -485,6 +511,38 @@ mod tests {
         let calls = setup.calls();
         assert!(calls.contains(&format!("xbps-pkgdb -r {root} -m unhold taken")) && calls.contains(&format!("xbps-install -r {root} -fy taken")));
         assert!(patched(&env).is_empty());
+    }
+
+    #[test]
+    fn nonfree_and_branch_builds_are_found_and_installed_from() {
+        let setup = Setup::new();
+        setup.cloned();
+        let binpkgs = setup.dir.path().join("clone/hostdir/binpkgs");
+        write(&binpkgs.join("nonfree/x86_64-repodata"), "");
+        write(&binpkgs.join("nonfree/steam-1.0_1.x86_64.xbps"), "");
+        write(&binpkgs.join("dev/nonfree/x86_64-repodata"), "");
+        write(&binpkgs.join("empty/notes"), "");
+
+        let src = setup.src();
+        assert_eq!(src.repos(), [binpkgs.clone(), binpkgs.join("dev/nonfree"), binpkgs.join("nonfree")]);
+        assert_eq!(src.built("steam-1.0_1"), Some(binpkgs.join("nonfree/steam-1.0_1.x86_64.xbps")));
+
+        src.new_template("steam", "me").unwrap();
+        src.install(&["steam".into()], false).unwrap();
+        let root = setup.dir.path().join("root");
+        let (all, dev, nonfree) = (binpkgs.display(), binpkgs.join("dev/nonfree"), binpkgs.join("nonfree"));
+        assert_eq!(setup.calls().last().unwrap(), &format!("xbps-install -r {} -R {all} -R {} -R {} -y steam", root.display(), dev.display(), nonfree.display()));
+    }
+
+    #[test]
+    fn packages_from_any_local_repo_are_ours() {
+        let setup = Setup::new();
+        let binpkgs = setup.dir.path().join("clone/hostdir/binpkgs");
+        write(&binpkgs.join("nonfree/x86_64-repodata"), "");
+        let origin = binpkgs.join("nonfree").display().to_string();
+        let runner = FakeRunner::new(move |_, _| format!("{origin}\n"));
+        let env = Env::new(&setup.dir.path().join("home"), &setup.dir.path().join("root"), Path::new("/s"));
+        assert!(SrcPkgs::new(&runner, &env, &setup.dir.path().join("dots/srcpkgs"), &setup.dir.path().join("clone")).is_ours("steam"));
     }
 
     #[test]

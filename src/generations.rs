@@ -56,7 +56,7 @@ pub fn load(env: &Env) -> Result<Vec<Generation>, GenerationsError> {
 
 // whether an activation did anything; drift and unplaced files are only reported
 pub fn changed(activation: &Activation) -> bool {
-    let drift = |step: &Step| matches!(step, Step::Replaced { .. } | Step::Edited { .. } | Step::Unplaced { .. } | Step::SettingEdited { .. } | Step::SettingsSkipped { .. } | Step::Reload { .. } | Step::SecretSkipped { .. });
+    let drift = |step: &Step| matches!(step, Step::Replaced { .. } | Step::Edited { .. } | Step::Unplaced { .. } | Step::SettingEdited { .. } | Step::SettingsSkipped { .. } | Step::Reload { .. } | Step::SecretSkipped { .. } | Step::SecretBackedUp { .. });
     let acted = activation.steps.iter().any(|step| !drift(step));
     acted || !activation.build.written.is_empty() || !activation.build.removed.is_empty() || !activation.answered.is_empty()
 }
@@ -76,8 +76,13 @@ pub fn summary(repo: &Repo, activation: &Activation) -> Vec<String> {
             _ => Some(first),
         }
     };
-    let mut programs: Vec<String> = activation.build.written.iter().chain(&activation.build.removed).filter_map(program).collect();
-    programs.dedup();
+    // each program once, in the order they came
+    let programs: Vec<String> = activation.build.written.iter().chain(&activation.build.removed).filter_map(program).fold(Vec::new(), |mut seen, name| {
+        if !seen.contains(&name) {
+            seen.push(name);
+        }
+        seen
+    });
 
     let count = |matches: fn(&Step) -> bool, one: &str, many: &str| {
         let count = activation.steps.iter().filter(|step| matches(step)).count();

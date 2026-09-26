@@ -119,7 +119,7 @@ A key can hold several selectors (\fB"#clock, #cpu"\fR), so a helper can share p
 each = selectors: properties: { ${lib.concatStringsSep ",\en" selectors} = properties; };
 .EE
 .PP
-Property lists are joined with \fB, \fR. Values are written as-is, so quote font names yourself when they need it. Nesting under a comma selector (\fB"a, b"\fR) isn't expanded per selector; write those rules out flat.
+Property lists are joined with \fB, \fR. Values are written as-is, so quote font names yourself when they need it. Nesting under a comma selector expands per selector: \fB.c\fR under \fB".a, .b"\fR is \fB.a .c, .b .c\fR, and \fB"&:hover, .d"\fR under it is \fB.a:hover, .b:hover, .a .d, .b .d\fR. An \fB@media\fR block nested inside a rule applies to that rule: \fB".a"."@media (max-width: 800px)".color = "blue"\fR becomes \fB@media (max-width: 800px) { .a { color: blue; } }\fR.
 .SH "SHELL (LIB.TOSHELL)"
 .PP
 For bashrc-style files. Takes \fB{ aliases; exports; extra; }\fR:

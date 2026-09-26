@@ -11,7 +11,7 @@ homepage="https://github.com/AamindMandragora/maw"
 distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"
 checksum=cfefc463edb8e7aea7f47e461f7bb082ad819b2d32a9fce1c0ed158c46274fb8
 
-# maw reads its nix lib and shipped registry from /usr/share/maw
+# maw reads its nix lib, shipped registry, and depmap from /usr/share/maw
 post_install() {
 	vmkdir usr/share/maw
 	vcopy nix usr/share/maw

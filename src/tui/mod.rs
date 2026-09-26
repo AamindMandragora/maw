@@ -4,7 +4,7 @@ use crate::env::Env;
 use crate::repo::Repo;
 use crate::runner::SystemRunner;
 use anyhow::Result;
-use app::{App, Request, TABS, Tab};
+use app::{App, Request, Row, TABS, Tab};
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -24,6 +24,8 @@ enum Message {
     Ask(String, Sender<Option<String>>),
     Edit(PathBuf, Sender<Result<()>>),
     Done(Result<(), String>),
+    // a search's results, by the term they're for
+    Found(String, Vec<Row>),
 }
 
 // asks for the sudo password up front, takes over the terminal, and runs until q
@@ -79,8 +81,9 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
     loop {
         term.draw(&app)?;
 
-        // a tab loads the first time it's shown, and again after anything runs
-        if !app.state().loaded && app.finding.is_none() {
+        // a tab loads the first time it's shown, and again after anything runs; packages wait while showing a search
+        let showing_search = app.finding.is_some() && app.current_tab() == Tab::Packages;
+        if !app.state().loaded && !showing_search {
             let tab = app.current_tab();
             app.set_rows(tab, data::load(env, &runner, tab));
             continue;
@@ -106,10 +109,12 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
                 Some(Request::Quit) if app.busy.is_none() => return Ok(()),
                 Some(Request::Quit) => app.output.push("wait for it to finish first".into()),
                 Some(Request::Reload) => reload(&mut app),
+                // searching can reach the network, so it runs beside the ui and its rows arrive as a message
                 Some(Request::Find(term_text)) => {
-                    let rows = data::find_rows(env, &runner, &term_text);
+                    let (env, sender, text) = (env.clone(), sender.clone(), term_text.clone());
+                    std::thread::spawn(move || drop(sender.send(Message::Found(text.clone(), data::find_rows(&env, &SystemRunner, &text)))));
+                    app.set_rows(Tab::Packages, vec![Row::text(format!("searching for {term_text}"))]);
                     app.finding = Some(term_text);
-                    app.set_rows(Tab::Packages, rows);
                 }
                 Some(Request::Answer(answer)) => {
                     if let Some(reply) = reply.take() {
@@ -135,6 +140,8 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
                     term.resume()?;
                     let _ = done.send(result);
                 }
+                Message::Found(term_text, rows) if app.finding.as_ref() == Some(&term_text) => app.set_rows(Tab::Packages, rows),
+                Message::Found(..) => {}
                 Message::Done(result) => {
                     app.output.push(match result {
                         Ok(()) => format!("{} done", app.busy.take().unwrap_or_default()),

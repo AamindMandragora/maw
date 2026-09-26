@@ -13,15 +13,16 @@ let
   names = deps: map (dep: dep.pname or (lib.getName dep)) (builtins.filter lib.isDerivation deps);
   native = names (pkg.nativeBuildInputs or [ ]);
 
-  # meta.homepage and meta.license may be one value or a list
-  first = value: if builtins.isList value then builtins.head value else value;
+  # meta.homepage and meta.license may be one value or a list, possibly empty
+  first = value: if builtins.isList value then (if value == [ ] then "" else builtins.head value) else value;
   licenses = map (license: license.spdxId or license.shortName or "unknown") (lib.toList (pkg.meta.license or [ ]));
 
   # the builder, from what each nixpkgs builder leaves behind on the derivation
   builder =
     if pkg ? vendorHash || pkg ? goModules then
       "go"
-    else if pkg ? cargoDeps then
+    # gnome's rust apps carry cargoDeps but build with meson
+    else if pkg ? cargoDeps && !builtins.elem "meson" native then
       "cargo"
     else if pkg ? pythonModule then
       "python3-module"

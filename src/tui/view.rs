@@ -218,14 +218,30 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect { x: area.x + (area.width - width) / 2, y: area.y + (area.height - height) / 2, width, height }
 }
 
+// a popup sized to its text, which wraps; a question's last line is its title, and any lines before it (numbered
+// choices) sit above the input
 fn draw_popup(frame: &mut Frame, popup: &Popup, area: Rect) {
     let (title, body) = match popup {
-        Popup::Input { title, input, .. } => (title.clone(), format!("{input}_")),
+        Popup::Input { title, input, .. } => match title.rsplit_once('\n') {
+            Some((before, last)) => (last.trim().to_string(), format!("{before}\n{input}_")),
+            None => (title.clone(), format!("{input}_")),
+        },
         Popup::Confirm { question, .. } => (String::new(), format!("{question} [y/n]")),
         Popup::Help => (String::from("keys"), HELP.into()),
     };
-    let height = body.lines().count() as u16 + 2;
-    let width = body.lines().chain([title.as_str()]).map(|line| line.chars().count() as u16 + 4).max().unwrap_or(20).max(40);
+    let widest = body.lines().chain([title.as_str()]).map(|line| line.chars().count() as u16 + 4).max().unwrap_or(20).max(40);
+    let width = widest.min(area.width.saturating_sub(2)).max(10);
+
+    // a title wider than the popup moves into the body, where it wraps instead of being cut off
+    let (title, body) = match title.chars().count() + 4 > width as usize {
+        true => (String::new(), format!("{title}\n{body}")),
+        false => (title, body),
+    };
+
+    // each line takes as many rows as it wraps to inside the borders
+    let inner = width.saturating_sub(2).max(1) as usize;
+    let rows: usize = body.lines().map(|line| line.chars().count().max(1).div_ceil(inner)).sum();
+    let height = (rows as u16 + 2).min(area.height);
     let rect = centered(area, width, height);
     let block = Block::new().borders(Borders::ALL).border_style(toned(Some(Tone::Accent))).title(Span::styled(format!(" {title} "), accent()));
     frame.render_widget(Clear, rect);

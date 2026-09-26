@@ -72,7 +72,7 @@ Describes a runit service. maw writes its \fBrun\fR and \fBlog/run\fR files and 
 .PP
 .EX
 option  default   meaning
-scope   "system"  "system" runs from boot as root, "user" runs as you from login
+scope   "system"  "system" runs from boot as root, "user" runs as you from login; anything else is an error
 run               the script: shell text, or a whole script with its own #! line
 log     true      log through svlogd to /var/log/<name>/ or ~/.local/state/log/<name>/
 enable  true      link it into place; false writes the definition but leaves it off
@@ -85,7 +85,7 @@ lib.service "rclone" {
   scope = "user";
   env.RCLONE_VFS_CACHE_MODE = "full";
   run = ''
-    exec rclone --config "$HOME/.config/rclone/rclone.conf" mount "Google Drive:" "$HOME/Google Drive"
+    exec rclone --config "$HOME/.config/rclone/rclone.conf" mount "remote:" "$HOME/remote"
   '';
 }
 .EE
@@ -113,7 +113,7 @@ lib.program "waybar" {
 }
 .EE
 .PP
-The command runs through \fBsh -c\fR as you. A program that isn't running fails its reload, which is fine. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see \fBlib.service\fR.
+The command runs through \fBsh -c\fR as you. A program that isn't running fails its reload, and the failure is ignored. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see \fBlib.service\fR.
 .SH "LIB.DCONF { ... }"
 .PP
 Desktop settings: the dconf database that GTK apps, GNOME, and \fBgsettings\fR read. Keys are grouped by path:
@@ -187,7 +187,7 @@ Then \fBconfig.colors.text\fR in fuzzel, waybar, and niri all read the same valu
 }
 .EE
 .PP
- Plain \fBlet\fR bindings and functions work too, for repetition inside one module:
+Plain \fBlet\fR bindings and functions work too, for repetition inside one module:
 .PP
 .EX
 let
@@ -198,14 +198,14 @@ in
 binds = workspaceBinds "Mod+" "focus-workspace" // { "Mod+Q".close-window = null; };
 .EE
 .PP
-\fBtests/fixtures/dotfiles/modules/\fR has complete real-world modules for niri, waybar, and fuzzel.
+maw's test fixtures (https://github.com/AamindMandragora/maw/tree/master/tests/fixtures/dotfiles/modules) have complete real-world modules for niri, waybar, fuzzel, and bash.
 .SH "RENDERING A MODULE BY HAND"
 .PP
-\fB-I maw=\fR points at maw's \fBnix/\fR directory:
+\fB-I maw=\fR points at maw's \fBnix/\fR directory (\fB/usr/share/maw/nix\fR when installed):
 .PP
 .EX
 nix-instantiate --eval --strict --raw -I maw=./nix \e
   -E '(builtins.head (import ./path/to/dotfiles).modules.fuzzel).content'
 .EE
 .PP
-Each module evaluates to a list of \fB{ name, key, content, executable, scope }\fR, one entry per file.
+Each module evaluates to a list of \fB{ name, key, content, executable, scope, reload }\fR, one entry per file.

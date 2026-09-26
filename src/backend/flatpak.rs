@@ -41,6 +41,20 @@ impl<'a> Flatpak<'a> {
         Some(self.query(&["info", "--show-commit", id]).ok()?.trim().to_string()).filter(|commit| !commit.is_empty())
     }
 
+    // an app from flathub's appstream api: None when flathub says it has no such app, the bare id when it can't be asked
+    fn appstream(&self, id: &str) -> Option<Pkg> {
+        let bare = Pkg { name: id.into(), source: id.into(), ..Pkg::default() };
+        let body = match self.runner.run("curl", &["-sSf".into(), format!("https://flathub.org/api/v2/appstream/{id}")]) {
+            Ok(body) => body,
+            Err(RunError::Failed { stderr, .. }) if stderr.contains("404") => return None,
+            Err(_) => return Some(bare),
+        };
+        let app: serde_json::Value = serde_json::from_str(&body).ok()?;
+        let field = |value: &serde_json::Value| value.as_str().unwrap_or_default().to_string();
+        let found = app["id"].as_str() == Some(id);
+        found.then(|| Pkg { version: field(&app["releases"][0]["version"]), description: field(&app["summary"]), homepage: field(&app["urls"]["homepage"]), ..bare })
+    }
+
     // updates apps to their latest builds, or all of them when none are named
     pub fn update(&self, ids: &[String]) -> Result<(), BackendError> {
         self.change(&["update".to_string()].into_iter().chain(ids.iter().cloned()).collect::<Vec<_>>())
@@ -90,10 +104,11 @@ impl Backend for Flatpak<'_> {
         Ok(output.map(|output| parse_rows(&output, false)).unwrap_or_default())
     }
 
-    // an app on flathub, at its current commit
+    // an app on flathub, at its current commit; without the flathub remote (install adds it), from flathub's api instead
     fn info(&self, id: &str) -> Result<Option<Pkg>, BackendError> {
         let output = match self.runner.run("flatpak", &["remote-info".into(), "flathub".into(), spec_base(id).into()]) {
             Ok(output) => output,
+            Err(RunError::Failed { stderr, .. }) if stderr.contains("\"flathub\" not found") => return Ok(self.appstream(spec_base(id))),
             Err(RunError::Failed { .. }) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
@@ -123,8 +138,9 @@ impl Backend for Flatpak<'_> {
         Some(("flatpak", "flatpak"))
     }
 
+    // the app at its commit, or bare when the commit couldn't be read
     fn pin(&self, pkg: &Pkg) -> String {
-        format!("{}@{}", pkg.source, pkg.build)
+        if pkg.build.is_empty() { pkg.source.clone() } else { format!("{}@{}", pkg.source, pkg.build) }
     }
 
     // where maw writes each app's short-name wrapper
@@ -170,6 +186,28 @@ mod tests {
         let runner = FakeRunner::new(fake);
         let emote = Flatpak::new(&runner, &env("/")).info("com.tomjwatson.Emote").unwrap().unwrap();
         assert_eq!((emote.version.as_str(), emote.build.as_str()), ("aa30cd838598", "aa30cd8385982370cb71"));
+    }
+
+    #[test]
+    fn without_the_remote_info_asks_flathubs_api() {
+        let runner = FakeRunner::fallible(|program, args| match (program, args.last().map(String::as_str)) {
+            ("flatpak", _) => Err(RunError::Failed { program: "flatpak".into(), stderr: "error: Remote \"flathub\" not found".into() }),
+            ("curl", Some(url)) if url.ends_with("com.slack.Slack") => Ok(r#"{"id":"com.slack.Slack","summary":"Business communication","releases":[{"version":"4.52.162"}]}"#.into()),
+            ("curl", Some(url)) if url.ends_with("com.nope.Nope") => Err(RunError::Failed { program: "curl".into(), stderr: "curl: (22) The requested URL returned error: 404".into() }),
+            _ => Err(RunError::Failed { program: "curl".into(), stderr: "curl: (6) Could not resolve host".into() }),
+        });
+        let flatpak = Flatpak::new(&runner, &env("/"));
+        let slack = flatpak.info("com.slack.Slack").unwrap().unwrap();
+        assert_eq!((slack.version.as_str(), slack.description.as_str()), ("4.52.162", "Business communication"));
+        assert!(flatpak.info("com.nope.Nope").unwrap().is_none());
+        assert_eq!(flatpak.info("com.offline.App").unwrap().unwrap().source, "com.offline.App");
+    }
+
+    #[test]
+    fn unreadable_commits_pin_nothing() {
+        let runner = FakeRunner::new(fake);
+        let app = Pkg { source: "com.slack.Slack".into(), ..Pkg::default() };
+        assert_eq!(Flatpak::new(&runner, &env("/")).pin(&app), "com.slack.Slack");
     }
 
     #[test]

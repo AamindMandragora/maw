@@ -19,7 +19,7 @@ let
         inherit (themeJson.settings) mode;
       };
 
-  # a function gets the arguments it names, so config.nix taking only { lib } keeps working; one naming none (args: ...) gets all
+  # a function gets only the arguments it names; one naming none (args: ...) gets all
   call =
     function: available:
     let
@@ -31,10 +31,13 @@ let
   hostFile = if configDir == null then null else configDir + "/host";
   host = if hostFile != null && builtins.pathExists hostFile then lib.removeSuffix "\n" (builtins.readFile hostFile) else "";
 
-  # a file of config values, or a function of lib, theme, and host
-  load = file: let value = import file; in if builtins.isFunction value then call value { inherit lib theme host; } else value;
+  # lib knows this machine for onHosts: a module's files on the named machines only
+  hostLib = lib // { onHosts = names: value: if builtins.elem host names then value else [ ]; };
 
-  # config.nix, with this machine's hosts/<name>.nix merged over it
+  # a file of config values, or a function of lib, theme, and host
+  load = file: let value = import file; in if builtins.isFunction value then call value { inherit theme host; lib = hostLib; } else value;
+
+  # config.nix, with this machine's hosts/<name>.nix merged over it; attrsets merge, lists and other values are replaced
   hostConfigFile = dotfiles + "/hosts/${host}.nix";
   config = lib.recursiveUpdate (load (dotfiles + "/config.nix")) (if builtins.pathExists hostConfigFile then load hostConfigFile else { });
   maw = import (dotfiles + "/maw.nix");
@@ -43,8 +46,6 @@ let
   moduleFiles = lib.filterAttrs (file: type: type == "regular" && lib.hasSuffix ".nix" file) (
     builtins.readDir (dotfiles + "/modules")
   );
-  # lib knows this machine for onHosts: a module's files on the named machines only
-  hostLib = lib // { onHosts = names: value: if builtins.elem host names then value else [ ]; };
   evalModule = file: lib.flatten (call (import (dotfiles + "/modules/${file}")) { inherit config maw theme host; lib = hostLib; });
 in
 {

@@ -88,7 +88,7 @@ struct Context<'a> {
     backends: Vec<Box<dyn Backend + 'a>>,
     state: MawState,
     registry: Registry,
-    installed: BTreeMap<String, HashSet<String>>,
+    installed: BTreeMap<String, Vec<Pkg>>,
     src: SrcPkgs<'a>,
 }
 
@@ -98,10 +98,7 @@ impl<'a> Context<'a> {
         let (registry, state) = edit::load(env, runner, repo)?;
         let state = state.here(&env.host);
         let backends: Vec<Box<dyn Backend + 'a>> = NAMES.iter().filter_map(|name| backend::for_name(name, runner, env)).collect();
-        let installed = backends
-            .iter()
-            .map(|backend| Ok((backend.name().to_string(), backend.list()?.into_iter().flat_map(|pkg| [pkg.source, pkg.name]).collect())))
-            .collect::<Result<_, BackendError>>()?;
+        let installed = backends.iter().map(|backend| Ok((backend.name().to_string(), backend.list()?))).collect::<Result<_, BackendError>>()?;
         Ok(Context { env: env.clone(), runner, backends, state, registry, installed, src: srcpkgs(env, runner, repo)? })
     }
 
@@ -109,8 +106,28 @@ impl<'a> Context<'a> {
         self.backends.iter().find(|backend| backend.name() == name).map(|backend| backend.as_ref()).unwrap()
     }
 
+    fn installed(&self, backend: &str) -> &[Pkg] {
+        self.installed.get(backend).map_or(&[], Vec::as_slice)
+    }
+
+    // whether the target is installed as it asks, at its pin if it has one
     fn is_installed(&self, target: &Target) -> bool {
-        self.installed.get(&target.backend).is_some_and(|sources| sources.contains(spec_base(&target.spec)))
+        backend::satisfies(self.backend(&target.backend), self.installed(&target.backend), &target.spec)
+    }
+
+    // whether anything by the target's source or name is installed, at any version
+    fn is_present(&self, target: &Target) -> bool {
+        let base = spec_base(&target.spec);
+        self.installed(&target.backend).iter().any(|pkg| pkg.source == base || pkg.name == base)
+    }
+
+    // a backend's info, with its tool missing reported as how to install it
+    fn info(&self, backend: &str, spec: &str) -> Result<Option<Pkg>, PackagesError> {
+        let backend = self.backend(backend);
+        backend.info(spec).map_err(|error| match (error, backend.tool()) {
+            (BackendError::Run(RunError::Spawn { .. }), Some((program, package))) => PackagesError::MissingTool { program, package },
+            (error, _) => error.into(),
+        })
     }
 
     // the declared spec in this backend that a request names, by its base or its program name (a flatpak's short name)
@@ -120,7 +137,7 @@ impl<'a> Context<'a> {
         declared(&self.state, backend).into_iter().find(|spec| spec_base(spec) == wanted || program(spec) == wanted)
     }
 
-    // the backend a bare request belongs to: already declared, a flatpak app id, a srcpkgs template (built for xbps), xbps, then crates.io once the user agrees
+    // the backend a bare request belongs to: already declared, a flatpak app id, a srcpkgs template (built for xbps), xbps, then another source's exact match once the user agrees
     fn resolve(&self, request: &str, ask: Option<&dyn Ask>) -> Result<Target, PackagesError> {
         let target = |backend: &str, spec: &str| Target { backend: backend.into(), spec: spec.into() };
         if let Some((backend, spec)) = request.split_once(':').filter(|(backend, _)| NAMES.contains(backend)) {
@@ -133,12 +150,12 @@ impl<'a> Context<'a> {
             return Err(self.draftable(name, &[source]).unwrap_or_else(|| PackagesError::NotFound(request.into())));
         }
         if flatpak::is_app_id(request) {
-            return match self.backend("flatpak").info(request)? {
+            return match self.info("flatpak", request)? {
                 Some(_) => Ok(target("flatpak", request)),
                 None => Err(PackagesError::NotFound(request.into())),
             };
         }
-        if self.src.has(request) || self.is_installed(&target("xbps", request)) || self.backend("xbps").info(request)?.is_some() {
+        if self.src.has(request) || self.is_present(&target("xbps", request)) || self.info("xbps", request)?.is_some() {
             return Ok(target("xbps", request));
         }
 
@@ -192,7 +209,7 @@ impl<'a> Context<'a> {
             return Ok(target(backend, &self.declared_as(backend, spec).unwrap_or(spec.into())));
         }
         let declared = NAMES.iter().find_map(|backend| Some(target(backend, &self.declared_as(backend, request)?)));
-        let installed = || NAMES.iter().map(|backend| target(backend, request)).find(|candidate| self.is_installed(candidate));
+        let installed = || NAMES.iter().map(|backend| target(backend, request)).find(|candidate| self.is_present(candidate));
         declared.or_else(installed).ok_or_else(|| PackagesError::Unknown(request.into()))
     }
 }
@@ -226,13 +243,19 @@ fn library(backend: &str, name: &str) -> PackagesError {
     PackagesError::Library { name: name.into(), add }
 }
 
+// whether a target's backend tool is being installed from xbps in the same change, so it can't be asked anything yet
+fn tool_coming(context: &Context, packages: &[Target], target: &Target) -> bool {
+    let tool = context.backend(&target.backend).tool();
+    tool.is_some_and(|(_, package)| packages.iter().any(|other| other.backend == "xbps" && spec_base(&other.spec) == package))
+}
+
 // the first backend whose tool isn't installed and isn't being installed from xbps alongside
 fn missing_tool(runner: &dyn Runner, context: &Context, packages: &[Target]) -> Option<PackagesError> {
-    let backends: BTreeSet<&str> = packages.iter().map(|target| target.backend.as_str()).collect();
-    let coming = |package: &str| packages.iter().any(|target| target.backend == "xbps" && target.spec == package);
+    let waiting = packages.iter().filter(|target| !tool_coming(context, packages, target));
+    let backends: BTreeSet<&str> = waiting.map(|target| target.backend.as_str()).collect();
     let tools = backends.into_iter().filter_map(|name| context.backend(name).tool());
     tools
-        .filter(|(program, package)| !coming(package) && matches!(runner.run(program, &["--version".into()]), Err(RunError::Spawn { .. })))
+        .filter(|(program, _)| matches!(runner.run(program, &["--version".into()]), Err(RunError::Spawn { .. })))
         .map(|(program, package)| PackagesError::MissingTool { program, package })
         .next()
 }
@@ -246,9 +269,10 @@ pub fn plan_install(env: &Env, runner: &dyn Runner, repo: &Repo, requests: &[Str
         return Err(error);
     }
 
-    // anything not installed yet has to exist where it's going to come from, and be a program; a template is its own source
-    let from_repos = packages.iter().filter(|target| !(target.backend == "xbps" && context.src.has(&target.spec)));
-    from_repos.into_iter().try_for_each(|target| match context.backend(&target.backend).info(&target.spec)? {
+    // anything not installed yet has to exist where it's going to come from, and be a program; a template is its own source,
+    // and a backend whose tool comes in the same change can't be asked until then
+    let from_repos = packages.iter().filter(|target| !(target.backend == "xbps" && context.src.has(&target.spec)) && !tool_coming(&context, &packages, target));
+    from_repos.into_iter().try_for_each(|target| match context.info(&target.backend, &target.spec)? {
         None => Err(PackagesError::NotFound(target.spec.clone())),
         Some(pkg) if is_library(&pkg) => Err(library(&target.backend, &target.spec)),
         Some(_) => Ok(()),
@@ -345,7 +369,7 @@ fn grouped(targets: &[Target]) -> Vec<(String, Vec<String>)> {
 pub fn plan_remove(env: &Env, runner: &dyn Runner, repo: &Repo, requests: &[String]) -> Result<Change, PackagesError> {
     let context = Context::load(env, runner, repo)?;
     let targets = requests.iter().map(|request| context.find(request)).collect::<Result<Vec<_>, _>>()?;
-    let packages = targets.iter().filter(|target| context.is_installed(target)).cloned().collect();
+    let packages = targets.iter().filter(|target| context.is_present(target)).cloned().collect();
     let recorded = targets.iter().filter(|target| declared(&context.state, &target.backend).contains(&target.spec)).cloned().collect();
     Ok(Change { packages, recorded, scaffolded: Vec::new(), here: false })
 }
@@ -600,10 +624,45 @@ mod tests {
         });
         assert!(matches!(plan(&fixture, &["uv:ruff"], None), Err(PackagesError::MissingTool { program: "uv", package: "uv" })));
 
-        // uv from xbps in the same install is fine, and goes first
+        // uv from xbps in the same install is allowed, and goes first
         let change = plan(&fixture, &["uv:ruff", "xbps:uv"], None).unwrap();
         let order: Vec<String> = grouped(&change.packages).into_iter().map(|(backend, _)| backend).collect();
         assert_eq!(order, ["xbps", "uv"]);
+    }
+
+    // a runner where a program isn't installed, cargo is in the xbps repo, and ripgrep 1.0.0 is installed with cargo
+    fn without(missing: &'static str) -> impl Fn(&str, &[String]) -> Result<String, RunError> {
+        move |program, args| match program {
+            _ if program == missing => Err(RunError::Spawn { program: program.into(), source: std::io::ErrorKind::NotFound.into() }),
+            "xbps-query" if args.last().is_some_and(|name| name == "cargo") => Ok("pkgver: cargo-1.90_1\n".into()),
+            "cargo" if args.get(1).is_some_and(|arg| arg == "--list") => Ok("ripgrep v1.0.0:\n    rg\n".into()),
+            _ => crate::testing::fake(program, args),
+        }
+    }
+
+    #[test]
+    fn a_tool_coming_from_xbps_is_not_asked_about_its_packages() {
+        let mut fixture = fixture(&[]);
+        fixture.runner = FakeRunner::fallible(without("cargo"));
+        let change = plan(&fixture, &["cargo", "cargo:bat"], None).unwrap();
+        assert_eq!(change.packages, [target("xbps", "cargo"), target("cargo", "bat")]);
+        assert!(calls(&fixture, "cargo search").is_empty());
+    }
+
+    #[test]
+    fn a_bare_app_id_without_flatpak_says_to_install_it() {
+        let mut fixture = fixture(&[]);
+        fixture.runner = FakeRunner::fallible(without("flatpak"));
+        assert!(matches!(plan(&fixture, &["com.slack.Slack"], None), Err(PackagesError::MissingTool { program: "flatpak", package: "flatpak" })));
+    }
+
+    #[test]
+    fn a_pin_at_another_version_is_installed() {
+        let mut fixture = fixture(&[]);
+        fixture.runner = FakeRunner::fallible(without("nothing"));
+        assert!(plan(&fixture, &["cargo:ripgrep"], None).unwrap().packages.is_empty());
+        assert!(plan(&fixture, &["cargo:ripgrep@1.0"], None).unwrap().packages.is_empty());
+        assert_eq!(plan(&fixture, &["cargo:ripgrep@2.0"], None).unwrap().packages, [target("cargo", "ripgrep@2.0")]);
     }
 
     #[test]

@@ -190,7 +190,7 @@
     files.main = "himalaya/config.toml";
   };
   htop = {
-    files.main = "htop";
+    files.main = "htop/htoprc";
   };
   i3bar-river = {
     format = "toml";
@@ -230,7 +230,6 @@
       "light-theme.auto" = "kitty/light-theme.auto.conf";
       "dark-theme.auto" = "kitty/dark-theme.auto.conf";
       "no-preference-theme.auto" = "kitty/no-preference-theme.auto.conf";
-      macos-launch-services-cmdline = "kitty/macos-launch-services-cmdline";
     };
     reload = "pkill -USR1 -x kitty";
   };
@@ -287,9 +286,6 @@
     format = "toml";
     files.main = "neovide/config.toml";
   };
-  nnn = {
-    files.main = "nnn/plugins";
-  };
   nyxt = {
     files.main = "nyxt/config.lisp";
   };
@@ -297,7 +293,6 @@
     files = {
       main = "offlineimap/config";
       get_settings = "offlineimap/get_settings.py";
-      get_settings2 = "offlineimap/get_settings.pyc";
     };
   };
   papis = {
@@ -332,9 +327,6 @@
       main = "ranger/rc.conf";
       rifle = "ranger/rifle.conf";
     };
-  };
-  rbenv = {
-    files.main = "~/.rbenv/plugins";
   };
   readline = {
     files.main = "~/.inputrc";
@@ -465,6 +457,9 @@
     files.main = "zk/config.toml";
   };
   zsh = {
-    files.main = "~/.zshenv";
+    files = {
+      main = "~/.zshrc";
+      env = "~/.zshenv";
+    };
   };
 }

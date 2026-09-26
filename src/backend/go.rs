@@ -15,14 +15,15 @@ impl<'a> Go<'a> {
         Go { runner, home: env.home.clone() }
     }
 
-    // GOBIN if set, else GOPATH/bin, else go's default ~/go/bin
+    // GOBIN if set, else the first GOPATH entry's bin, else go's default ~/go/bin
     fn bin(&self) -> Result<PathBuf, BackendError> {
         let output = self.runner.run("go", &["env".into(), "GOBIN".into(), "GOPATH".into()])?;
         let mut lines = output.lines().map(str::trim);
         let (gobin, gopath) = (lines.next().unwrap_or(""), lines.next().unwrap_or(""));
-        Ok(match (gobin, gopath) {
-            ("", "") => self.home.join("go/bin"),
-            ("", gopath) => PathBuf::from(gopath).join("bin"),
+        let first_gopath = std::env::split_paths(gopath).next().filter(|path| !path.as_os_str().is_empty());
+        Ok(match (gobin, first_gopath) {
+            ("", None) => self.home.join("go/bin"),
+            ("", Some(gopath)) => gopath.join("bin"),
             (gobin, _) => PathBuf::from(gobin),
         })
     }
@@ -97,8 +98,12 @@ impl Backend for Go<'_> {
         Some(("go", "go"))
     }
 
+    // a module at its version; a build without one, like (devel), stays bare
     fn pin(&self, pkg: &Pkg) -> String {
-        format!("{}@v{}", pkg.source, pkg.version)
+        match pkg.version.starts_with(|char: char| char.is_ascii_digit()) {
+            true => format!("{}@v{}", pkg.source, pkg.version),
+            false => pkg.source.clone(),
+        }
     }
 
     fn bin_dir(&self) -> Option<PathBuf> {
@@ -141,6 +146,21 @@ mod tests {
     fn bin_falls_back_from_gobin_to_gopath() {
         let (dir, runner, env) = setup();
         assert_eq!(Go::new(&runner, &env).bin().unwrap(), dir.path().join("g/bin"));
+    }
+
+    #[test]
+    fn bin_uses_the_first_gopath_entry() {
+        let runner = FakeRunner::new(|_, _| "\n/a/go:/b/go\n".into());
+        let env = Env::new(Path::new("/h"), Path::new("/"), Path::new("/s"));
+        assert_eq!(Go::new(&runner, &env).bin().unwrap(), PathBuf::from("/a/go/bin"));
+    }
+
+    #[test]
+    fn devel_builds_pin_nothing() {
+        let (_dir, runner, env) = setup();
+        let pkg = |version: &str| Pkg { source: "github.com/x/y".into(), version: version.into(), ..Pkg::default() };
+        assert_eq!(Go::new(&runner, &env).pin(&pkg("0.40.2")), "github.com/x/y@v0.40.2");
+        assert_eq!(Go::new(&runner, &env).pin(&pkg("(devel)")), "github.com/x/y");
     }
 
     #[test]

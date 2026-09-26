@@ -33,19 +33,34 @@ pub fn is_git(spec: &str) -> bool {
     ["https://", "http://", "git@", "git://", "ssh://"].iter().any(|prefix| spec.starts_with(prefix)) || spec.ends_with(".git")
 }
 
-// "croft-software v0.1.941 (https://github.com/vitali87/croft.git#4c638f60):" -> name, version, source
+// "croft-software v0.1.941 (https://github.com/vitali87/croft.git?tag=v0.1.941#4c638f60):" -> name, version, source,
+// and for git crates the ref (tag, branch, or rev) and commit
 fn parse_installed(line: &str) -> Option<Pkg> {
     let (name, rest) = line.trim_end_matches(':').split_once(' ')?;
     let (version, origin) = rest.split_once(" (").unwrap_or((rest, ""));
     let origin = origin.trim_end_matches(')');
 
-    // git crates are declared by url without the commit; crates.io ones by name
-    let source = match origin.split_once('#') {
-        Some((url, _)) => url.to_string(),
-        None if !origin.is_empty() => origin.to_string(),
-        None => name.to_string(),
-    };
-    Some(Pkg { name: name.into(), source, version: version.trim_start_matches('v').into(), manual: true, ..Pkg::default() })
+    // git crates are declared by url without the ref or commit; crates.io ones by name
+    let (url, commit) = origin.split_once('#').unwrap_or((origin, ""));
+    let (url, query) = url.split_once('?').unwrap_or((url, ""));
+    let reference = query.split('&').find_map(|pair| ["tag=", "branch=", "rev="].iter().find_map(|key| pair.strip_prefix(key))).unwrap_or_default();
+    let source = if url.is_empty() { name } else { url };
+    Some(Pkg { name: name.into(), source: source.into(), version: version.trim_start_matches('v').into(), build: commit.into(), reference: reference.into(), manual: true, ..Pkg::default() })
+}
+
+// the cargo install args for a spec: a crate, or --git with a ref after @ as --rev (a commit: 7 to 40 hex digits),
+// --tag (starting with a digit, or v and a digit), or --branch (anything else)
+fn install_args(spec: &str) -> Vec<String> {
+    if !is_git(spec) {
+        return vec![spec.to_string()];
+    }
+    let url = spec_base(spec);
+    let git = vec!["--git".to_string(), url.to_string()];
+    let Some(reference) = spec[url.len()..].strip_prefix('@') else { return git };
+    let is_commit = (7..=40).contains(&reference.len()) && reference.chars().all(|char| char.is_ascii_hexdigit());
+    let is_tag = reference.trim_start_matches('v').starts_with(|char: char| char.is_ascii_digit());
+    let flag = if is_commit { "--rev" } else if is_tag { "--tag" } else { "--branch" };
+    git.into_iter().chain([flag.to_string(), reference.to_string()]).collect()
 }
 
 // `name = "0.26.1"    # description` lines of cargo search
@@ -77,7 +92,7 @@ impl Backend for Cargo<'_> {
     // an exact crates.io match, with the programs it builds; git urls aren't checked until they're installed
     fn info(&self, spec: &str) -> Result<Option<Pkg>, BackendError> {
         if is_git(spec) {
-            return Ok(Some(Pkg { name: spec_program(spec), source: spec.into(), ..Pkg::default() }));
+            return Ok(Some(Pkg { name: spec_program(spec), source: spec_base(spec).into(), ..Pkg::default() }));
         }
         let name = spec_base(spec);
         let found = self.cargo(&["search", "--limit", "10", name])?.lines().filter_map(parse_search).find(|pkg| pkg.name == name);
@@ -87,8 +102,7 @@ impl Backend for Cargo<'_> {
     // one cargo install per spec, locked to each crate's own lockfile
     fn install(&self, specs: &[String]) -> Result<(), BackendError> {
         specs.iter().try_for_each(|spec| {
-            let target: Vec<String> = if is_git(spec) { vec!["--git".into(), spec.clone()] } else { vec![spec.clone()] };
-            let args: Vec<String> = ["install".to_string(), "--locked".into()].into_iter().chain(target).collect();
+            let args: Vec<String> = ["install".to_string(), "--locked".into()].into_iter().chain(install_args(spec)).collect();
             Ok(self.runner.interactive("cargo", &args)?)
         })
     }
@@ -104,8 +118,13 @@ impl Backend for Cargo<'_> {
         Some(("cargo", "cargo"))
     }
 
+    // a crate at its version, a git crate at its commit
     fn pin(&self, pkg: &Pkg) -> String {
-        if is_git(&pkg.source) { pkg.source.clone() } else { format!("{}@{}", pkg.name, pkg.version) }
+        match (is_git(&pkg.source), pkg.build.is_empty()) {
+            (false, _) => format!("{}@{}", pkg.name, pkg.version),
+            (true, true) => pkg.source.clone(),
+            (true, false) => format!("{}@{}", pkg.source, pkg.build),
+        }
     }
 
     fn bin_dir(&self) -> Option<PathBuf> {
@@ -119,7 +138,7 @@ mod tests {
     use crate::runner::fake::FakeRunner;
     use std::path::Path;
 
-    const LIST: &str = "croft-software v0.1.941 (https://github.com/vitali87/croft.git#4c638f60):\n    croft\nbat v0.26.1:\n    bat\n";
+    const LIST: &str = "croft-software v0.1.941 (https://github.com/vitali87/croft.git?tag=v0.1.941#4c638f60):\n    croft\nbat v0.26.1:\n    bat\n";
     const SEARCH: &str = "bat = \"0.26.1\"        # A cat(1) clone with wings.\nbat-cli = \"0.26.7\"    # Toolkit\n... and 1073 crates more (use --limit N to see more)\n";
 
     fn fake(program: &str, args: &[String]) -> String {
@@ -187,6 +206,21 @@ mod tests {
         let runner = FakeRunner::new(fake);
         let installed = cargo(&runner).list().unwrap();
         assert_eq!(cargo(&runner).pin(&installed[1]), "bat@0.26.1");
-        assert_eq!(cargo(&runner).pin(&installed[0]), "https://github.com/vitali87/croft.git");
+        assert_eq!(cargo(&runner).pin(&installed[0]), "https://github.com/vitali87/croft.git@4c638f60");
+        assert_eq!(installed[0].reference, "v0.1.941");
+    }
+
+    #[test]
+    fn git_refs_become_rev_tag_or_branch() {
+        let runner = FakeRunner::new(fake);
+        let url = "https://github.com/vitali87/croft.git";
+        let specs = [format!("{url}@4c638f60"), format!("{url}@v0.2.0"), format!("{url}@main"), "git@github.com:user/tool.git@1.0".to_string()];
+        cargo(&runner).install(&specs).unwrap();
+        assert_eq!(*runner.calls.borrow(), [
+            format!("cargo install --locked --git {url} --rev 4c638f60"),
+            format!("cargo install --locked --git {url} --tag v0.2.0"),
+            format!("cargo install --locked --git {url} --branch main"),
+            "cargo install --locked --git git@github.com:user/tool.git --tag 1.0".to_string(),
+        ]);
     }
 }
