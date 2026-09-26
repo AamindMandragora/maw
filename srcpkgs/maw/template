@@ -1,6 +1,6 @@
 # Template file for 'maw'
 pkgname=maw
-version=0.1.1
+version=0.2.0
 revision=1
 build_style=cargo
 depends="nix git xbps"
@@ -9,7 +9,7 @@ maintainer="Advayth Pashupati <advaythp@gmail.com>"
 license="MIT"
 homepage="https://github.com/AamindMandragora/maw"
 distfiles="${homepage}/archive/refs/tags/v${version}.tar.gz"
-checksum=44cfc661d0d2450633dfb4320a83c8c17f4280b8ad3bbf96dbb3107298e6dd8f
+checksum=ae43738c22a39f5c9d7d556250567837e33302aa02b9dbff59dde0e00762bc36
 
 # maw reads its nix lib and shipped registry from /usr/share/maw
 post_install() {
