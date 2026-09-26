@@ -1,6 +1,7 @@
 use crate::backend::{self, BackendError};
 use crate::backend::srcpkgs::SrcPkgs;
 use crate::backup;
+use crate::desktop;
 use crate::build::{self, BuildError, Report};
 pub use crate::build::Options;
 use crate::env::Env;
@@ -67,6 +68,8 @@ struct Manifest {
     files: BTreeMap<PathBuf, Linked>,
     #[serde(default)]
     system: system::Record,
+    #[serde(default)]
+    dconf: desktop::Record,
 }
 
 // a file that should be in place: linked, or copied as root when root is set
@@ -106,6 +109,16 @@ pub enum Step {
     Purge { scope: Scope, name: String },
     // a running service whose files changed
     Restart { scope: Scope, name: String },
+    // a dconf key to write, as GVariant text
+    Setting { key: String, value: String },
+    // a dconf key changed by hand since maw wrote it
+    SettingEdited { key: String },
+    // a dconf key maw wrote that nothing declares anymore
+    SettingReset { key: String },
+    // declared dconf values that can't be applied now, and why
+    SettingsSkipped { reason: String },
+    // a program whose config changed, told to read it again
+    Reload { name: String, command: String },
 }
 
 #[derive(Debug, Default)]
@@ -140,6 +153,8 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
     install_missing(env, runner, repo, &planned.build.settings, &planned.steps)?;
     let mut backups = apply(env, &planned.steps, &planned.wanted)?;
     backups.extend(system::apply(env, runner, &planned.steps, &planned.copies)?);
+    desktop::apply(runner, &planned.steps)?;
+    reload(runner, &planned.steps);
     if planned.next != planned.manifest {
         save_json(&env.state_dir.join("manifest"), &planned.next)?;
     }
@@ -177,11 +192,29 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
     let placed: HashSet<PathBuf> = manifest.files.keys().chain(manifest.system.copied.keys()).cloned().collect();
     let (service_steps, services) = system::plan_services(env, &build, &manifest.system, &changed, &placed)?;
     next.system = system::Record { copied, services };
+    let (setting_steps, dconf) = desktop::plan(runner, env.session_bus, &build.dconf, &manifest.dconf, options.force);
+    next.dconf = dconf;
 
-    // packages, links, root copies, services, then loose files nobody placed
+    // packages, links, root copies, services, settings, loose files nobody placed, then reloads once everything is in place
     let unplaced = unplaced.into_iter().map(|file| Step::Unplaced { file });
-    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(unplaced).collect();
+    let reloads = reload_steps(&build, &changed);
+    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(setting_steps).chain(unplaced).chain(reloads).collect();
     Ok(Planned { build, wanted, copies, steps, manifest, next })
+}
+
+// one reload per program with a reload command whose files changed
+fn reload_steps(build: &Report, changed: &HashSet<PathBuf>) -> Vec<Step> {
+    let commands: BTreeMap<&String, &String> = build.outputs.iter().filter(|output| changed.contains(&output.destination)).filter_map(|output| Some((&output.name, output.reload.as_ref()?))).collect();
+    commands.into_iter().map(|(name, command)| Step::Reload { name: name.clone(), command: command.clone() }).collect()
+}
+
+// runs each reload; a program that isn't running fails its reload, which is fine
+fn reload(runner: &dyn Runner, steps: &[Step]) {
+    let commands = steps.iter().filter_map(|step| match step {
+        Step::Reload { command, .. } => Some(command),
+        _ => None,
+    });
+    commands.for_each(|command| drop(runner.run("sh", &["-c".into(), command.clone()])));
 }
 
 // the destination a step writes new content to, if any
@@ -247,7 +280,7 @@ fn plan(manifest: &Manifest, wanted: &[Wanted], edited: &HashSet<PathBuf>, force
         .collect();
 
     let steps = removals.chain(decisions.into_iter().filter_map(|(step, _)| step)).collect();
-    (steps, Manifest { files, system: system::Record::default() })
+    (steps, Manifest { files, ..Manifest::default() })
 }
 
 // the step one wanted file needs, judged from the manifest and what's on disk
@@ -467,6 +500,43 @@ mod tests {
 
     fn run(fixture: &Fixture, options: Options) -> Activation {
         activate(&fixture.env, &fixture.runner, &fixture.repo, &Answer(None), options).unwrap()
+    }
+
+    #[test]
+    fn changed_config_reloads_its_program_and_settings_are_written_once() {
+        let mut fixture = testing::fixture(&[]);
+        write(&fixture.repo.module_file("waybar"), "top");
+        write(&fixture.repo.module_file("gtk"), "prefer-dark");
+
+        // dconf that remembers what's written; everything else as the fixture answers it
+        let database = std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::<String, String>::new()));
+        let dconf = database.clone();
+        fixture.runner = crate::runner::fake::FakeRunner::fallible(move |program, args| match (program, args.first().map(String::as_str)) {
+            ("dconf", Some("read")) => Ok(dconf.borrow().get(&args[1]).cloned().unwrap_or_default()),
+            ("dconf", Some("write")) => {
+                dconf.borrow_mut().insert(args[1].clone(), args[2].clone());
+                Ok(String::new())
+            }
+            _ => testing::fake(program, args),
+        });
+        let reloads = |activation: &Activation| activation.steps.iter().filter(|step| matches!(step, Step::Reload { .. })).count();
+
+        let first = run(&fixture, Options::default());
+        assert_eq!(reloads(&first), 1);
+        assert!(first.steps.contains(&Step::Setting { key: "/org/gnome/desktop/interface/color-scheme".into(), value: "'prefer-dark'".into() }));
+        assert!(fixture.runner.calls.borrow().contains(&"sh -c pkill -USR2 waybar".to_string()));
+        assert_eq!(database.borrow().values().collect::<Vec<_>>(), ["'prefer-dark'"]);
+
+        // nothing changed: no reload, no writes
+        assert!(run(&fixture, Options::default()).steps.is_empty());
+
+        // an edited module reloads again; a setting changed by hand is reported, not overwritten
+        write(&fixture.repo.module_file("waybar"), "bottom");
+        database.borrow_mut().insert("/org/gnome/desktop/interface/color-scheme".into(), "'prefer-light'".into());
+        let third = run(&fixture, Options::default());
+        assert_eq!(reloads(&third), 1);
+        assert!(third.steps.contains(&Step::SettingEdited { key: "/org/gnome/desktop/interface/color-scheme".into() }));
+        assert_eq!(database.borrow().values().collect::<Vec<_>>(), ["'prefer-light'"]);
     }
 
     fn foot(fixture: &Fixture) -> PathBuf {

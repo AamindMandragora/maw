@@ -21,6 +21,8 @@ pub struct Entry {
     pub root: bool,
     #[serde(default)]
     pub executable: bool,
+    // a command making the running program read changed config, unless its module gives one
+    pub reload: Option<String>,
 }
 
 #[derive(Debug, Default)]

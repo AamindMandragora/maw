@@ -277,7 +277,7 @@ let
     else
       generators.${format} settings;
 
-  # a program's config as a list of { name, key, content, executable, scope }
+  # a program's config as a list of { name, key, content, executable, scope, reload }
   program =
     name:
     {
@@ -287,13 +287,55 @@ let
       executable ? false,
       path ? null,
       scope ? "user",
+      # a command that makes the running program read its changed config; null uses the registry's
+      reload ? null,
     }:
     mapAttrsToList (key: fileSettings: {
-      inherit name executable scope;
+      inherit name executable scope reload;
       key = if path != null && key == "main" then path else key;
       # format may be one string or an attrset keyed like files
       content = renderFile (if isAttrs format then format.${key} else format) fileSettings;
     }) files;
+
+  # a nix value as GVariant text, the way dconf read prints it: strings in single quotes (double when they hold one)
+  toGVariant =
+    value:
+    if isRaw value then
+      value.text
+    else if builtins.isBool value then
+      (if value then "true" else "false")
+    else if builtins.isInt value then
+      toString value
+    else if builtins.isFloat value then
+      builtins.toJSON value
+    else if builtins.isString value then
+      (
+        let
+          escape = quote: builtins.replaceStrings [ "\\" quote ] [ "\\\\" "\\${quote}" ];
+        in
+        if hasInfix "'" value && !hasInfix "\"" value then
+          "\"${escape "\"" value}\""
+        else
+          "'${escape "'" value}'"
+      )
+    else if builtins.isList value then
+      "[${concatMapStringsSep ", " toGVariant value}]"
+    else
+      throw "maw: dconf values are strings, numbers, booleans, lists, or lib.raw GVariant text";
+
+  # desktop settings in dconf, by path then key: { "org/gnome/desktop/interface".color-scheme = "prefer-dark"; }
+  dconf = settings: [
+    {
+      name = "dconf";
+      key = "dconf";
+      scope = "user";
+      content = "";
+      executable = false;
+      dconf = nixpkgs.concatMapAttrs (
+        path: keys: nixpkgs.mapAttrs' (key: value: nixpkgs.nameValuePair "/${path}/${key}" (toGVariant value)) keys
+      ) settings;
+    }
+  ];
 
   # a supervised service, described abstractly; maw's init backend writes its run and log files
   service =
@@ -325,6 +367,8 @@ nixpkgs
     isRaw
     program
     service
+    dconf
+    toGVariant
     toCSS
     toINI
     toJSON

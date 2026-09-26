@@ -43,7 +43,7 @@ pub fn paint(tone: Tone, text: &str, bold: bool) -> String {
 pub fn label_tone(label: &str) -> Option<Tone> {
     match label {
         "new" | "changed" | "moved" | "restart" | "outdated" | "clean" => Some(Tone::Accent),
-        "blocked" | "replaced" | "edited" | "missing" | "stale" | "disabled" => Some(Tone::Warn),
+        "blocked" | "replaced" | "edited" | "missing" | "stale" | "disabled" | "skipped" => Some(Tone::Warn),
         "undeclared" | "orphan" | "unplaced" => Some(Tone::Dim),
         _ => None,
     }

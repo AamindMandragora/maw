@@ -26,6 +26,8 @@ pub enum BuildError {
     Repo(#[from] RepoError),
     #[error(transparent)]
     State(#[from] StateError),
+    #[error("{key} is set to both {first} and {second}; declare it in one module")]
+    DconfConflict { key: String, first: String, second: String },
     #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
 }
@@ -46,6 +48,8 @@ pub struct Output {
     pub hash: String,
     pub content: String,
     pub service: Option<ServiceRef>,
+    // run after the file changes, so the running program reads it
+    pub reload: Option<String>,
 }
 
 // the service a file belongs to, so activation can enable and restart it
@@ -77,6 +81,8 @@ pub struct Report {
     pub registry: Registry,
     pub state: MawState,
     pub settings: Settings,
+    // declared dconf values, GVariant text by key path
+    pub dconf: BTreeMap<String, String>,
 }
 
 fn yes() -> bool {
@@ -159,7 +165,8 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         .collect::<Result<Vec<_>, BuildError>>()?;
 
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
-    let mut outputs: Vec<Output> = files.iter().flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
+    let dconf = dconf_settings(&files)?;
+    let mut outputs: Vec<Output> = files.iter().filter(|file| file.dconf.is_none()).flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
     outputs.extend(local_repo(env, repo, &state, &settings));
     outputs.extend(flatpak_wrappers(env, repo, &state, &settings));
     let placements = place_all(env, &outputs, options)?;
@@ -183,6 +190,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         registry,
         state,
         settings,
+        dconf,
     };
 
     inputs.save(&inputs_file)?;
@@ -233,7 +241,17 @@ fn local_repo(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> 
             hash: hash_bytes(content.as_bytes()),
             content,
             service: None,
+            reload: None,
         }
+    })
+}
+
+// every module's dconf values merged; a key two modules set differently is an error
+fn dconf_settings(files: &[&RenderedFile]) -> Result<BTreeMap<String, String>, BuildError> {
+    let mut declared = files.iter().filter_map(|file| file.dconf.as_ref()).flatten();
+    declared.try_fold(BTreeMap::new(), |mut settings, (key, value)| match settings.insert(key.clone(), value.clone()) {
+        Some(first) if first != *value => Err(BuildError::DconfConflict { key: key.clone(), first, second: value.clone() }),
+        _ => Ok(settings),
     })
 }
 
@@ -255,6 +273,7 @@ fn flatpak_wrappers(env: &Env, repo: &Repo, state: &MawState, settings: &Setting
                 hash: hash_bytes(content.as_bytes()),
                 content,
                 service: None,
+                reload: None,
             }
         })
         .collect()
@@ -317,6 +336,7 @@ fn service_outputs(env: &Env, repo: &Repo, name: &str, scope: Scope, service: &c
             hash: hash_bytes(content.as_bytes()),
             content,
             service: Some(service_ref.clone()),
+            reload: None,
         })
         .collect()
 }
@@ -334,6 +354,7 @@ fn to_output(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -
         hash: hash_bytes(file.content.as_bytes()),
         content: file.content.clone(),
         service: None,
+        reload: file.reload.clone().or_else(|| entry.reload.clone()),
     }
 }
 

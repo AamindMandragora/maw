@@ -118,12 +118,16 @@ backup ~/.config/fuzzel/fuzzel.ini -> ~/.local/state/maw/backups/.config/fuzzel/
 link ~/.config/fuzzel/fuzzel.ini
 update ~/.config/waybar/style.css
 unlink ~/.config/foot/foot.ini
+set /org/gnome/desktop/interface/color-scheme 'prefer-dark'
+reload waybar
 ```
 
 - `link`: a new link. If a real file or someone else's link was already there, it's moved to the backups dir first (`backup`).
 - `relink`: the file now comes from somewhere else, e.g. it moved from a module to `static/`.
 - `update`: the content behind an existing link changed. Nothing needs doing on disk.
 - `unlink`: a module or static file was removed, so its link is too. A backup made when it was first linked stays in the backups dir.
+- `set` / `reset`: a desktop setting declared with [`lib.dconf`](modules.md) was written, or reset once nothing declares it.
+- `reload`: a program whose files changed was told to read them again, last, once everything is in place; see [modules.md](modules.md).
 
 Since everything is a link, a change reaches the live file as soon as it's in `out/` or `static/`. Running `maw activate` twice in a row does nothing the second time.
 
@@ -174,6 +178,8 @@ drift ~/.config/waybar/style.css: edited in place; --force to overwrite
 
 - **replaced**: the link is gone and something else sits there, often an app that saves by writing a new file.
 - **edited**: the file was edited through its link, so `out/` holds your edit instead of what the module renders.
+
+Desktop settings declared with [`lib.dconf`](modules.md) drift the same way: `drift /org/gnome/desktop/interface/color-scheme: changed since maw set it; --force to overwrite`.
 
 Drifted files are left alone and reported on every run. To keep the change, move it into the module or `static/`. To discard it, run `maw activate --force`, which backs up the drifted file and puts maw's version back.
 
@@ -246,11 +252,12 @@ The one report of everything out of sync, one line each, or `clean`. First what 
 | `missing` | a declared package isn't installed |
 | `new` | declared, not linked yet |
 | `blocked` | a file maw doesn't manage is in the way; activating backs it up |
-| `changed` | a module changed and `out/` hasn't caught up |
+| `changed` | a module changed and `out/` hasn't caught up, or a declared desktop setting isn't set yet |
 | `moved` | the file now comes from somewhere else |
 | `stale` | no longer declared; activating unlinks, deletes, or disables it |
 | `replaced` | [drift](#drift): the link was replaced |
-| `edited` | [drift](#drift): edited through the link |
+| `edited` | [drift](#drift): edited through the link, or a desktop setting changed by hand |
+| `skipped` | desktop settings can't be applied now, e.g. outside a desktop session |
 | `unplaced` | a loose static file with no destination yet |
 | `disabled` | a declared service isn't enabled |
 | `restart` | a running service's files changed |

@@ -5,6 +5,7 @@ pub mod backup;
 pub mod build;
 pub mod edit;
 pub mod cli;
+pub mod desktop;
 pub mod complete;
 pub mod env;
 pub mod generations;

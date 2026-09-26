@@ -1,6 +1,7 @@
 use crate::env::Env;
 use crate::init::ServiceDef;
 use crate::runner::{RunError, Runner};
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -29,6 +30,12 @@ pub struct RenderedFile {
     // set by lib.service; the init backend renders the actual files
     #[serde(default)]
     pub service: Option<ServiceDef>,
+    // lib.program's reload, a command making the running program read changed config
+    #[serde(default)]
+    pub reload: Option<String>,
+    // set by lib.dconf: GVariant text by full key path
+    #[serde(default)]
+    pub dconf: Option<BTreeMap<String, String>>,
 }
 
 // a cached evaluation, valid while its key matches

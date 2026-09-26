@@ -504,6 +504,11 @@ pub fn status_lines(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<S
         Step::Disable { scope, name } => line("stale", service_label(*scope, name)),
         Step::Purge { scope, name } => line("stale", path(&Runit.definition(env, *scope, name))),
         Step::Restart { scope, name } => line("restart", service_label(*scope, name)),
+        Step::Setting { key, value } => line("changed", format!("{key} = {value}")),
+        Step::SettingEdited { key } => line("edited", key.clone()),
+        Step::SettingReset { key } => line("stale", key.clone()),
+        Step::SettingsSkipped { reason } => line("skipped", format!("settings: {reason}")),
+        Step::Reload { name, .. } => line("reload", name.clone()),
     });
 
     // source packages behind their template, things maw.nix doesn't know about, then config for programs that aren't installed
@@ -946,6 +951,11 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
         Step::Disable { scope, name } => println!("disable {}", service_label(*scope, name)),
         Step::Purge { scope, name } => println!("remove {}", env.pretty(&Runit.definition(env, *scope, name))),
         Step::Restart { scope, name } => println!("restart {}", service_label(*scope, name)),
+        Step::Setting { key, value } => println!("set {key} {value}"),
+        Step::SettingEdited { key } => println!("drift {key}: changed since maw set it; --force to overwrite"),
+        Step::SettingReset { key } => println!("reset {key}"),
+        Step::SettingsSkipped { reason } => println!("skip settings: {reason}"),
+        Step::Reload { name, .. } => println!("reload {name}"),
     });
 
     if dry_run && !activation.steps.is_empty() {

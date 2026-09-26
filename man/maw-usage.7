@@ -118,6 +118,8 @@ backup ~/.config/fuzzel/fuzzel.ini -> ~/.local/state/maw/backups/.config/fuzzel/
 link ~/.config/fuzzel/fuzzel.ini
 update ~/.config/waybar/style.css
 unlink ~/.config/foot/foot.ini
+set /org/gnome/desktop/interface/color-scheme 'prefer-dark'
+reload waybar
 .EE
 .IP \(bu 2
 \fBlink\fR: a new link. If a real file or someone else's link was already there, it's moved to the backups dir first (\fBbackup\fR).
@@ -127,6 +129,10 @@ unlink ~/.config/foot/foot.ini
 \fBupdate\fR: the content behind an existing link changed. Nothing needs doing on disk.
 .IP \(bu 2
 \fBunlink\fR: a module or static file was removed, so its link is too. A backup made when it was first linked stays in the backups dir.
+.IP \(bu 2
+\fBset\fR / \fBreset\fR: a desktop setting declared with \fBmaw help modules\fR was written, or reset once nothing declares it.
+.IP \(bu 2
+\fBreload\fR: a program whose files changed was told to read them again, last, once everything is in place; see \fBmaw help modules\fR.
 .PP
 Since everything is a link, a change reaches the live file as soon as it's in \fBout/\fR or \fBstatic/\fR. Running \fBmaw activate\fR twice in a row does nothing the second time.
 .SS "System files"
@@ -177,6 +183,8 @@ drift ~/.config/waybar/style.css: edited in place; --force to overwrite
 \fBreplaced\fR: the link is gone and something else sits there, often an app that saves by writing a new file.
 .IP \(bu 2
 \fBedited\fR: the file was edited through its link, so \fBout/\fR holds your edit instead of what the module renders.
+.PP
+Desktop settings declared with \fBmaw help modules\fR drift the same way: \fBdrift /org/gnome/desktop/interface/color-scheme: changed since maw set it; --force to overwrite\fR.
 .PP
 Drifted files are left alone and reported on every run. To keep the change, move it into the module or \fBstatic/\fR. To discard it, run \fBmaw activate --force\fR, which backs up the drifted file and puts maw's version back.
 .PP
@@ -246,11 +254,12 @@ label       meaning
 missing     a declared package isn't installed
 new         declared, not linked yet
 blocked     a file maw doesn't manage is in the way; activating backs it up
-changed     a module changed and out/ hasn't caught up
+changed     a module changed and out/ hasn't caught up, or a declared desktop setting isn't set yet
 moved       the file now comes from somewhere else
 stale       no longer declared; activating unlinks, deletes, or disables it
 replaced    drift: the link was replaced
-edited      drift: edited through the link
+edited      drift: edited through the link, or a desktop setting changed by hand
+skipped     desktop settings can't be applied now, e.g. outside a desktop session
 unplaced    a loose static file with no destination yet
 disabled    a declared service isn't enabled
 restart     a running service's files changed

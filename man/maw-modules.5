@@ -44,6 +44,7 @@ files       { main = settings; }  several files, keyed by role
 executable  false                 mark the output executable
 path                              a subpath for the main file, when the program needs one
 scope       "user"                "user" or "root"
+reload      the registry's        a command run after the files change, so the running program reads them
 .EE
 .PP
 Programs with more than one file use \fBfiles\fR. \fBformat\fR can then be one string for all files, or an attrset with one format per file:
@@ -84,6 +85,37 @@ lib.service "rclone" {
 .EE
 .PP
 The run script gets \fBexec 2>&1\fR first, so errors reach the log, then the \fBenv\fR exports. It should end by \fBexec\fRing the long-running program, which runit supervises and restarts when it exits. A module can return a service alongside program files as a list: \fB[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]\fR.
+.SH "RELOADING"
+.PP
+When an activation changes a program's files, maw runs its reload command once all files are in place: \fBpkill -USR2 -x waybar\fR, \fBdunstctl reload\fR, \fBmakoctl reload\fR, and so on. The registry knows the command for common programs; \fBreload\fR in \fBlib.program\fR sets or overrides it:
+.PP
+.EX
+lib.program "waybar" {
+  reload = "pkill -USR2 -x waybar";
+  ...
+}
+.EE
+.PP
+The command runs through \fBsh -c\fR as you. A program that isn't running fails its reload, which is fine. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see \fBlib.service\fR.
+.SH "LIB.DCONF { ... }"
+.PP
+Desktop settings: the dconf database that GTK apps, GNOME, and \fBgsettings\fR read. Keys are grouped by path:
+.PP
+.EX
+{ lib, ... }:
+lib.dconf {
+  "org/gnome/desktop/interface" = {
+    color-scheme = "prefer-dark";
+    gtk-theme = "Adwaita-dark";
+    font-name = "Adwaita Sans 11";
+    text-scaling-factor = 1.25;
+  };
+}
+.EE
+.PP
+Strings, numbers, booleans, and lists become GVariant values; for anything else (\fBuint32 5\fR, tuples), write the GVariant text with \fBlib.raw\fR. A module can return settings next to program files as a list: \fB[ (lib.program "x" { ... }) (lib.dconf { ... }) ]\fR. Two modules setting one key to different values is an error.
+.PP
+maw writes each key with \fBdconf write\fR, and only when its value differs. A key you change by hand afterwards, say in a settings app, is reported and left alone, like a hand-edited file; \fBmaw activate --force\fR puts the declared value back. Keys you stop declaring are reset to their defaults, unless you've changed them since. dconf needs a desktop session: activating from a bare console skips settings with a note, and the next activation in your session applies them.
 .SH "VERBATIM TEXT"
 .PP
 \fBlib.raw ''...''\fR is accepted anywhere a value is. Use it where Nix syntax doesn't reach, and mix it freely with Nix in one file:

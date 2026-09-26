@@ -38,9 +38,16 @@
     dir = "/etc/greetd";
     root = true;
   };
+  # reload runs after the program's files change, so the running program reads them; niri and alacritty watch their own
+  dunst = {
+    format = "ini";
+    files.main = "dunst/dunstrc";
+    reload = "dunstctl reload";
+  };
   mako = {
     format = "ini";
     files.main = "mako/config";
+    reload = "makoctl reload";
   };
   niri = {
     format = "kdl";
@@ -57,10 +64,12 @@
       main = "swaync/config.json";
       style = "swaync/style.css";
     };
+    reload = "swaync-client --reload-config --reload-css";
   };
   tmux = {
     format = "raw";
     files.main = "tmux/tmux.conf";
+    reload = "tmux source-file ~/.config/tmux/tmux.conf";
   };
   wallpapers.dir = "~/.local/share/wallpapers";
   waybar = {
@@ -69,6 +78,7 @@
       main = "waybar/config.jsonc";
       style = "waybar/style.css";
     };
+    reload = "pkill -USR2 -x waybar";
   };
   # from home-manager by tools/scrape-registry; edit or move freely
   abook = {
@@ -222,6 +232,7 @@
       "no-preference-theme.auto" = "kitty/no-preference-theme.auto.conf";
       macos-launch-services-cmdline = "kitty/macos-launch-services-cmdline";
     };
+    reload = "pkill -USR1 -x kitty";
   };
   lazysql = {
     format = "toml";

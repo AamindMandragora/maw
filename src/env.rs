@@ -8,6 +8,8 @@ pub struct Env {
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
     pub share_dir: PathBuf,
+    // whether there's a desktop session bus, which writing dconf needs
+    pub session_bus: bool,
 }
 
 impl Env {
@@ -19,6 +21,7 @@ impl Env {
             config_dir: home.join(".config/maw"),
             state_dir: home.join(".local/state/maw"),
             share_dir: share_dir.to_path_buf(),
+            session_bus: true,
         }
     }
 
@@ -29,7 +32,8 @@ impl Env {
         let sysroot = std::env::var_os("MAW_SYSROOT").map(PathBuf::from).unwrap_or_else(|| "/".into());
         let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let share_dir = if checkout.join("nix/lib.nix").exists() { checkout } else { PathBuf::from("/usr/share/maw") };
-        Env::new(&home, &sysroot, &share_dir)
+        let session_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some();
+        Env { session_bus, ..Env::new(&home, &sysroot, &share_dir) }
     }
 
     pub fn nix_dir(&self) -> PathBuf {

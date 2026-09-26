@@ -103,7 +103,9 @@ fn pending(planned: activate::Planned) -> Vec<Step> {
 
     // an update is pending only while out/ lags the module; static edits are live through the link already
     let lagging = |destination: &PathBuf| sources.get(destination).is_some_and(|source| planned.build.written.contains(source));
-    planned.steps.iter().filter(|step| !matches!(step, Step::Update { destination } if !lagging(destination))).cloned().collect()
+    // a reload only follows a change, so it's never pending on its own
+    let pending = |step: &&Step| !matches!(step, Step::Reload { .. }) && !matches!(step, Step::Update { destination } if !lagging(destination));
+    planned.steps.iter().filter(pending).cloned().collect()
 }
 
 // what `activate --force` would change in each live file, including links it would remove

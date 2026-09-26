@@ -41,6 +41,7 @@ The arguments:
 | `executable` | `false` | mark the output executable |
 | `path` | | a subpath for the main file, when the program needs one |
 | `scope` | `"user"` | `"user"` or `"root"` |
+| `reload` | the registry's | a command run after the files change, so the running program reads them |
 
 Programs with more than one file use `files`. `format` can then be one string for all files, or an attrset with one format per file:
 
@@ -80,6 +81,39 @@ lib.service "rclone" {
 ```
 
 The run script gets `exec 2>&1` first, so errors reach the log, then the `env` exports. It should end by `exec`ing the long-running program, which runit supervises and restarts when it exits. A module can return a service alongside program files as a list: `[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]`.
+
+## Reloading
+
+When an activation changes a program's files, maw runs its reload command once all files are in place: `pkill -USR2 -x waybar`, `dunstctl reload`, `makoctl reload`, and so on. The registry knows the command for common programs; `reload` in `lib.program` sets or overrides it:
+
+```nix
+lib.program "waybar" {
+  reload = "pkill -USR2 -x waybar";
+  ...
+}
+```
+
+The command runs through `sh -c` as you. A program that isn't running fails its reload, which is fine. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see `lib.service`.
+
+## `lib.dconf { ... }`
+
+Desktop settings: the dconf database that GTK apps, GNOME, and `gsettings` read. Keys are grouped by path:
+
+```nix
+{ lib, ... }:
+lib.dconf {
+  "org/gnome/desktop/interface" = {
+    color-scheme = "prefer-dark";
+    gtk-theme = "Adwaita-dark";
+    font-name = "Adwaita Sans 11";
+    text-scaling-factor = 1.25;
+  };
+}
+```
+
+Strings, numbers, booleans, and lists become GVariant values; for anything else (`uint32 5`, tuples), write the GVariant text with `lib.raw`. A module can return settings next to program files as a list: `[ (lib.program "x" { ... }) (lib.dconf { ... }) ]`. Two modules setting one key to different values is an error.
+
+maw writes each key with `dconf write`, and only when its value differs. A key you change by hand afterwards, say in a settings app, is reported and left alone, like a hand-edited file; `maw activate --force` puts the declared value back. Keys you stop declaring are reset to their defaults, unless you've changed them since. dconf needs a desktop session: activating from a bare console skips settings with a note, and the next activation in your session applies them.
 
 ## Verbatim text
 

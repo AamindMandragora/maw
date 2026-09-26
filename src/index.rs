@@ -7,7 +7,7 @@ use crate::registry;
 use crate::repo::Repo;
 use crate::state::MawState;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,8 @@ pub struct Index {
     pub state: MawState,
     pub auto_commit: bool,
     pub void_packages: Option<String>,
+    #[serde(default)]
+    pub dconf: BTreeMap<String, String>,
 }
 
 // one file: its source relative to the repo, and its destination as ~/... or /... so it holds on any machine
@@ -38,6 +40,8 @@ pub struct Entry {
     pub destination: String,
     pub root: bool,
     pub service: Option<(String, Scope, bool)>,
+    #[serde(default)]
+    pub reload: Option<String>,
 }
 
 // a destination as it reads on any machine: under home as ~/..., anything else relative to the system root
@@ -51,6 +55,7 @@ fn portable(env: &Env, path: &Path) -> String {
 // records what an activation placed, for a later --no-build activation
 pub fn write(env: &Env, repo: &Repo, build: &Report, wanted: &[Wanted]) -> Result<(), IndexError> {
     let services: HashMap<&PathBuf, &ServiceRef> = build.outputs.iter().filter_map(|output| Some((&output.out, output.service.as_ref()?))).collect();
+    let reloads: HashMap<&PathBuf, &String> = build.outputs.iter().filter_map(|output| Some((&output.out, output.reload.as_ref()?))).collect();
     let files = wanted
         .iter()
         .map(|file| Entry {
@@ -58,9 +63,10 @@ pub fn write(env: &Env, repo: &Repo, build: &Report, wanted: &[Wanted]) -> Resul
             destination: portable(env, &file.destination),
             root: file.root,
             service: services.get(&file.source).map(|service| (service.name.clone(), service.scope, service.enable)),
+            reload: reloads.get(&file.source).map(|command| command.to_string()),
         })
         .collect();
-    let index = Index { files, state: build.state.clone(), auto_commit: build.settings.auto_commit, void_packages: build.settings.void_packages.clone() };
+    let index = Index { files, state: build.state.clone(), auto_commit: build.settings.auto_commit, void_packages: build.settings.void_packages.clone(), dconf: build.dconf.clone() };
 
     // unchanged activations leave it untouched, so a second activate writes nothing
     let path = crate::build::index_file(repo);
@@ -91,7 +97,7 @@ pub fn load(env: &Env, repo: &Repo) -> Result<(Report, Vec<Wanted>), IndexError>
         .collect::<Result<Vec<_>, IndexError>>()?;
 
     let settings = Settings { auto_commit: index.auto_commit, void_packages: index.void_packages, ..Settings::default() };
-    Ok((Report { outputs, state: index.state, settings, ..Report::default() }, statics))
+    Ok((Report { outputs, state: index.state, settings, dconf: index.dconf, ..Report::default() }, statics))
 }
 
 // one rendered file as an output, read back from out/
@@ -112,6 +118,7 @@ fn output(env: &Env, repo: &Repo, entry: &Entry) -> Result<Output, IndexError> {
         hash: hash_bytes(content.as_bytes()),
         content,
         service: entry.service.clone().map(|(name, scope, enable)| ServiceRef { name, scope, enable }),
+        reload: entry.reload.clone(),
         out,
     })
 }
