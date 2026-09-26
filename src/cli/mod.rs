@@ -111,9 +111,9 @@ pub enum Command {
         #[arg(add = ArgValueCompleter::new(complete::packages))]
         package: Option<String>,
     },
-    #[command(about = "search xbps, or crates.io when xbps has nothing", after_help = "see: maw help looking things up")]
+    #[command(about = "search every package source, then the aur and nixpkgs when none has it", after_help = "see: maw help looking things up")]
     Search {
-        #[arg(help = "a term, or cargo:<term> to search crates.io directly")]
+        #[arg(help = "a term, or <source>:<term> to search one: xbps, flatpak, cargo, uv, npm, aur, nixpkgs")]
         term: String,
     },
     #[command(about = "a package's details, and whether maw manages it", after_help = "see: maw help looking things up")]
@@ -572,7 +572,10 @@ fn change_summary(change: &Change, verb: &str, record_verb: &str) -> Vec<String>
 fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let ask: Option<&dyn Ask> = if dry_run { None } else { Some(&Terminal) };
-    let change = packages::plan_install(env, runner, &repo, requests, ask)?;
+    let change = match packages::plan_install(env, runner, &repo, requests, ask) {
+        Err(packages::PackagesError::Draftable { name, flag, options }) if !dry_run => return offer_draft(env, runner, &repo, packages::PackagesError::Draftable { name, flag, options }),
+        change => change?,
+    };
     let built = |target: &&packages::Target| target.backend == "xbps" && srcpkgs::is_source(&repo.srcpkgs_dir(), &target.spec);
     change.packages.iter().filter(built).for_each(|target| println!("build {}", target.spec));
     print_change(&change, "install", "record {} in maw.nix");
@@ -638,10 +641,22 @@ fn query(env: &Env, runner: &dyn Runner, package: Option<&str>) -> Result<()> {
 
 // repo matches, marked [*] when installed like xbps does, named the way `maw install` takes them
 fn search(env: &Env, runner: &dyn Runner, term: &str) -> Result<()> {
-    packages::search(env, runner, term)?.iter().for_each(|(target, pkg, installed)| {
-        let mark = if *installed { "*" } else { "-" };
+    let found = packages::search(env, runner, term)?;
+    found.unreachable.iter().for_each(|source| eprintln!("{} {source} didn't answer; skipped", prefix(Tone::Warn, "warning:")));
+
+    // [*] installed, [-] installable, [~] draftable from the aur or nixpkgs
+    let draftable = |target: &packages::Target| packages::DRAFTS.contains(&target.backend.as_str());
+    found.hits.iter().for_each(|(target, pkg, installed)| {
+        let mark = match (installed, draftable(target)) {
+            (true, _) => "*",
+            (false, true) => "~",
+            (false, false) => "-",
+        };
         println!("[{mark}] {target} {}  {}", pkg.version, pkg.description);
     });
+    if found.hits.iter().any(|(target, ..)| draftable(target)) {
+        println!("`maw install aur:<name>` or `nixpkgs:<name>` drafts a template");
+    }
     Ok(())
 }
 
@@ -730,8 +745,7 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
     let repo = Repo::locate(env)?;
     match action {
         SrcAction::New { name, from_nix, from_aur } => {
-            let git = |key: &str| runner.run("git", &["-C".into(), repo.root.display().to_string(), "config".into(), key.into()]).unwrap_or_default().trim().to_string();
-            let maintainer = format!("{} <{}>", git("user.name"), git("user.email"));
+            let maintainer = maintainer(runner, &repo);
 
             // an upstream name left empty means the template's own name
             let named = |given: String| if given.is_empty() { name.clone() } else { given };
@@ -767,6 +781,30 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// the repo's git identity, for a template's maintainer line
+fn maintainer(runner: &dyn Runner, repo: &Repo) -> String {
+    let git = |key: &str| runner.run("git", &["-C".into(), repo.root.display().to_string(), "config".into(), key.into()]).unwrap_or_default().trim().to_string();
+    format!("{} <{}>", git("user.name"), git("user.email"))
+}
+
+// for a name nothing installs: asks which upstream to draft a template from, drafts it, and says how to build it;
+// with no one to ask, or no pick, the error itself says how
+fn offer_draft(env: &Env, runner: &dyn Runner, repo: &Repo, error: packages::PackagesError) -> Result<()> {
+    let packages::PackagesError::Draftable { name, options, .. } = &error else { return Err(error.into()) };
+    let question = packages::choice_question(name, "isn't in any source maw installs from; draft a template from", options);
+    let Some((target, _)) = Terminal.ask(&question).and_then(|answer| packages::pick(&answer, options).cloned()) else {
+        return Err(error.into());
+    };
+    let name = name.clone();
+    let upstream = match target.backend.as_str() {
+        "aur" => scaffold::Upstream::Aur(target.spec),
+        _ => scaffold::Upstream::Nix(target.spec),
+    };
+    draft(env, runner, repo, &name, &upstream, &maintainer(runner, repo))?;
+    println!("`maw install {name}` builds and installs it");
+    Ok(())
 }
 
 // drafts a template from nixpkgs or the aur, opens it, and offers to remember the dependency names the user fixed

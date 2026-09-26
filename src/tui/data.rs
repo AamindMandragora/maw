@@ -51,14 +51,23 @@ fn packages_rows(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Row>
 
 // repo search results, keyed for installing
 pub fn find_rows(env: &Env, runner: &dyn Runner, term: &str) -> Vec<Row> {
-    match packages::search(env, runner, term) {
-        Ok(found) if found.is_empty() => vec![Row::text(format!("nothing matches {term}"))],
-        Ok(found) => found
-            .iter()
-            .map(|(target, pkg, installed)| Row::new(vec![target.to_string(), pkg.version.clone(), if *installed { "installed".into() } else { String::new() }, pkg.description.clone()], target.to_string()))
-            .collect(),
-        Err(error) => vec![Row::text(format!("error: {error}"))],
+    let found = match packages::search(env, runner, term) {
+        Ok(found) => found,
+        Err(error) => return vec![Row::text(format!("error: {error}"))],
+    };
+    let unreachable = found.unreachable.iter().map(|source| Row::text(format!("{source} didn't answer")));
+    if found.hits.is_empty() {
+        return std::iter::once(Row::text(format!("nothing matches {term}"))).chain(unreachable).collect();
     }
+
+    // installed ones say so; aur and nixpkgs ones are drafted rather than installed
+    let status = |target: &packages::Target, installed: bool| match installed {
+        true => "installed",
+        false if packages::DRAFTS.contains(&target.backend.as_str()) => "draft",
+        false => "",
+    };
+    let hits = found.hits.iter().map(|(target, pkg, installed)| Row::new(vec![target.to_string(), pkg.version.clone(), status(target, *installed).into(), pkg.description.clone()], target.to_string()));
+    hits.chain(unreachable).collect()
 }
 
 // modules/<name>.nix and static/<name>/, each once, with what the repo holds for it

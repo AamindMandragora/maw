@@ -15,6 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod aur;
+pub mod nixos;
 pub mod nixpkgs;
 pub mod xbps_src;
 
@@ -28,6 +29,8 @@ pub enum ScaffoldError {
     NoSource(String),
     #[error("void already has {0}; `maw install {0}`, or patch it with srcpkgs/{0}/patches/")]
     InVoid(String),
+    #[error("search.nixos.org didn't answer the way maw expects; search nixpkgs at https://search.nixos.org instead")]
+    NixSearch,
     #[error("the aur has no {0}; `maw search {0}` to look for it")]
     NotInAur(String),
     #[error("{0} builds from a git checkout; draft from its release package instead, usually the name without -git")]

@@ -59,9 +59,9 @@ impl Backend for Uv<'_> {
         }
     }
 
-    // pypi has no search api
-    fn search(&self, _: &str) -> Result<Vec<Pkg>, BackendError> {
-        Ok(Vec::new())
+    // pypi has no search api, so only an exact name is found
+    fn search(&self, term: &str) -> Result<Vec<Pkg>, BackendError> {
+        Ok(self.info(term)?.into_iter().collect())
     }
 
     // a project on pypi, from its json api; urls aren't checked until they're installed
@@ -74,6 +74,9 @@ impl Backend for Uv<'_> {
         let project: serde_json::Value = serde_json::from_str(&body).map_err(|_| BackendError::Parse { backend: "uv".into(), line: body.clone() })?;
         let field = |key: &str| project["info"][key].as_str().unwrap_or_default().to_string();
         let name = field("name");
+        if name.is_empty() {
+            return Ok(None);
+        }
         Ok(Some(Pkg { source: name.clone(), name, version: field("version"), description: field("summary"), homepage: field("home_page"), ..Pkg::default() }))
     }
 

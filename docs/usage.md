@@ -343,13 +343,16 @@ record foot in maw.nix
 create modules/foot.nix
 ```
 
-A bare name goes to whichever source already declares it, a flatpak app id (`com.slack.Slack`) to Flathub, and anything else to xbps. If xbps doesn't have it but crates.io has a crate by that name, maw asks first:
+A bare name goes to whichever source already declares it, a flatpak app id (`com.slack.Slack`) to Flathub, and anything else to xbps. If xbps doesn't have it, maw looks for that exact name on Flathub, crates.io, PyPI, and npm, and asks first; with more than one match, it asks which:
 
 ```
-hello-cli isn't in xbps; install crate hello-cli 0.2.2 from crates.io? [Y/n]
+prettier isn't in xbps; install one of:
+  1  npm:prettier 3.6.2  Prettier is an opinionated code formatter
+  2  cargo:prettier 0.1.0  ...
+which? [1]
 ```
 
-Without a terminal it stops and suggests `cargo:<name>` instead. Library crates and npm packages with no commands are refused before any question, since there's nothing to install; add them to a project with `cargo add` or `npm install` instead. A `flatpak:`, `cargo:`, `go:`, `uv:`, `npm:`, or `xbps:` prefix skips all of that. Python and npm packages always need their prefix. `@version` pins a crate, go program, python program, or npm package to that version; without it you get the latest.
+Without a terminal it stops and names the prefixes to use instead. When no source has the name, maw looks in the AUR and nixpkgs and offers to [draft a template](#source-packages) from one; `maw install aur:<name>` or `nixpkgs:<name>` goes straight there. The draft opens in your editor, and `maw install <name>` then builds and installs it. Library crates and npm packages with no commands are refused before any question, since there's nothing to install; add them to a project with `cargo add` or `npm install` instead. A `flatpak:`, `cargo:`, `go:`, `uv:`, `npm:`, or `xbps:` prefix skips all of that. Python and npm packages always need their prefix. `@version` pins a crate, go program, python program, or npm package to that version; without it you get the latest.
 
 Each source needs its tool: `cargo`, `go`, `uv`, `flatpak`, or `npm` (Void's `nodejs`). When one is missing, maw stops and says what to install: `error: uv isn't installed; maw install uv first`. `maw install uv uv:ruff` does both, xbps first.
 
@@ -383,12 +386,12 @@ Removes the package and drops it from `maw.nix`. xbps also removes dependencies 
 ```sh
 maw query           # packages you installed or declared, in every source
 maw query bat       # one of them
-maw search term     # xbps, or crates.io when xbps has nothing; [*] marks installed
-maw search cargo:term
+maw search term     # every source; [*] installed, [~] draftable
+maw search npm:term # one source: xbps, flatpak, cargo, uv, npm, aur, or nixpkgs
 maw info bat        # details, plus whether maw manages it
 ```
 
-`query` lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: `(undeclared)` for installed but not in `maw.nix`, `(missing)` for declared but not installed. Crates and go programs are marked with their source. `search` prints names the way `maw install` takes them. `info` shows the version, whether it's installed and declared, the module or `static/` dir holding its config, and where the registry puts that config.
+`query` lists what you installed by hand plus everything declared, flagging the two kinds of mismatch: `(undeclared)` for installed but not in `maw.nix`, `(missing)` for declared but not installed. Crates and go programs are marked with their source. `search` looks in xbps, Flathub, crates.io, PyPI (exact names only, since PyPI has no search), and npm, and prints names the way `maw install` takes them. Only when none of them has a match does it look in the AUR and nixpkgs, whose results are marked `[~]`: they can't be installed as they are, only drafted into a template. A source whose tool isn't installed is skipped; one that doesn't answer gets a warning. nixpkgs is searched through [search.nixos.org](https://search.nixos.org). `info` shows the version, whether it's installed and declared, the module or `static/` dir holding its config, and where the registry puts that config.
 
 ### Source packages
 

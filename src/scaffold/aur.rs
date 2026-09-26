@@ -1,4 +1,5 @@
 use super::{ScaffoldError, SourcePkg, go_import_path};
+use crate::backend::Pkg;
 use crate::runner::Runner;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -219,6 +220,28 @@ pub fn info(runner: &dyn Runner, name: &str) -> Result<Value, ScaffoldError> {
     response["results"].get(0).cloned().ok_or_else(|| ScaffoldError::NotInAur(name.into()))
 }
 
+// an rpc result as a package: its name, full version, and description
+fn to_pkg(result: &Value) -> Pkg {
+    let field = |key: &str| result[key].as_str().unwrap_or_default().to_string();
+    Pkg { name: field("Name"), source: field("Name"), version: field("Version"), description: field("Description"), homepage: field("URL"), ..Pkg::default() }
+}
+
+// aur packages whose name or description matches, most voted first; checkouts are left out, since they can't be drafted
+pub fn search(runner: &dyn Runner, term: &str) -> Result<Vec<Pkg>, ScaffoldError> {
+    let url = format!("https://aur.archlinux.org/rpc/v5/search/{term}?by=name-desc");
+    let body = runner.run("curl", &["-fsSL".into(), url])?;
+    let response: Value = serde_json::from_str(&body).map_err(|source| ScaffoldError::Meta { attr: term.into(), source })?;
+    let mut results: Vec<Value> = response["results"].as_array().cloned().unwrap_or_default();
+    results.retain(|result| !["-git", "-hg", "-svn", "-bzr"].iter().any(|suffix| result["Name"].as_str().unwrap_or_default().ends_with(suffix)));
+    results.sort_by_key(|result| std::cmp::Reverse(result["NumVotes"].as_u64().unwrap_or(0)));
+    Ok(results.iter().take(10).map(to_pkg).collect())
+}
+
+// one aur package by exact name, if the aur has it
+pub fn find(runner: &dyn Runner, name: &str) -> Option<Pkg> {
+    info(runner, name).ok().map(|result| to_pkg(&result))
+}
+
 // the PKGBUILD of a package base, from the aur's git web view
 pub fn pkgbuild(runner: &dyn Runner, base: &str) -> Result<String, ScaffoldError> {
     Ok(runner.run("curl", &["-fsSL".into(), format!("https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={base}")])?)
@@ -336,6 +359,14 @@ package() {
     fn checkouts_are_refused() {
         let info = json!({ "Name": "tool-git", "PackageBase": "tool-git", "Version": "r1-1" });
         assert!(matches!(source_pkg(&info, "source=(\"git+https://github.com/a/tool\")\n", "tool"), Err(ScaffoldError::Vcs(_))));
+    }
+
+    #[test]
+    fn search_leaves_out_checkouts_and_ranks_by_votes() {
+        let body = r#"{"results":[{"Name":"tool-git","NumVotes":90},{"Name":"tool","Version":"1.0-1","NumVotes":5},{"Name":"tool-bin","Version":"1.0-1","NumVotes":40}]}"#;
+        let runner = crate::runner::fake::FakeRunner::new(move |_, _| body.into());
+        let names: Vec<String> = search(&runner, "tool").unwrap().into_iter().map(|pkg| pkg.name).collect();
+        assert_eq!(names, ["tool-bin", "tool"]);
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use crate::activate::Ask;
-use crate::backend::cargo::Cargo;
 use crate::backend::flatpak::{self, Flatpak};
 use crate::backend::srcpkgs::SrcPkgs;
 use crate::build::{self, BuildError};
@@ -10,6 +9,7 @@ use crate::env::Env;
 use crate::registry::Registry;
 use crate::repo::Repo;
 use crate::runner::{RunError, Runner};
+use crate::scaffold::{aur, nixos};
 use crate::state::{MawState, StateError};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -18,8 +18,10 @@ use std::path::PathBuf;
 pub enum PackagesError {
     #[error("no package {0}; `maw search {0}` to look for it")]
     NotFound(String),
-    #[error("{0} isn't in xbps; install the crate with `maw install cargo:{0}`")]
-    Unconfirmed(String),
+    #[error("{name} isn't in xbps; `maw install {}` to install it from there", options.join("` or `maw install "))]
+    Unconfirmed { name: String, options: Vec<String> },
+    #[error("{name} isn't in any source maw installs from; draft a template with `maw src new {name} {flag}`")]
+    Draftable { name: String, flag: String, options: Vec<(Target, Pkg)> },
     #[error("{name} is a library, not a program; add it to a project with `{add} {name}`")]
     Library { name: String, add: &'static str },
     #[error("{program} isn't installed; `maw install {package}` first")]
@@ -79,6 +81,8 @@ pub fn declared(state: &MawState, backend: &str) -> Vec<String> {
 
 // what the packages commands work from: backends, maw.nix, the registry, and each backend's installed sources
 struct Context<'a> {
+    env: Env,
+    runner: &'a dyn Runner,
     backends: Vec<Box<dyn Backend + 'a>>,
     state: MawState,
     registry: Registry,
@@ -95,7 +99,7 @@ impl<'a> Context<'a> {
             .iter()
             .map(|backend| Ok((backend.name().to_string(), backend.list()?.into_iter().flat_map(|pkg| [pkg.source, pkg.name]).collect())))
             .collect::<Result<_, BackendError>>()?;
-        Ok(Context { backends, state, registry, installed, src: srcpkgs(env, runner, repo)? })
+        Ok(Context { env: env.clone(), runner, backends, state, registry, installed, src: srcpkgs(env, runner, repo)? })
     }
 
     fn backend(&self, name: &str) -> &dyn Backend {
@@ -122,6 +126,9 @@ impl<'a> Context<'a> {
         if let Some((backend, spec)) = NAMES.iter().find_map(|backend| Some((*backend, self.declared_as(backend, request)?))) {
             return Ok(target(backend, &spec));
         }
+        if let Some((source, name)) = request.split_once(':').filter(|(source, _)| DRAFTS.contains(source)) {
+            return Err(self.draftable(name, &[source]).unwrap_or_else(|| PackagesError::NotFound(request.into())));
+        }
         if flatpak::is_app_id(request) {
             return match self.backend("flatpak").info(request)? {
                 Some(_) => Ok(target("flatpak", request)),
@@ -132,19 +139,47 @@ impl<'a> Context<'a> {
             return Ok(target("xbps", request));
         }
 
-        // crates.io only with a yes; without a terminal the user has to say cargo: themselves
-        let Some(crate_found) = self.backend("cargo").info(request)? else {
-            return Err(PackagesError::NotFound(request.into()));
+        // elsewhere, only with a yes; a dry run (no one to ask) shows the first
+        let candidates = self.candidates(request)?;
+        let Some(first) = candidates.first() else {
+            return Err(self.draftable(request, &DRAFTS).unwrap_or_else(|| PackagesError::NotFound(request.into())));
         };
-        if is_library(&crate_found) {
-            return Err(library("cargo", request));
+        let Some(ask) = ask else {
+            return Ok(first.0.clone());
+        };
+        let refused = || PackagesError::Unconfirmed { name: request.into(), options: candidates.iter().map(|(target, _)| target.to_string()).collect() };
+        let answer = ask.ask(&choice_question(request, "isn't in xbps; install", &candidates)).ok_or_else(refused)?;
+        pick(&answer, &candidates).map(|(target, _)| target.clone()).ok_or_else(refused)
+    }
+
+    // exact matches for a name outside xbps, in source order; libraries are left out, and an error if they're all there is
+    fn candidates(&self, name: &str) -> Result<Vec<(Target, Pkg)>, PackagesError> {
+        let found = |backend: &str| -> Option<Pkg> {
+            match backend {
+                "flatpak" => self.backend(backend).search(name).ok()?.into_iter().find(|pkg| flatpak::short_name(&pkg.source) == name.to_lowercase()),
+                "cargo" | "uv" | "npm" => self.backend(backend).info(name).ok().flatten(),
+                _ => None,
+            }
+        };
+        let matches: Vec<(Target, Pkg)> = NAMES.iter().filter_map(|backend| found(backend).map(|pkg| (Target { backend: backend.to_string(), spec: pkg.source.clone() }, pkg))).collect();
+        let (libraries, programs): (Vec<_>, Vec<_>) = matches.into_iter().partition(|(_, pkg)| is_library(pkg));
+        match (programs.is_empty(), libraries.first()) {
+            (true, Some((target, _))) => Err(library(&target.backend, name)),
+            _ => Ok(programs),
         }
-        let question = format!("{request} isn't in xbps; install crate {} {} from crates.io? [Y/n] ", crate_found.name, crate_found.version);
-        match ask.map(|ask| ask.ask(&question)) {
-            None => Ok(target("cargo", request)),
-            Some(Some(answer)) if !answer.trim().to_lowercase().starts_with('n') => Ok(target("cargo", request)),
-            _ => Err(PackagesError::Unconfirmed(request.into())),
-        }
+    }
+
+    // the upstreams among these that a template for this name could be drafted from, as an error to offer them
+    fn draftable(&self, name: &str, sources: &[&str]) -> Option<PackagesError> {
+        let exact = |source: &&str| -> Option<Pkg> {
+            match *source {
+                "aur" => aur::find(self.runner, name),
+                _ => nixos::search(&self.env, self.runner, name).ok()?.into_iter().find(|pkg| pkg.name == name),
+            }
+        };
+        let options: Vec<(Target, Pkg)> = sources.iter().filter_map(|source| exact(source).map(|pkg| (Target { backend: source.to_string(), spec: pkg.source.clone() }, pkg))).collect();
+        let flag = options.first().map(|(target, _)| draft_flag(name, target))?;
+        Some(PackagesError::Draftable { name: name.into(), flag, options })
     }
 
     // the target a remove request means: prefixed, declared, or installed somewhere
@@ -156,6 +191,29 @@ impl<'a> Context<'a> {
         let declared = NAMES.iter().find_map(|backend| Some(target(backend, &self.declared_as(backend, request)?)));
         let installed = || NAMES.iter().map(|backend| target(backend, request)).find(|candidate| self.is_installed(candidate));
         declared.or_else(installed).ok_or_else(|| PackagesError::Unknown(request.into()))
+    }
+}
+
+// the src new flag that drafts a name from an upstream, naming the upstream package only when it differs
+pub fn draft_flag(name: &str, target: &Target) -> String {
+    let flag = if target.backend == "aur" { "--from-aur" } else { "--from-nix" };
+    if target.spec == name { flag.to_string() } else { format!("{flag} {}", target.spec) }
+}
+
+// a numbered choice among targets, or a yes/no when there's one
+pub fn choice_question(name: &str, verb: &str, options: &[(Target, Pkg)]) -> String {
+    if let [(target, pkg)] = options {
+        return format!("{name} {verb} {target} {}? [Y/n] ", pkg.version);
+    }
+    let lines: String = options.iter().enumerate().map(|(index, (target, pkg))| format!("  {}  {target} {}  {}\n", index + 1, pkg.version, pkg.description)).collect();
+    format!("{name} {verb} one of:\n{lines}which? [1] ")
+}
+
+// the option an answer picks: blank or yes is the first, a number picks one, no or anything else is none
+pub fn pick<'o>(answer: &str, options: &'o [(Target, Pkg)]) -> Option<&'o (Target, Pkg)> {
+    match answer.trim().to_lowercase().as_str() {
+        "" | "y" | "yes" => options.first(),
+        number => options.get(number.parse::<usize>().ok()?.checked_sub(1)?),
     }
 }
 
@@ -362,16 +420,51 @@ pub fn overview(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Row>,
     Ok(per_backend.into_iter().flatten().collect())
 }
 
-// repo matches, each with whether it's installed: xbps, then crates.io only if xbps has none; a prefix picks one backend
-pub fn search(env: &Env, runner: &dyn Runner, term: &str) -> Result<Vec<(Target, Pkg, bool)>, PackagesError> {
-    if let Some((name, term)) = term.split_once(':').filter(|(name, _)| NAMES.contains(name)) {
-        return Ok(search_in(backend::for_name(name, runner, env).unwrap().as_ref(), term)?);
+// what search found: matches with whether each is installed, and sources that didn't answer
+#[derive(Debug, Default)]
+pub struct Found {
+    pub hits: Vec<(Target, Pkg, bool)>,
+    pub unreachable: Vec<String>,
+}
+
+// upstreams maw drafts templates from, searched when nothing installable matches
+pub const DRAFTS: [&str; 2] = ["aur", "nixpkgs"];
+
+// matches in every source maw installs from, xbps first; when there are none, in the aur and nixpkgs for drafting.
+// a prefix searches one source. Sources whose tool is missing or that fail are skipped
+pub fn search(env: &Env, runner: &dyn Runner, term: &str) -> Result<Found, PackagesError> {
+    match term.split_once(':') {
+        Some((name, term)) if NAMES.contains(&name) => return Ok(Found { hits: search_in(backend::for_name(name, runner, env).unwrap().as_ref(), term)?, ..Found::default() }),
+        Some((name, term)) if DRAFTS.contains(&name) => return Ok(search_drafts(env, runner, term, &[name])),
+        _ => {}
     }
-    let found = search_in(&Xbps::new(runner, env), term)?;
-    if !found.is_empty() {
-        return Ok(found);
+
+    // xbps in full, the others' best ten each
+    let xbps = search_in(&Xbps::new(runner, env), term)?;
+    let others = NAMES[1..].iter().filter_map(|name| backend::for_name(name, runner, env)).flat_map(|backend| search_in(backend.as_ref(), term).unwrap_or_default().into_iter().take(10));
+    let hits: Vec<(Target, Pkg, bool)> = xbps.into_iter().chain(others).collect();
+    if !hits.is_empty() {
+        return Ok(Found { hits, ..Found::default() });
     }
-    Ok(search_in(&Cargo::new(runner, env), term)?)
+    Ok(search_drafts(env, runner, term, &DRAFTS))
+}
+
+// matches in the aur and nixpkgs, never installed; the ones that didn't answer are named
+fn search_drafts(env: &Env, runner: &dyn Runner, term: &str, sources: &[&str]) -> Found {
+    let searched = sources.iter().map(|source| {
+        let found = match *source {
+            "aur" => aur::search(runner, term),
+            _ => nixos::search(env, runner, term),
+        };
+        (source, found)
+    });
+    searched.fold(Found::default(), |mut found, (source, result)| {
+        match result {
+            Ok(pkgs) => found.hits.extend(pkgs.into_iter().map(|pkg| (Target { backend: source.to_string(), spec: pkg.source.clone() }, pkg, false))),
+            Err(_) => found.unreachable.push(source.to_string()),
+        }
+        found
+    })
 }
 
 // one backend's matches, marked installed by source
@@ -524,7 +617,17 @@ mod tests {
     fn crates_io_fallback_asks_first() {
         let fixture = fixture(&[]);
         assert_eq!(plan(&fixture, &["bat"], Some(&Answer("y"))).unwrap().packages, [target("cargo", "bat")]);
-        assert!(matches!(plan(&fixture, &["bat"], Some(&Answer("n"))), Err(PackagesError::Unconfirmed(_))));
+        assert!(matches!(plan(&fixture, &["bat"], Some(&Answer("n"))), Err(PackagesError::Unconfirmed { .. })));
+    }
+
+    #[test]
+    fn several_sources_are_a_numbered_choice() {
+        let option = |backend: &str| (target(backend, "prettier"), Pkg { version: "1.0".into(), description: "formats".into(), ..Pkg::default() });
+        let options = [option("npm"), option("cargo")];
+        assert_eq!(choice_question("prettier", "isn't in xbps; install", &options), "prettier isn't in xbps; install one of:\n  1  npm:prettier 1.0  formats\n  2  cargo:prettier 1.0  formats\nwhich? [1] ");
+        assert_eq!(choice_question("prettier", "isn't in xbps; install", &options[..1]), "prettier isn't in xbps; install npm:prettier 1.0? [Y/n] ");
+        assert_eq!((pick("", &options).unwrap().0.backend.as_str(), pick("2", &options).unwrap().0.backend.as_str()), ("npm", "cargo"));
+        assert!(pick("n", &options).is_none() && pick("3", &options).is_none());
     }
 
     #[test]
@@ -598,14 +701,19 @@ mod tests {
     }
 
     #[test]
-    fn search_falls_back_to_crates_io_only_when_xbps_has_nothing() {
+    fn search_looks_everywhere_and_drafts_only_when_nothing_installs() {
         let fixture = fixture(&[]);
         let backends = |term: &str| -> Vec<String> {
-            search(&fixture.env, &fixture.runner, term).unwrap().into_iter().map(|(target, ..)| target.to_string()).collect()
+            search(&fixture.env, &fixture.runner, term).unwrap().hits.into_iter().map(|(target, ..)| target.to_string()).collect()
         };
         assert_eq!(backends("foot"), ["foot"]);
         assert_eq!(backends("bat"), ["cargo:bat"]);
         assert_eq!(backends("cargo:ripgrep"), ["cargo:ripgrep"]);
+
+        // nothing installable: the aur and nixpkgs are asked, and one that doesn't answer is named
+        let found = search(&fixture.env, &fixture.runner, "nothing").unwrap();
+        assert!(found.hits.is_empty());
+        assert_eq!(found.unreachable, ["nixpkgs"]);
     }
 
     // a srcpkgs template in the repo and a clone that's already set up, so nothing is ever really cloned
