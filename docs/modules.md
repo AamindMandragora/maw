@@ -84,7 +84,18 @@ lib.service "rclone" {
 }
 ```
 
-The run script gets `exec 2>&1` first, so errors reach the log, then the `env` exports. It should end by `exec`ing the long-running program, which runit supervises and restarts when it exits. A module can return a service alongside program files as a list: `[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]`.
+The run script gets `exec 2>&1` first, so errors reach the log, then the `env` exports. It should end by `exec`ing the long-running program, which runit supervises and restarts when it exits.
+
+User services start at login, before your compositor, so on their own they don't know its `WAYLAND_DISPLAY`. maw's user run scripts read turnstile's shared environment (`chpst -e "$TURNSTILE_ENV_DIR"`, for scripts without their own `#!`), and the compositor fills it in when it starts. In niri:
+
+```nix
+spawn-at-startup = [
+  [ "turnstile-update-runit-env" "WAYLAND_DISPLAY" "DISPLAY" "XDG_CURRENT_DESKTOP" ]
+  # ...
+];
+```
+
+Until then a graphical service like swaybg fails and runit retries it every second, so it comes up moments after the compositor does. A service whose restart doesn't come back up is a warning after activating, not an error: `maw sv log <name>` shows why. A module can return a service alongside program files as a list: `[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]`.
 
 ## Reloading
 

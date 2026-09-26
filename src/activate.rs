@@ -134,6 +134,8 @@ pub struct Activation {
     pub backups: Vec<(PathBuf, PathBuf)>,
     // loose static/ files the user placed, recorded in maw.nix
     pub answered: Vec<String>,
+    // services restarted for changed files that didn't come back up
+    pub failed: Vec<(Scope, String)>,
 }
 
 // everything an activation would do, before any link is touched
@@ -152,12 +154,13 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
     let answered = if options.dry_run || options.no_build { Vec::new() } else { place_loose(env, runner, repo, ask)? };
     let planned = plan_activation(env, runner, repo, options)?;
     if options.dry_run {
-        return Ok(Activation { build: planned.build, steps: planned.steps, backups: Vec::new(), answered });
+        return Ok(Activation { build: planned.build, steps: planned.steps, backups: Vec::new(), answered, failed: Vec::new() });
     }
 
     install_missing(env, runner, repo, &planned.build.settings, &planned.steps)?;
     let mut backups = apply(env, &planned.steps, &planned.wanted)?;
     backups.extend(system::apply(env, runner, &planned.steps, &planned.copies)?);
+    let failed = system::restart(env, runner, &planned.steps);
     desktop::apply(runner, &planned.steps)?;
     reload(runner, &planned.steps);
     if planned.next != planned.manifest {
@@ -170,7 +173,7 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
         index::write(env, repo, &planned.build, &placed).map_err(|error| ActivateError::Index(Box::new(error)))?;
         migrate_out(repo)?;
     }
-    Ok(Activation { build: planned.build, steps: planned.steps, backups, answered })
+    Ok(Activation { build: planned.build, steps: planned.steps, backups, answered, failed })
 }
 
 // builds (or with dry_run only renders, or with no_build reads the index), then plans every link without touching one

@@ -90,7 +90,18 @@ lib.service "rclone" {
 }
 .EE
 .PP
-The run script gets \fBexec 2>&1\fR first, so errors reach the log, then the \fBenv\fR exports. It should end by \fBexec\fRing the long-running program, which runit supervises and restarts when it exits. A module can return a service alongside program files as a list: \fB[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]\fR.
+The run script gets \fBexec 2>&1\fR first, so errors reach the log, then the \fBenv\fR exports. It should end by \fBexec\fRing the long-running program, which runit supervises and restarts when it exits.
+.PP
+User services start at login, before your compositor, so on their own they don't know its \fBWAYLAND_DISPLAY\fR. maw's user run scripts read turnstile's shared environment (\fBchpst -e "$TURNSTILE_ENV_DIR"\fR, for scripts without their own \fB#!\fR), and the compositor fills it in when it starts. In niri:
+.PP
+.EX
+spawn-at-startup = [
+  [ "turnstile-update-runit-env" "WAYLAND_DISPLAY" "DISPLAY" "XDG_CURRENT_DESKTOP" ]
+  # ...
+];
+.EE
+.PP
+Until then a graphical service like swaybg fails and runit retries it every second, so it comes up moments after the compositor does. A service whose restart doesn't come back up is a warning after activating, not an error: \fBmaw sv log <name>\fR shows why. A module can return a service alongside program files as a list: \fB[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]\fR.
 .SH "RELOADING"
 .PP
 When an activation changes a program's files, maw runs its reload command once all files are in place: \fBpkill -USR2 -x waybar\fR, \fBdunstctl reload\fR, \fBmakoctl reload\fR, and so on. The registry knows the command for common programs; \fBreload\fR in \fBlib.program\fR sets or overrides it:

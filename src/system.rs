@@ -134,12 +134,20 @@ pub fn apply(env: &Env, runner: &dyn Runner, steps: &[Step], copies: &[Wanted]) 
                 Step::Enable { scope, name } => enable(env, runner, *scope, name).map(|_| None),
                 Step::Disable { scope, name } => disable(env, runner, *scope, name).map(|_| None),
                 Step::Purge { scope, name } => purge(env, runner, *scope, name).map(|_| None),
-                Step::Restart { scope, name } => Ok(Runit.control(env, runner, *scope, name, "restart").map(|_| None)?),
                 _ => Ok(None),
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(backups.into_iter().flatten().collect())
+}
+
+// restarts the services whose files changed; one that doesn't come back up is returned rather than failing the activation
+pub fn restart(env: &Env, runner: &dyn Runner, steps: &[Step]) -> Vec<(Scope, String)> {
+    let restarts = steps.iter().filter_map(|step| match step {
+        Step::Restart { scope, name } => Some((*scope, name.clone())),
+        _ => None,
+    });
+    restarts.filter(|(scope, name)| Runit.control(env, runner, *scope, name, "restart").is_err()).collect()
 }
 
 // saves a root file into the backup mirror (which the user owns) with cp -p; returns where it went

@@ -12,13 +12,18 @@ fn quote(text: &str) -> String {
 }
 
 // the run script: the module's shebang (or /bin/sh), stderr joined to the log, env exported, then the module's script
-fn run_script(service: &ServiceDef) -> String {
+// a user service's shell script runs itself again under turnstile's shared env dir, so it sees what the session
+// published there (WAYLAND_DISPLAY and the like, via turnstile-update-runit-env)
+const SESSION_ENV: &str = "[ -d \"$TURNSTILE_ENV_DIR\" ] && [ -z \"$MAW_SESSION_ENV\" ] && MAW_SESSION_ENV=1 exec chpst -e \"$TURNSTILE_ENV_DIR\" \"$0\"\n";
+
+fn run_script(service: &ServiceDef, scope: Scope) -> String {
     let (shebang, body) = match service.run.strip_prefix("#!") {
         Some(rest) => rest.split_once('\n').map_or((rest, ""), |(line, body)| (line, body)),
         None => ("/bin/sh", service.run.as_str()),
     };
+    let session = if scope == Scope::User && shebang == "/bin/sh" { SESSION_ENV } else { "" };
     let exports: String = service.env.iter().map(|(key, value)| format!("export {key}={}\n", quote(value))).collect();
-    format!("#!{shebang}\nexec 2>&1\n{exports}{}\n", body.trim_matches('\n'))
+    format!("#!{shebang}\nexec 2>&1\n{session}{exports}{}\n", body.trim_matches('\n'))
 }
 
 // log/run: svlogd into a dir it creates, timestamped and rotated
@@ -33,7 +38,7 @@ impl InitBackend for Runit {
             Scope::User => format!("\"$HOME/.local/state/log/{name}\""),
         };
         let log = service.log.then(|| ("log/run".to_string(), log_script(&log_dir), true));
-        std::iter::once(("run".to_string(), run_script(service), true)).chain(log).collect()
+        std::iter::once(("run".to_string(), run_script(service, scope), true)).chain(log).collect()
     }
 
     fn definition(&self, env: &Env, scope: Scope, name: &str) -> PathBuf {
@@ -90,7 +95,11 @@ mod tests {
     #[test]
     fn run_joins_stderr_and_exports_env() {
         let files = Runit.render("drive", Scope::User, &service("exec rclone mount"));
-        assert_eq!(files[0], ("run".into(), "#!/bin/sh\nexec 2>&1\nexport A='it'\\''s'\nexec rclone mount\n".into(), true));
+        assert_eq!(files[0], ("run".into(), format!("#!/bin/sh\nexec 2>&1\n{SESSION_ENV}export A='it'\\''s'\nexec rclone mount\n"), true));
+
+        // system services run from boot, with no session to read
+        let system = Runit.render("drive", Scope::System, &service("exec rclone mount"));
+        assert!(!system[0].1.contains("TURNSTILE_ENV_DIR"));
         assert_eq!(files[1].1, "#!/bin/sh\nmkdir -p \"$HOME/.local/state/log/drive\"\nexec svlogd -tt \"$HOME/.local/state/log/drive\"\n");
     }
 

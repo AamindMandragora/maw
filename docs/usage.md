@@ -374,7 +374,7 @@ Modules and `config.nix` read it as `theme` (see [modules.md](modules.md)):
 - `theme.wallpaper`: the image's absolute path
 - `theme.mode`, `theme.source`: the mode and the color the palette grew from
 
-To show the wallpaper, declare it like anything else. A service is best: the path is in its run file, so changing the wallpaper restarts it:
+To show the wallpaper, declare it like anything else. A service is best: the path is in its run file, so changing the wallpaper restarts it (your compositor has to share its display with user services; see `lib.service` in [modules.md](modules.md)):
 
 ```nix
 { lib, theme, ... }:

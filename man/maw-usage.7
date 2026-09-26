@@ -378,7 +378,7 @@ Modules and \fBconfig.nix\fR read it as \fBtheme\fR (see \fBmaw help modules\fR)
 .IP \(bu 2
 \fBtheme.mode\fR, \fBtheme.source\fR: the mode and the color the palette grew from
 .PP
-To show the wallpaper, declare it like anything else. A service is best: the path is in its run file, so changing the wallpaper restarts it:
+To show the wallpaper, declare it like anything else. A service is best: the path is in its run file, so changing the wallpaper restarts it (your compositor has to share its display with user services; see \fBlib.service\fR in \fBmaw help modules\fR):
 .PP
 .EX
 { lib, theme, ... }:

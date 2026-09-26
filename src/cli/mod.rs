@@ -468,6 +468,10 @@ fn activate(env: &Env, runner: &dyn Runner, options: Options, commit: bool) -> R
 // done lists what the command did before activating, like `install foot`, which counts as a change
 fn finish(env: &Env, runner: &dyn Runner, repo: &Repo, activation: &Activation, dry_run: bool, commit: bool, done: &[String]) -> Result<()> {
     print_activation(env, repo, activation, dry_run);
+    activation.failed.iter().for_each(|(scope, name)| {
+        let flag = if *scope == Scope::System { " --system" } else { "" };
+        eprintln!("{} {} didn't come back up; `maw sv log {name}{flag}` shows why", prefix(Tone::Warn, "warning:"), service_label(*scope, name));
+    });
     if activation.build.is_empty() && activation.steps.is_empty() && activation.answered.is_empty() && done.is_empty() {
         println!("up to date");
     }
