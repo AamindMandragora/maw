@@ -25,6 +25,7 @@ pub mod services;
 pub mod state;
 pub mod status;
 pub mod style;
+pub mod theme;
 pub mod tui;
 pub mod system;
 #[cfg(test)]

@@ -69,6 +69,12 @@ pub fn template_names(env: &Env) -> Vec<String> {
     dirs.filter(|name| srcpkgs::is_source(&repo.srcpkgs_dir(), name)).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
+// wallpapers in static/wallpapers/, plus random, for `maw wallpaper`
+pub fn wallpaper_names(env: &Env) -> Vec<String> {
+    let Some(repo) = repo(env) else { return Vec::new() };
+    crate::theme::wallpapers(&repo).into_iter().chain(["random".to_string()]).collect()
+}
+
 // generation numbers, newest first, with their messages as notes
 pub fn generation_numbers(env: &Env) -> Vec<(String, Option<String>)> {
     let all = generations::load(env).unwrap_or_default();
@@ -94,6 +100,10 @@ pub fn services(current: &OsStr) -> Vec<CompletionCandidate> {
 
 pub fn templates(current: &OsStr) -> Vec<CompletionCandidate> {
     matching(current, plain(template_names(&Env::from_process())))
+}
+
+pub fn wallpapers(current: &OsStr) -> Vec<CompletionCandidate> {
+    matching(current, plain(wallpaper_names(&Env::from_process())))
 }
 
 pub fn generations(current: &OsStr) -> Vec<CompletionCandidate> {

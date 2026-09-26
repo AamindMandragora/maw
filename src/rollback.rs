@@ -180,7 +180,8 @@ pub fn release(env: &Env, runner: &dyn Runner) -> Result<Vec<String>, RollbackEr
 
 // restores the repo to the generation's tree, then removes, installs versions, and updates holds; activating is up to the caller
 pub fn rollback(env: &Env, runner: &dyn Runner, repo: &Repo, plan: &Plan) -> Result<(), RollbackError> {
-    if !git(runner, repo, &["status", "--porcelain"])?.trim().is_empty() {
+    // out/ is restored and rebuilt anyway, so a wallpaper theme's changes there don't count
+    if !git(runner, repo, &["status", "--porcelain", "--", ".", ":!out"])?.trim().is_empty() {
         return Err(RollbackError::Dirty(repo.root.display().to_string()));
     }
     git(runner, repo, &["restore", &format!("--source={}", plan.generation.commit), "--staged", "--worktree", "--", ":/"])?;
@@ -308,6 +309,16 @@ mod tests {
 
         assert_eq!(release(&fixture.env, &fixture.runner).unwrap(), ["bash"]);
         assert!(held(&fixture.env).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_theme_changing_out_doesnt_stop_a_rollback() {
+        let fixture = setup();
+        generation(&fixture, 1, "", &[]);
+        generation(&fixture, 2, "", &[]);
+        crate::testing::write(&fixture.repo.out_dir().join("waybar/style.css"), "themed\n");
+        let plan = plan(&fixture.env, &fixture.runner, &fixture.repo, Some(1)).unwrap();
+        rollback(&fixture.env, &fixture.runner, &fixture.repo, &plan).unwrap();
     }
 
     #[test]

@@ -273,6 +273,55 @@ maw diff
 
 A unified diff of each live file against what maw would put there, the same as `maw activate --force` would leave. Removed links diff against nothing. Neither command writes anything.
 
+### Wallpaper themes
+
+maw can make a color palette from your wallpaper with [matugen](https://github.com/InioX/matugen), for every module to use. It's optional: nothing about it runs, and matugen isn't needed, until you set `maw.theme` in `config.nix` or run `maw wallpaper`. Wallpapers live in `static/wallpapers/`, so every machine has them:
+
+```sh
+maw wallpaper ~/Pictures/forest.jpg   # copied into static/wallpapers/, then themed
+maw wallpaper random                  # another wallpaper from static/wallpapers/
+maw wallpaper                         # which one it is now
+```
+
+```
+copy static/wallpapers/forest.jpg
+theme static/wallpapers/forest.jpg: color 2 of 4, dark #a6d0b0
+eval niri waybar fuzzel
+update ~/.config/waybar/style.css
+reload waybar
+```
+
+An image has a few candidate colors a palette can grow from, most dominant first; each `maw wallpaper` picks one at random, so the same wallpaper can come back in a different color. Then maw activates, so modules that use the theme rebuild and their programs reload. Changing the wallpaper isn't a generation: the current theme is this machine's state, not history, and themed files in `out/` are committed with your next real change. `pull` and `rollback` rebuild `out/` anyway, so those changes never get in their way.
+
+In `config.nix`, the palette's settings, with their defaults (setting `maw.theme` also themes a fresh machine from the first wallpaper):
+
+```nix
+maw.theme = {
+  mode = "dark";                  # or "light"
+  scheme = "scheme-tonal-spot";   # or scheme-vibrant, scheme-expressive, scheme-fidelity, scheme-content, ...
+  contrast = 0;                   # -1 to 1
+};
+```
+
+Modules and `config.nix` read it as `theme` (see [modules.md](modules.md)):
+
+- `theme.colors`: Material You colors as `#rrggbb`: `primary`, `on_primary`, `surface`, `on_surface`, `surface_container`, `outline`, `error`, `secondary`, `tertiary`, and the rest of the scheme
+- `theme.base16`: `base00` through `base0F`, for programs with base16 themes
+- `theme.wallpaper`: the image's absolute path
+- `theme.mode`, `theme.source`: the mode and the color the palette grew from
+
+To show the wallpaper, declare it like anything else. A service is best: the path is in its run file, so changing the wallpaper restarts it:
+
+```nix
+{ lib, theme, ... }:
+lib.service "swaybg" {
+  scope = "user";
+  run = "exec swaybg -i ${theme.wallpaper} -m fill";
+}
+```
+
+To change it on a timer, run `maw wallpaper random` from anything that runs on a schedule, like a user service that sleeps between changes. Theming needs `matugen` (`maw install matugen`); maw itself doesn't depend on it.
+
 ### Adopting
 
 ```sh

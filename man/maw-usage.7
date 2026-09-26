@@ -275,6 +275,57 @@ maw diff
 .EE
 .PP
 A unified diff of each live file against what maw would put there, the same as \fBmaw activate --force\fR would leave. Removed links diff against nothing. Neither command writes anything.
+.SS "Wallpaper themes"
+.PP
+maw can make a color palette from your wallpaper with matugen (https://github.com/InioX/matugen), for every module to use. It's optional: nothing about it runs, and matugen isn't needed, until you set \fBmaw.theme\fR in \fBconfig.nix\fR or run \fBmaw wallpaper\fR. Wallpapers live in \fBstatic/wallpapers/\fR, so every machine has them:
+.PP
+.EX
+maw wallpaper ~/Pictures/forest.jpg   # copied into static/wallpapers/, then themed
+maw wallpaper random                  # another wallpaper from static/wallpapers/
+maw wallpaper                         # which one it is now
+.EE
+.PP
+.EX
+copy static/wallpapers/forest.jpg
+theme static/wallpapers/forest.jpg: color 2 of 4, dark #a6d0b0
+eval niri waybar fuzzel
+update ~/.config/waybar/style.css
+reload waybar
+.EE
+.PP
+An image has a few candidate colors a palette can grow from, most dominant first; each \fBmaw wallpaper\fR picks one at random, so the same wallpaper can come back in a different color. Then maw activates, so modules that use the theme rebuild and their programs reload. Changing the wallpaper isn't a generation: the current theme is this machine's state, not history, and themed files in \fBout/\fR are committed with your next real change. \fBpull\fR and \fBrollback\fR rebuild \fBout/\fR anyway, so those changes never get in their way.
+.PP
+In \fBconfig.nix\fR, the palette's settings, with their defaults (setting \fBmaw.theme\fR also themes a fresh machine from the first wallpaper):
+.PP
+.EX
+maw.theme = {
+  mode = "dark";                  # or "light"
+  scheme = "scheme-tonal-spot";   # or scheme-vibrant, scheme-expressive, scheme-fidelity, scheme-content, ...
+  contrast = 0;                   # -1 to 1
+};
+.EE
+.PP
+Modules and \fBconfig.nix\fR read it as \fBtheme\fR (see \fBmaw help modules\fR):
+.IP \(bu 2
+\fBtheme.colors\fR: Material You colors as \fB#rrggbb\fR: \fBprimary\fR, \fBon_primary\fR, \fBsurface\fR, \fBon_surface\fR, \fBsurface_container\fR, \fBoutline\fR, \fBerror\fR, \fBsecondary\fR, \fBtertiary\fR, and the rest of the scheme
+.IP \(bu 2
+\fBtheme.base16\fR: \fBbase00\fR through \fBbase0F\fR, for programs with base16 themes
+.IP \(bu 2
+\fBtheme.wallpaper\fR: the image's absolute path
+.IP \(bu 2
+\fBtheme.mode\fR, \fBtheme.source\fR: the mode and the color the palette grew from
+.PP
+To show the wallpaper, declare it like anything else. A service is best: the path is in its run file, so changing the wallpaper restarts it:
+.PP
+.EX
+{ lib, theme, ... }:
+lib.service "swaybg" {
+  scope = "user";
+  run = "exec swaybg -i ${theme.wallpaper} -m fill";
+}
+.EE
+.PP
+To change it on a timer, run \fBmaw wallpaper random\fR from anything that runs on a schedule, like a user service that sleeps between changes. Theming needs \fBmatugen\fR (\fBmaw install matugen\fR); maw itself doesn't depend on it.
 .SS "Adopting"
 .PP
 .EX

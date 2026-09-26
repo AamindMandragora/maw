@@ -27,9 +27,12 @@ lib.program "foot" {
 
 The arguments:
 
-- `config`: the contents of `config.nix`. It can be an attrset, or a function taking `{ lib }`.
+- `config`: the contents of `config.nix`. It can be an attrset, or a function taking `{ lib }`, `{ theme }`, or both.
 - `lib`: the nixpkgs lib plus maw's additions (below).
 - `maw`: the contents of `maw.nix`.
+- `theme`: the palette from the current wallpaper, `{ }` before there is one; see "Wallpaper themes" in `maw help usage`.
+
+A module takes the arguments it names; list only the ones you use.
 
 ## `lib.program name { ... }`
 
@@ -145,7 +148,17 @@ Anything several modules use, like colors, fonts, or your terminal, belongs in `
 }
 ```
 
-Then `config.colors.text` in fuzzel, waybar, and niri all read the same value. Plain `let` bindings and functions work too, for repetition inside one module:
+Then `config.colors.text` in fuzzel, waybar, and niri all read the same value. With a [wallpaper theme](usage.md), colors can come from the palette instead, in one place:
+
+```nix
+{ lib, theme }:
+{
+  colors.text = lib.removePrefix "#" theme.colors.on_surface;
+  colors.accent = lib.removePrefix "#" theme.colors.primary;
+}
+```
+
+ Plain `let` bindings and functions work too, for repetition inside one module:
 
 ```nix
 let
@@ -155,6 +168,7 @@ in
 # ...
 binds = workspaceBinds "Mod+" "focus-workspace" // { "Mod+Q".close-window = null; };
 ```
+
 
 `tests/fixtures/dotfiles/modules/` has complete real-world modules for niri, waybar, and fuzzel.
 

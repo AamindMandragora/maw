@@ -85,7 +85,8 @@ fn eval_cached(runner: &dyn Runner, what: &str, cache_file: &Path, key: &str, ar
 fn nix_args(env: &Env, extra: &[String]) -> Vec<String> {
     let base = ["--eval", "--strict", "--json", "-I"].map(String::from);
     let maw = format!("maw={}", env.nix_dir().display());
-    base.into_iter().chain([maw]).chain(extra.iter().cloned()).collect()
+    let state = format!("maw-state={}", env.state_dir.display());
+    base.into_iter().chain([maw, "-I".into(), state]).chain(extra.iter().cloned()).collect()
 }
 
 // evaluates a plain nix file such as registry.nix or maw.nix

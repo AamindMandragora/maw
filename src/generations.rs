@@ -149,6 +149,10 @@ pub fn pull(runner: &dyn Runner, repo: &Repo) -> Result<bool, GenerationsError> 
     }
     let head = || git(runner, repo, &["rev-parse", "HEAD"]).unwrap_or_default();
     let before = head();
+
+    // out/ is rebuilt by the activation after, so changes in it (a wallpaper theme's) never block a pull
+    // (a repo with nothing in out/ yet has nothing to discard, which git reports as an error)
+    git(runner, repo, &["checkout", "-q", "--", "out"]).ok();
     runner.interactive("git", &in_repo(repo, &["pull", "--ff-only"])).map_err(|_| GenerationsError::PullFailed(repo.root.display().to_string()))?;
     Ok(head() != before)
 }

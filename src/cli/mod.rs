@@ -138,6 +138,11 @@ pub enum Command {
         #[command(subcommand)]
         action: SvAction,
     },
+    #[command(about = "set the wallpaper the theme comes from, or show it", after_help = "see: maw help wallpaper themes")]
+    Wallpaper {
+        #[arg(add = ArgValueCompleter::new(complete::wallpapers), help = "an image (copied into static/wallpapers/), a name already there, or random")]
+        image: Option<String>,
+    },
     #[command(about = "list generations: each activation that changed something", after_help = "see: maw help generations")]
     Generations,
     #[command(about = "commit every change in the repo", after_help = "see: maw help generations")]
@@ -274,6 +279,7 @@ pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
         Command::Init { target, path } => init(env, runner, &target, path.as_deref()),
         Command::Build { force } => build(env, runner, force),
         Command::Activate { dry_run, force, no_commit, no_build } => activate(env, runner, Options { dry_run, force, no_build }, !no_commit),
+        Command::Wallpaper { image } => wallpaper(env, runner, image.as_deref()),
         Command::Generations => list_generations(env),
         Command::Commit { message } => {
             let repo = Repo::locate(env)?;
@@ -564,6 +570,38 @@ fn adopt(env: &Env, runner: &dyn Runner, dry_run: bool) -> Result<()> {
 fn activate_after(env: &Env, runner: &dyn Runner, repo: &Repo, done: Vec<String>) -> Result<()> {
     let activation = activate::activate(env, runner, repo, &Terminal, Options::default())?;
     finish(env, runner, repo, &activation, false, true, &done)
+}
+
+// sets the wallpaper theme from an image, a name in static/wallpapers/, or a random one there, then activates without
+// recording a generation; alone, shows the current one
+fn wallpaper(env: &Env, runner: &dyn Runner, image: Option<&str>) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let describe = |theme: &crate::theme::Theme| format!("{}: color {} of {}, {} {}", theme.image, theme.index + 1, theme.count, theme.settings.mode, theme.colors.get("primary").map_or("", String::as_str));
+    let Some(image) = image else {
+        match crate::theme::load(env) {
+            Some(theme) => println!("{}", describe(&theme)),
+            None => println!("no wallpaper theme yet; `maw wallpaper <image>` sets one"),
+        }
+        return Ok(());
+    };
+
+    // a file on disk is copied in; otherwise it names one already in static/wallpapers/
+    let name = match image {
+        "random" => crate::theme::pick_random(env, &repo)?,
+        path if Path::new(path).is_file() => {
+            let (name, copied) = crate::theme::adopt(&repo, Path::new(path))?;
+            if copied {
+                println!("copy static/wallpapers/{name}");
+            }
+            name
+        }
+        name => name.to_string(),
+    };
+    let settings = build::settings(env, runner, &repo)?.theme.unwrap_or_default();
+    let theme = crate::theme::set(env, runner, &repo, &name, &settings)?;
+    println!("theme {}", describe(&theme));
+    let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
+    finish(env, runner, &repo, &activation, false, false, &[])
 }
 
 // what an install or remove did, for a generation's summary: packages changed, then ones only (un)recorded

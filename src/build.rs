@@ -9,6 +9,7 @@ use crate::registry::{self, Registry, RegistryError};
 use crate::repo::{Repo, RepoError};
 use crate::runner::Runner;
 use crate::state::{MawState, StateError};
+use crate::theme::{self, ThemeError, ThemeSettings};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -26,6 +27,8 @@ pub enum BuildError {
     Repo(#[from] RepoError),
     #[error(transparent)]
     State(#[from] StateError),
+    #[error(transparent)]
+    Theme(#[from] ThemeError),
     #[error("{key} is set to both {first} and {second}; declare it in one module")]
     DconfConflict { key: String, first: String, second: String },
     #[error("{path}")]
@@ -103,11 +106,13 @@ pub struct Settings {
     // wrapper names for flatpak apps, by app id, where the default (the id's last part) doesn't suit
     #[serde(default)]
     pub flatpak_names: BTreeMap<String, String>,
+    // how wallpaper palettes are made; setting it turns theming on
+    pub theme: Option<ThemeSettings>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_commit: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new() }
+        Settings { auto_commit: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new(), theme: None }
     }
 }
 
@@ -153,12 +158,17 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let (registry, state) = load_registry(env, runner, repo, &mut inputs)?;
     let settings = eval_settings(env, runner, repo, &shared_hash)?;
 
-    // evaluate each module, keyed by its own file plus the shared inputs
+    // the wallpaper theme, brought up to date before any module reads it
+    theme::ensure(env, runner, repo, settings.theme.as_ref())?;
+    let theme_file = theme::file(env);
+    let theme_hash = if theme_file.exists() { inputs.hash(&theme_file)? } else { String::new() };
+
+    // evaluate each module, keyed by its own file plus the shared inputs and the theme
     let modules = repo
         .module_names()?
         .into_iter()
         .map(|name| {
-            let key = combine(&[&inputs.hash(&repo.module_file(&name))?, &shared_hash]);
+            let key = combine(&[&inputs.hash(&repo.module_file(&name))?, &shared_hash, &theme_hash]);
             let (files, fresh) = eval::eval_module(runner, env, &repo.root, &name, &key)?;
             Ok((name, files, fresh))
         })
