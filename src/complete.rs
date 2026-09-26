@@ -1,3 +1,4 @@
+use crate::backend::srcpkgs;
 use crate::build::index_file;
 use crate::env::Env;
 use crate::generations;
@@ -61,11 +62,11 @@ pub fn service_names(env: &Env) -> Vec<String> {
     listed.chain(defined).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
-// templates in srcpkgs/, for `maw src build` and `maw src update`
+// source packages in srcpkgs/, templates or patches, for `maw src build` and `maw src update`
 pub fn template_names(env: &Env) -> Vec<String> {
     let Some(repo) = repo(env) else { return Vec::new() };
     let dirs = fs::read_dir(repo.srcpkgs_dir()).into_iter().flatten().filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()));
-    dirs.filter(|name| repo.srcpkgs_dir().join(name).join("template").is_file()).collect::<BTreeSet<_>>().into_iter().collect()
+    dirs.filter(|name| srcpkgs::is_source(&repo.srcpkgs_dir(), name)).collect::<BTreeSet<_>>().into_iter().collect()
 }
 
 // generation numbers, newest first, with their messages as notes

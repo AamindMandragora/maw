@@ -2,6 +2,7 @@ use crate::backup;
 use crate::env::Env;
 use crate::eval::{self, EvalError, RenderedFile};
 use crate::init::runit::Runit;
+use crate::backend::srcpkgs;
 use crate::init::{InitBackend, Scope};
 use crate::inputs::{Inputs, InputsError, combine, hash_bytes, load_json, save_json};
 use crate::registry::{self, Registry, RegistryError};
@@ -216,7 +217,7 @@ pub fn index_file(repo: &Repo) -> PathBuf {
 // /etc/xbps.d/10-maw-local.conf, making the void-packages clone's builds a repo xbps always sees; only while a source package is declared
 fn local_repo(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> Option<Output> {
     let declared = state.packages.get("xbps")?;
-    declared.iter().any(|name| repo.srcpkgs_dir().join(name).join("template").is_file()).then(|| {
+    declared.iter().any(|name| srcpkgs::is_source(&repo.srcpkgs_dir(), name)).then(|| {
         let content = format!("# written by maw: packages built from srcpkgs/\nrepository={}\n", settings.void_packages(env).join("hostdir/binpkgs").display());
         Output {
             name: ".maw".into(),

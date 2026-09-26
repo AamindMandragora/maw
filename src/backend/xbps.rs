@@ -39,6 +39,18 @@ impl<'a> Xbps<'a> {
         Ok(self.privileged("xbps-install", &args)?)
     }
 
+    // the repository an installed package came from, as xbps recorded it
+    pub fn origin(&self, name: &str) -> Option<String> {
+        let origin = self.query(&["-p", "repository", name]).ok()?;
+        Some(origin.trim().to_string()).filter(|origin| !origin.is_empty())
+    }
+
+    // reinstalls packages from the configured repos, even at the version already installed
+    pub fn reinstall(&self, names: &[String]) -> Result<(), BackendError> {
+        let args: Vec<String> = ["-fy".to_string()].into_iter().chain(names.iter().cloned()).collect();
+        Ok(self.privileged("xbps-install", &args)?)
+    }
+
     // every package name the repos have, for telling which names void uses
     pub fn repo_names(&self) -> Result<HashSet<String>, BackendError> {
         Ok(self.parse_listing(&self.query(&["-Rs", ""])?, &HashSet::new())?.into_iter().map(|pkg| pkg.name).collect())

@@ -10,6 +10,9 @@ sed -i "0,/^version = .*/s//version = \"$version\"/" Cargo.toml
 sed -i "/^name = \"maw\"$/{n;s/^version = .*/version = \"$version\"/}" Cargo.lock
 sed -i "s/^  mawVersion = .*/  mawVersion = \"$version\";/" nix/lib.nix
 
-git commit -qm "maw $version" Cargo.toml Cargo.lock nix/lib.nix
+# the man pages carry the version too
+MAW_BLESS=1 cargo test -q --test generated >/dev/null
+
+git commit -qm "maw $version" Cargo.toml Cargo.lock nix/lib.nix man
 git tag -a "v$version" -m "maw $version"
 echo "tagged v$version; git push --follow-tags to release"

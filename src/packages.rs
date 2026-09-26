@@ -3,7 +3,7 @@ use crate::backend::cargo::Cargo;
 use crate::backend::srcpkgs::SrcPkgs;
 use crate::build::{self, BuildError};
 use crate::backend::xbps::Xbps;
-use crate::backend::{self, Backend, BackendError, NAMES, Pkg, spec_base, spec_program};
+use crate::backend::{self, Backend, BackendError, NAMES, Pkg, newer, spec_base, spec_program};
 use crate::edit::{self, EditError};
 use crate::env::Env;
 use crate::registry::Registry;
@@ -219,14 +219,20 @@ pub fn build_source(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str) -> 
     Ok(installed)
 }
 
-// declared source packages whose installed version isn't the template's, as (name, installed, template)
+// declared source packages a build would change, as (name, installed, what a build makes): a template at another
+// version, or patches not yet built into void's package or behind void's newer release
 pub fn outdated(env: &Env, runner: &dyn Runner, repo: &Repo, state: &MawState) -> Result<Vec<(String, String, String)>, PackagesError> {
     let src = srcpkgs(env, runner, repo)?;
-    let installed = Xbps::new(runner, env).list()?;
+    let xbps = Xbps::new(runner, env);
+    let installed = xbps.list()?;
     let stale = declared(state, "xbps").into_iter().filter_map(|name| {
-        let template = src.version(&name)?;
         let current = installed.iter().find(|pkg| pkg.name == name)?.version.clone();
-        (current != template).then_some((name, current, template))
+        if !src.patches(&name) {
+            let template = src.version(&name)?;
+            return (current != template).then_some((name, current, template));
+        }
+        let shipped = xbps.info(&name).ok().flatten().map_or(current.clone(), |pkg| pkg.version);
+        (!src.is_ours(&name) || newer(&shipped, &current)).then(|| (name, current, format!("{shipped} + patches")))
     });
     Ok(stale.collect())
 }
@@ -584,6 +590,18 @@ mod tests {
         let (_, state) = edit::load(&fixture.env, &fixture.runner, &fixture.repo).unwrap();
         let stale = outdated(&fixture.env, &fixture.runner, &fixture.repo, &state).unwrap();
         assert_eq!(stale, [("bash".to_string(), "5.2_1".to_string(), "5.3_1".to_string())]);
+    }
+
+    #[test]
+    fn patches_are_outdated_until_built_into_the_installed_package() {
+        let fixture = fixture(&[]);
+        crate::testing::write(&fixture.repo.srcpkgs_dir().join("bash/patches/fix.patch"), "");
+        let mut state = MawState::default();
+        state.packages.insert("xbps".into(), vec!["bash".into()]);
+
+        // bash is installed from void's repos, so the patches aren't in it yet
+        let stale = outdated(&fixture.env, &fixture.runner, &fixture.repo, &state).unwrap();
+        assert_eq!(stale, [("bash".to_string(), "5.2_1".to_string(), "1.0_1 + patches".to_string())]);
     }
 
     #[test]

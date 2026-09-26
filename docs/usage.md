@@ -256,7 +256,7 @@ The one report of everything out of sync, one line each, or `clean`. First what 
 | `restart` | a running service's files changed |
 | `undeclared` | installed by hand or enabled, but not in `maw.nix`; see [adopting](#adopting) |
 | `orphan` | a module or `static/` dir for a program that isn't installed |
-| `outdated` | a source package whose template is at a newer version than what's installed; see [source packages](#source-packages) |
+| `outdated` | a source package whose template is at a newer version than what's installed, or whose patches aren't built into the installed package yet; see [source packages](#source-packages) |
 
 A program counts as installed when any source has a package by that name or a command by that name is on your `PATH`, so `static/nvim/` is fine with the `neovim` package. Data dirs like `fonts` and `wallpapers` are never orphans.
 
@@ -406,9 +406,25 @@ A dependency maw can't match to a Void package is left as a `# TODO` line. Fix i
 
 The nixpkgs checkout lives at `~/.local/share/maw/nixpkgs` (a shallow nixos-unstable clone, about 400MB), made on first use; `maw.nixpkgs` in `config.nix` points elsewhere. `src update` works on templates `--from-nix` wrote, which it recognizes by their `# scaffolded by maw` line; it touches only `version`, `revision`, `distfiles`, and `checksum`, so your other edits stay.
 
+#### Patching Void's packages
+
+To change a package Void already has, give it patches instead of a template:
+
+```
+srcpkgs/gnome-network-displays/
+  patches/
+    gnd-dmabuf-gl.patch
+```
+
+```sh
+maw src build gnome-network-displays    # void's template, plus your patches
+```
+
+maw builds Void's own template with your patches applied after Void's (in name order, or the order of a `series` file you put next to them), installs it in place of Void's build, and holds it so `maw sync` never swaps Void's unpatched build back. When Void releases a new version, `maw status` shows `outdated gnome-network-displays 0.99.0_1 -> 1.0.0_1 + patches`, and `maw src build` (or the next `maw sync`) updates the clone to Void's latest templates and rebuilds with your patches. If a patch stops applying to the new version, the build fails and the patched old version stays installed. Delete the `srcpkgs/` dir to go back to Void's build; the next `maw sync` releases the hold and reinstalls it.
+
 A name with a template in `srcpkgs/` is always a source build, and it's recorded under `packages.xbps` like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the [Void manual on templates](https://github.com/void-linux/void-packages/blob/master/Manual.md).
 
-Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-packages`. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is copied into the clone's `srcpkgs/` and built with `xbps-src pkg <name>`, and the package is installed from the clone's `hostdir/binpkgs`. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in `config.nix`:
+Builds happen in a void-packages clone maw keeps at `~/.local/share/maw/void-packages`. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is copied into the clone's `srcpkgs/` and built with `xbps-src pkg <name>`, and the package is installed from the clone's `hostdir/binpkgs`. A template can't use the name of a package void-packages already has; patch that package instead. To build in a clone of your own instead, in `config.nix`:
 
 ```nix
 maw.voidPackages = "~/void-packages";

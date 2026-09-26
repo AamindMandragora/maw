@@ -1,4 +1,4 @@
-.TH "MAW-USAGE" "7" "" "maw 0.1.0" "maw manual"
+.TH "MAW-USAGE" "7" "" "maw 0.1.1" "maw manual"
 .SH NAME
 maw-usage \- setting up, building, activating, day-to-day commands
 .SH "GETTING HELP"
@@ -256,7 +256,7 @@ disabled    a declared service isn't enabled
 restart     a running service's files changed
 undeclared  installed by hand or enabled, but not in maw.nix; see adopting
 orphan      a module or static/ dir for a program that isn't installed
-outdated    a source package whose template is at a newer version than what's installed; see source packages
+outdated    a source package whose template is at a newer version than what's installed, or whose patches aren't built into the installed package yet; see source packages
 .EE
 .PP
 A program counts as installed when any source has a package by that name or a command by that name is on your \fBPATH\fR, so \fBstatic/nvim/\fR is fine with the \fBneovim\fR package. Data dirs like \fBfonts\fR and \fBwallpapers\fR are never orphans.
@@ -401,9 +401,25 @@ A dependency maw can't match to a Void package is left as a \fB# TODO\fR line. F
 .PP
 The nixpkgs checkout lives at \fB~/.local/share/maw/nixpkgs\fR (a shallow nixos-unstable clone, about 400MB), made on first use; \fBmaw.nixpkgs\fR in \fBconfig.nix\fR points elsewhere. \fBsrc update\fR works on templates \fB--from-nix\fR wrote, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay.
 .PP
+
+.PP
+To change a package Void already has, give it patches instead of a template:
+.PP
+.EX
+srcpkgs/gnome-network-displays/
+  patches/
+    gnd-dmabuf-gl.patch
+.EE
+.PP
+.EX
+maw src build gnome-network-displays    # void's template, plus your patches
+.EE
+.PP
+maw builds Void's own template with your patches applied after Void's (in name order, or the order of a \fBseries\fR file you put next to them), installs it in place of Void's build, and holds it so \fBmaw sync\fR never swaps Void's unpatched build back. When Void releases a new version, \fBmaw status\fR shows \fBoutdated gnome-network-displays 0.99.0_1 -> 1.0.0_1 + patches\fR, and \fBmaw src build\fR (or the next \fBmaw sync\fR) updates the clone to Void's latest templates and rebuilds with your patches. If a patch stops applying to the new version, the build fails and the patched old version stays installed. Delete the \fBsrcpkgs/\fR dir to go back to Void's build; the next \fBmaw sync\fR releases the hold and reinstalls it.
+.PP
 A name with a template in \fBsrcpkgs/\fR is always a source build, and it's recorded under \fBpackages.xbps\fR like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the Void manual on templates (https://github.com/void-linux/void-packages/blob/master/Manual.md).
 .PP
-Builds happen in a void-packages clone maw keeps at \fB~/.local/share/maw/void-packages\fR. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is copied into the clone's \fBsrcpkgs/\fR and built with \fBxbps-src pkg <name>\fR, and the package is installed from the clone's \fBhostdir/binpkgs\fR. A template can't use the name of a package void-packages already has. To build in a clone of your own instead, in \fBconfig.nix\fR:
+Builds happen in a void-packages clone maw keeps at \fB~/.local/share/maw/void-packages\fR. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is copied into the clone's \fBsrcpkgs/\fR and built with \fBxbps-src pkg <name>\fR, and the package is installed from the clone's \fBhostdir/binpkgs\fR. A template can't use the name of a package void-packages already has; patch that package instead. To build in a clone of your own instead, in \fBconfig.nix\fR:
 .PP
 .EX
 maw.voidPackages = "~/void-packages";

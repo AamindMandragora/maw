@@ -1,4 +1,4 @@
-use crate::backend::srcpkgs::SrcPkgs;
+use crate::backend::srcpkgs::{self, SrcPkgs};
 use crate::backend::xbps::Xbps;
 use crate::backend::{self, Backend, BackendError, NAMES, SystemBackend, spec_base, split_pkgver};
 use crate::edit::{self, EditError};
@@ -166,9 +166,11 @@ pub fn held(env: &Env) -> Result<Vec<String>, RollbackError> {
     Ok(load_json(&held_file(env))?)
 }
 
-// releases every hold maw placed, so the next sync upgrades those packages; returns what was released
+// releases every hold rollback placed, so the next sync upgrades those packages; returns what was released.
+// packages built with patches stay held, since an upgrade would put void's unpatched build back
 pub fn release(env: &Env, runner: &dyn Runner) -> Result<Vec<String>, RollbackError> {
-    let names = held(env)?;
+    let patched = srcpkgs::patched(env);
+    let names: Vec<String> = held(env)?.into_iter().filter(|name| !patched.contains(name)).collect();
     if !names.is_empty() {
         Xbps::new(runner, env).hold(&names, false)?;
         save_json(&held_file(env), &Vec::<String>::new())?;
@@ -200,9 +202,11 @@ pub fn rollback(env: &Env, runner: &dyn Runner, repo: &Repo, plan: &Plan) -> Res
     Ok(())
 }
 
-// xbps versions that only an earlier source build has come from binpkgs; the rest from the cache or the repo
+// xbps versions that only an earlier source build has come from binpkgs, as do patched packages, whose builds share
+// void's versions; the rest from the cache or the repo
 fn install_xbps_versions(xbps: &Xbps, src: &SrcPkgs, pkgvers: &[String]) -> Result<(), BackendError> {
-    let (built, others): (Vec<String>, Vec<String>) = pkgvers.iter().cloned().partition(|pkgver| xbps.cached(pkgver).is_none() && src.built(pkgver).is_some());
+    let patched = |pkgver: &String| split_pkgver(pkgver).is_some_and(|(name, _)| src.patches(&name));
+    let (built, others): (Vec<String>, Vec<String>) = pkgvers.iter().cloned().partition(|pkgver| src.built(pkgver).is_some() && (xbps.cached(pkgver).is_none() || patched(pkgver)));
     if !built.is_empty() {
         xbps.install_from(&src.binpkgs(), &built, true)?;
     }

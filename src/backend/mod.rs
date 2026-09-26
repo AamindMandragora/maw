@@ -18,8 +18,10 @@ pub enum BackendError {
     Parse { backend: String, line: String },
     #[error("{path}")]
     Io { path: PathBuf, source: std::io::Error },
-    #[error("void-packages already has {0}; pick another name for your template")]
+    #[error("void-packages already has {0}; pick another name, or patch void's with srcpkgs/{0}/patches/")]
     Taken(String),
+    #[error("srcpkgs/{0} has patches but no template, and void-packages has no {0} to patch")]
+    NotInVoid(String),
     #[error("srcpkgs/{0}/template already exists")]
     TemplateExists(String),
 }
@@ -109,9 +111,27 @@ pub fn split_pkgver(pkgver: &str) -> Option<(String, String)> {
     Some((name.into(), version.into()))
 }
 
+// whether version a is newer than b, comparing runs of digits as numbers: "0.10.0_1" is newer than "0.9.0_2"
+pub fn newer(a: &str, b: &str) -> bool {
+    // "1.10.0_2" -> [1, 10, 0, 2], with any letters kept as their own parts
+    let parts = |version: &str| -> Vec<(u64, String)> {
+        let pieces = version.split(|char: char| !char.is_ascii_alphanumeric()).filter(|piece| !piece.is_empty());
+        pieces.map(|piece| piece.parse::<u64>().map_or((0, piece.to_string()), |number| (number, String::new()))).collect()
+    };
+    parts(a) > parts(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_compares_numbers_as_numbers() {
+        assert!(newer("0.10.0_1", "0.9.0_2"));
+        assert!(newer("0.99.0_2", "0.99.0_1"));
+        assert!(!newer("0.99.0_1", "0.99.0_1"));
+        assert!(!newer("1.0_1", "1.0.1_1"));
+    }
 
     #[test]
     fn spec_base_drops_only_versions() {

@@ -1,5 +1,6 @@
 use crate::activate::{self, ActivateError, Activation, Ask, Options, Step};
 use crate::adopt::{self, Candidate};
+use crate::backend::srcpkgs;
 use crate::backend::xbps::Xbps;
 use crate::backend::SystemBackend;
 use crate::build::{self, BuildError, Report};
@@ -570,7 +571,7 @@ fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -
     let repo = Repo::locate(env)?;
     let ask: Option<&dyn Ask> = if dry_run { None } else { Some(&Terminal) };
     let change = packages::plan_install(env, runner, &repo, requests, ask)?;
-    let built = |target: &&packages::Target| target.backend == "xbps" && repo.srcpkgs_dir().join(&target.spec).join("template").is_file();
+    let built = |target: &&packages::Target| target.backend == "xbps" && srcpkgs::is_source(&repo.srcpkgs_dir(), &target.spec);
     change.packages.iter().filter(built).for_each(|target| println!("build {}", target.spec));
     print_change(&change, "install", "record {} in maw.nix");
     if dry_run {
@@ -681,6 +682,7 @@ fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
         println!("rebuild {name} {installed} -> {template}");
         packages::build_source(env, runner, &repo, &name).map(|_| ())
     })?;
+    packages::srcpkgs(env, runner, &repo)?.unpatch()?.iter().for_each(|name| println!("unpatch {name}"));
     Ok(())
 }
 
