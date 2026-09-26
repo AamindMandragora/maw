@@ -10,6 +10,8 @@ pub struct Env {
     pub share_dir: PathBuf,
     // whether there's a desktop session bus, which writing dconf needs
     pub session_bus: bool,
+    // this machine's name, which picks its hosts/<name>.nix and per-machine lists
+    pub host: String,
 }
 
 impl Env {
@@ -22,7 +24,13 @@ impl Env {
             state_dir: home.join(".local/state/maw"),
             share_dir: share_dir.to_path_buf(),
             session_bus: true,
+            host: "host".into(),
         }
+    }
+
+    // where this machine's name is kept
+    pub fn host_file(&self) -> PathBuf {
+        self.config_dir.join("host")
     }
 
     // reads HOME and MAW_SYSROOT; share_dir is the checkout maw was built from while it's still there, so a
@@ -33,7 +41,9 @@ impl Env {
         let checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let share_dir = if checkout.join("nix/lib.nix").exists() { checkout } else { PathBuf::from("/usr/share/maw") };
         let session_bus = std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some();
-        Env { session_bus, ..Env::new(&home, &sysroot, &share_dir) }
+        let env = Env::new(&home, &sysroot, &share_dir);
+        let host = named_host(&env.host_file());
+        Env { session_bus, host, ..env }
     }
 
     pub fn nix_dir(&self) -> PathBuf {
@@ -59,6 +69,12 @@ impl Env {
             Err(_) => path.display().to_string(),
         }
     }
+}
+
+// the name maw was given for this machine, else its hostname
+pub fn named_host(file: &Path) -> String {
+    let read = |path: &str| std::fs::read_to_string(path).ok().map(|name| name.trim().to_string()).filter(|name| !name.is_empty());
+    read(&file.display().to_string()).or_else(|| read("/etc/hostname")).or_else(|| read("/proc/sys/kernel/hostname")).unwrap_or_else(|| "localhost".into())
 }
 
 #[cfg(test)]

@@ -29,13 +29,15 @@ lib.program "foot" {
 .PP
 The arguments:
 .IP \(bu 2
-\fBconfig\fR: the contents of \fBconfig.nix\fR. It can be an attrset, or a function taking \fB{ lib }\fR, \fB{ theme }\fR, or both.
+\fBconfig\fR: the contents of \fBconfig.nix\fR, with this machine's \fBhosts/<name>.nix\fR merged over it. It can be an attrset, or a function taking any of \fB{ lib, theme, host }\fR.
 .IP \(bu 2
 \fBlib\fR: the nixpkgs lib plus maw's additions (below).
 .IP \(bu 2
 \fBmaw\fR: the contents of \fBmaw.nix\fR.
 .IP \(bu 2
 \fBtheme\fR: the palette from the current wallpaper, \fB{ }\fR before there is one; see "Wallpaper themes" in \fBmaw help usage\fR.
+.IP \(bu 2
+\fBhost\fR: this machine's name; see "More than one machine" in \fBmaw help usage\fR. \fBlib.onHosts [ "laptop" ] <files>\fR gives the files on those machines and nothing elsewhere.
 .PP
 A module takes the arguments it names; list only the ones you use.
 .SH "LIB.PROGRAM NAME { ... }"

@@ -1,4 +1,7 @@
 use crate::activate::Wanted;
+use crate::inputs::Inputs;
+use crate::runner::Runner;
+use crate::secrets::{self, SecretsError};
 use crate::build::{Output, Report, ServiceRef, Settings};
 use crate::env::Env;
 use crate::inputs::{InputsError, hash_bytes, load_json, save_json};
@@ -14,8 +17,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {
-    #[error("no out/.maw/index.json in {0}; activate once with nix installed")]
-    Missing(String),
+    #[error("no out/{host}/ in {repo}: machine {host} was never activated with nix; activate once with nix, or name this machine after one that was")]
+    Missing { repo: String, host: String },
+    #[error(transparent)]
+    Secrets(#[from] SecretsError),
     #[error(transparent)]
     Inputs(#[from] InputsError),
     #[error("{path}")]
@@ -31,6 +36,8 @@ pub struct Index {
     pub void_packages: Option<String>,
     #[serde(default)]
     pub dconf: BTreeMap<String, String>,
+    #[serde(default)]
+    pub secret_key: Option<String>,
 }
 
 // one file: its source relative to the repo, and its destination as ~/... or /... so it holds on any machine
@@ -42,6 +49,9 @@ pub struct Entry {
     pub service: Option<(String, Scope, bool)>,
     #[serde(default)]
     pub reload: Option<String>,
+    // the source is an encrypted file, placed as its decrypted copy
+    #[serde(default)]
+    pub secret: bool,
 }
 
 // a destination as it reads on any machine: under home as ~/..., anything else relative to the system root
@@ -59,14 +69,16 @@ pub fn write(env: &Env, repo: &Repo, build: &Report, wanted: &[Wanted]) -> Resul
     let files = wanted
         .iter()
         .map(|file| Entry {
-            source: file.source.strip_prefix(&repo.root).unwrap_or(&file.source).to_path_buf(),
+            // a decrypted file is recorded by its encrypted one, which is in the repo
+            source: file.secret.as_ref().unwrap_or(&file.source).strip_prefix(&repo.root).unwrap_or(&file.source).to_path_buf(),
+            secret: file.secret.is_some(),
             destination: portable(env, &file.destination),
             root: file.root,
             service: services.get(&file.source).map(|service| (service.name.clone(), service.scope, service.enable)),
             reload: reloads.get(&file.source).map(|command| command.to_string()),
         })
         .collect();
-    let index = Index { files, state: build.state.clone(), auto_commit: build.settings.auto_commit, void_packages: build.settings.void_packages.clone(), dconf: build.dconf.clone() };
+    let index = Index { files, state: build.raw_state.clone(), auto_commit: build.settings.auto_commit, void_packages: build.settings.void_packages.clone(), dconf: build.dconf.clone(), secret_key: build.settings.secret_key.clone() };
 
     // unchanged activations leave it untouched, so a second activate writes nothing
     let path = crate::build::index_file(repo);
@@ -77,27 +89,33 @@ pub fn write(env: &Env, repo: &Repo, build: &Report, wanted: &[Wanted]) -> Resul
 }
 
 // a build report and static files rebuilt from the index, with no nix involved
-pub fn load(env: &Env, repo: &Repo) -> Result<(Report, Vec<Wanted>), IndexError> {
+pub fn load(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<(Report, Vec<Wanted>), IndexError> {
     let path = crate::build::index_file(repo);
     if !path.exists() {
-        return Err(IndexError::Missing(repo.root.display().to_string()));
+        return Err(IndexError::Missing { repo: repo.root.display().to_string(), host: repo.host.clone() });
     }
     let index: Index = load_json(&path)?;
 
     // rendered files come back as outputs, so services and diffs work as usual; static files as they are
     let (rendered, statics): (Vec<&Entry>, Vec<&Entry>) = index.files.iter().partition(|entry| entry.source.starts_with("out"));
     let outputs = rendered.into_iter().map(|entry| output(env, repo, entry)).collect::<Result<Vec<_>, _>>()?;
+    // encrypted files are decrypted again, which needs no nix either
+    let mut inputs = Inputs::default();
     let statics = statics
         .into_iter()
         .map(|entry| {
-            let source = repo.root.join(&entry.source);
+            let file = repo.root.join(&entry.source);
+            let (source, secret) = match entry.secret {
+                true => (secrets::plaintext(env, runner, repo, &secrets::key(env, index.secret_key.as_deref())?, &file, &mut inputs)?, Some(file)),
+                false => (file, None),
+            };
             let bytes = fs::read(&source).map_err(|error| IndexError::Io { path: source.clone(), source: error })?;
-            Ok(Wanted { destination: registry::resolve(env, &entry.destination), hash: hash_bytes(&bytes), source, root: entry.root })
+            Ok(Wanted { destination: registry::resolve(env, &entry.destination), hash: hash_bytes(&bytes), source, root: entry.root, secret })
         })
         .collect::<Result<Vec<_>, IndexError>>()?;
 
     let settings = Settings { auto_commit: index.auto_commit, void_packages: index.void_packages, ..Settings::default() };
-    Ok((Report { outputs, state: index.state, settings, dconf: index.dconf, ..Report::default() }, statics))
+    Ok((Report { outputs, state: index.state.here(&env.host), raw_state: index.state, settings, dconf: index.dconf, ..Report::default() }, statics))
 }
 
 // one rendered file as an output, read back from out/
@@ -106,8 +124,9 @@ fn output(env: &Env, repo: &Repo, entry: &Entry) -> Result<Output, IndexError> {
     let content = fs::read_to_string(&out).map_err(|source| IndexError::Io { path: out.clone(), source })?;
     let mode = fs::metadata(&out).map_err(|source| IndexError::Io { path: out.clone(), source })?.permissions().mode();
 
-    // out/<name>/... names the program; a service is named by its ref
-    let folder = entry.source.components().nth(1).map(|part| part.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+    // out/<machine>/<name>/... names the program; a service is named by its ref
+    let relative = out.strip_prefix(repo.out_dir()).unwrap_or(&entry.source);
+    let folder = relative.components().next().map(|part| part.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
     let name = entry.service.as_ref().map_or(folder, |(name, _, _)| name.clone());
     Ok(Output {
         name,
@@ -170,6 +189,6 @@ mod tests {
     #[test]
     fn no_index_is_an_error() {
         let fixture = fixture(&[]);
-        assert!(matches!(load(&fixture.env, &fixture.repo), Err(IndexError::Missing(_))));
+        assert!(matches!(load(&fixture.env, &fixture.runner, &fixture.repo), Err(IndexError::Missing { .. })));
     }
 }

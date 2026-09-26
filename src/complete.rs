@@ -48,7 +48,7 @@ pub fn module_names(env: &Env) -> Vec<String> {
 // declared packages, the way `maw remove` and `maw info` take them
 pub fn package_names(env: &Env) -> Vec<String> {
     let Some(repo) = repo(env) else { return Vec::new() };
-    let state = index(&repo).state;
+    let state = index(&repo).state.here(&env.host);
     let targets = state.packages.iter().flat_map(|(backend, specs)| specs.iter().map(|spec| Target { backend: backend.clone(), spec: spec.clone() }.to_string()));
     targets.collect()
 }
@@ -57,7 +57,7 @@ pub fn package_names(env: &Env) -> Vec<String> {
 pub fn service_names(env: &Env) -> Vec<String> {
     let Some(repo) = repo(env) else { return Vec::new() };
     let index = index(&repo);
-    let listed = index.state.services.values().flatten().cloned();
+    let listed = index.state.here(&env.host).services.into_values().flatten();
     let defined = index.files.iter().filter_map(|entry| entry.service.as_ref().map(|(name, _, _)| name.clone()));
     listed.chain(defined).collect::<BTreeSet<_>>().into_iter().collect()
 }

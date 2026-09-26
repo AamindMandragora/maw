@@ -56,7 +56,7 @@ pub fn load(env: &Env) -> Result<Vec<Generation>, GenerationsError> {
 
 // whether an activation did anything; drift and unplaced files are only reported
 pub fn changed(activation: &Activation) -> bool {
-    let drift = |step: &Step| matches!(step, Step::Replaced { .. } | Step::Edited { .. } | Step::Unplaced { .. } | Step::SettingEdited { .. } | Step::SettingsSkipped { .. } | Step::Reload { .. });
+    let drift = |step: &Step| matches!(step, Step::Replaced { .. } | Step::Edited { .. } | Step::Unplaced { .. } | Step::SettingEdited { .. } | Step::SettingsSkipped { .. } | Step::Reload { .. } | Step::SecretSkipped { .. });
     let acted = activation.steps.iter().any(|step| !drift(step));
     acted || !activation.build.written.is_empty() || !activation.build.removed.is_empty() || !activation.answered.is_empty()
 }

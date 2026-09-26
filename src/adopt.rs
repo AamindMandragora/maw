@@ -95,9 +95,17 @@ pub fn candidates(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Can
     Ok(all)
 }
 
+// what the user decided for a candidate: declared for every machine, for this one, or ignored
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Choice {
+    Keep,
+    Here,
+    Skip,
+}
+
 // the file the user edits: sections of `keep <name>` lines
 pub fn checklist(candidates: &[Candidate]) -> String {
-    let header = "# maw adopt: `keep` records it in maw.nix, `skip` (or deleting the line) ignores it from now on\n";
+    let header = "# maw adopt: `keep` records it in maw.nix, `here` for this machine only, `skip` (or deleting the line) ignores it from now on\n";
     let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
     candidates.iter().for_each(|candidate| match sections.last_mut() {
         Some((section, names)) if *section == candidate.section() => names.push(candidate.name()),
@@ -108,9 +116,9 @@ pub fn checklist(candidates: &[Candidate]) -> String {
 }
 
 // each candidate with whether the edited checklist keeps it; lines the user deleted count as skipped
-pub fn parse(text: &str, candidates: &[Candidate]) -> Result<Vec<(Candidate, bool)>, AdoptError> {
+pub fn parse(text: &str, candidates: &[Candidate]) -> Result<Vec<(Candidate, Choice)>, AdoptError> {
     let mut section = String::new();
-    let mut kept: Vec<(String, String)> = Vec::new();
+    let mut chosen: Vec<((String, String), Choice)> = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let line = line.trim();
         if let Some(header) = line.strip_prefix("# ") {
@@ -121,22 +129,32 @@ pub fn parse(text: &str, candidates: &[Candidate]) -> Result<Vec<(Candidate, boo
             continue;
         }
         match line.split_once(char::is_whitespace) {
-            Some(("keep", name)) => kept.push((section.clone(), name.trim().to_string())),
+            Some(("keep", name)) => chosen.push(((section.clone(), name.trim().to_string()), Choice::Keep)),
+            Some(("here", name)) => chosen.push(((section.clone(), name.trim().to_string()), Choice::Here)),
             Some(("skip", _)) => {}
             _ => return Err(AdoptError::Line { line: index + 1, text: line.into() }),
         }
     }
-    Ok(candidates.iter().map(|candidate| (candidate.clone(), kept.contains(&(candidate.section(), candidate.name().to_string())))).collect())
+
+    // anything not kept, including deleted lines, is skipped
+    let choice = |candidate: &Candidate| chosen.iter().find(|(key, _)| *key == (candidate.section(), candidate.name().to_string())).map_or(Choice::Skip, |(_, choice)| *choice);
+    Ok(candidates.iter().map(|candidate| (candidate.clone(), choice(candidate))).collect())
 }
 
-// records kept candidates as declared and skipped ones as ignored, then writes maw.nix
-pub fn apply(repo: &Repo, mut state: MawState, decisions: &[(Candidate, bool)]) -> Result<(), AdoptError> {
-    decisions.iter().for_each(|(candidate, keep)| {
-        let (lists, key) = match (candidate, keep) {
-            (Candidate::Package { backend, .. }, true) => (&mut state.packages, backend.clone()),
-            (Candidate::Package { backend, .. }, false) => (&mut state.ignored.packages, backend.clone()),
-            (Candidate::Service { scope, .. }, true) => (&mut state.services, scope.to_string()),
-            (Candidate::Service { scope, .. }, false) => (&mut state.ignored.services, scope.to_string()),
+// records kept candidates as declared (for this machine only when chosen so) and skipped ones as ignored, then writes maw.nix
+pub fn apply(repo: &Repo, mut state: MawState, host: &str, decisions: &[(Candidate, Choice)]) -> Result<(), AdoptError> {
+    decisions.iter().for_each(|(candidate, choice)| {
+        let (key, services) = match candidate {
+            Candidate::Package { backend, .. } => (backend.clone(), false),
+            Candidate::Service { scope, .. } => (scope.to_string(), true),
+        };
+        let lists = match (choice, services) {
+            (Choice::Keep, false) => &mut state.packages,
+            (Choice::Keep, true) => &mut state.services,
+            (Choice::Here, false) => &mut state.own(host).packages,
+            (Choice::Here, true) => &mut state.own(host).services,
+            (Choice::Skip, false) => &mut state.ignored.packages,
+            (Choice::Skip, true) => &mut state.ignored.services,
         };
         lists.entry(key).or_default().push(candidate.name().to_string());
     });
@@ -185,9 +203,9 @@ mod tests {
         let text = checklist(&candidates);
         assert!(text.contains("# packages (xbps)\nkeep bash\nkeep zig\n\n# services (system)\nkeep dbus\n"));
 
-        let edited = text.replace("keep zig\n", "").replace("keep dbus", "skip dbus");
-        let keeps: Vec<bool> = parse(&edited, &candidates).unwrap().into_iter().map(|(_, keep)| keep).collect();
-        assert_eq!(keeps, [true, false, false]);
+        let edited = text.replace("keep zig\n", "").replace("keep dbus", "here dbus");
+        let choices: Vec<Choice> = parse(&edited, &candidates).unwrap().into_iter().map(|(_, choice)| choice).collect();
+        assert_eq!(choices, [Choice::Keep, Choice::Skip, Choice::Here]);
     }
 
     #[test]
@@ -201,7 +219,7 @@ mod tests {
         let fixture = fixture(&[]);
         with_service(&fixture, "dbus");
         let decisions = parse(&checklist(&found(&fixture)).replace("keep dbus", "skip dbus"), &found(&fixture)).unwrap();
-        apply(&fixture.repo, MawState::default(), &decisions).unwrap();
+        apply(&fixture.repo, MawState::default(), "laptop", &decisions).unwrap();
 
         assert!(maw_nix(&fixture).contains("packages = {\n    xbps = [ \"bash\" ];"));
         assert!(maw_nix(&fixture).contains("ignored = {\n    packages = { };\n    services = {\n      system = [ \"dbus\" ];"));

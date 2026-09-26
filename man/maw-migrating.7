@@ -79,7 +79,7 @@ A service you wrote by hand in \fB/etc/sv/<name>\fR can become a module. If it o
 .IP 1. 4
 Write \fBmodules/<name>.nix\fR with \fBlib.service "<name>" { scope = "user"; run = ''...''; }\fR, pasting the script without the privilege-dropping lines. User services already have \fBHOME\fR, \fBUSER\fR, and \fBPATH\fR set.
 .IP 2. 4
-Check the rendered script: \fBsh -n ~/dotfiles/out/sv/<name>/run\fR.
+Check the rendered script: \fBsh -n ~/dotfiles/out/<machine>/sv/<name>/run\fR.
 .IP 3. 4
 Stop the old one first, so both never run at once: \fBmaw sv disable <name> --system\fR.
 .IP 4. 4

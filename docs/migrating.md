@@ -82,7 +82,7 @@ It opens a checklist of every package you installed by hand and every enabled se
 A service you wrote by hand in `/etc/sv/<name>` can become a module. If it only drops to your user (with `chpst -u you`) to do its job, it's usually better as a user service, which runs as you from login and needs no `chpst`:
 
 1. Write `modules/<name>.nix` with `lib.service "<name>" { scope = "user"; run = ''...''; }`, pasting the script without the privilege-dropping lines. User services already have `HOME`, `USER`, and `PATH` set.
-2. Check the rendered script: `sh -n ~/dotfiles/out/sv/<name>/run`.
+2. Check the rendered script: `sh -n ~/dotfiles/out/<machine>/sv/<name>/run`.
 3. Stop the old one first, so both never run at once: `maw sv disable <name> --system`.
 4. `maw activate` links and starts the new one. Follow it with `maw sv log <name>`.
 5. Once it works, remove the old definition: `sudo rm -r /etc/sv/<name>`. maw never deletes a service definition it didn't write.

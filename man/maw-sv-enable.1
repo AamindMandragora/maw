@@ -4,7 +4,7 @@
 .SH NAME
 maw\-sv\-enable \- record a service in maw.nix and link it into place
 .SH SYNOPSIS
-\fBmaw sv enable\fR [\fB\-\-user\fR] [\fB\-\-system\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
+\fBmaw sv enable\fR [\fB\-\-user\fR] [\fB\-\-system\fR] [\fB\-\-here\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
 .SH DESCRIPTION
 record a service in maw.nix and link it into place
 .SH OPTIONS
@@ -14,6 +14,9 @@ the user service run by your session
 .TP
 \fB\-\-system\fR
 the system service run from boot
+.TP
+\fB\-\-here\fR
+record it for this machine only
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

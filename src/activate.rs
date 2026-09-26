@@ -2,6 +2,7 @@ use crate::backend::{self, BackendError};
 use crate::backend::srcpkgs::SrcPkgs;
 use crate::backup;
 use crate::desktop;
+use crate::secrets;
 use crate::build::{self, BuildError, Report};
 pub use crate::build::Options;
 use crate::env::Env;
@@ -79,6 +80,8 @@ pub struct Wanted {
     pub source: PathBuf,
     pub hash: String,
     pub root: bool,
+    // for a decrypted file, the encrypted one in static/ it comes from
+    pub secret: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +122,8 @@ pub enum Step {
     SettingsSkipped { reason: String },
     // a program whose config changed, told to read it again
     Reload { name: String, command: String },
+    // an encrypted file this machine can't decrypt now, and why
+    SecretSkipped { file: String, reason: String },
 }
 
 #[derive(Debug, Default)]
@@ -163,22 +168,23 @@ pub fn activate(env: &Env, runner: &dyn Runner, repo: &Repo, ask: &dyn Ask, opti
     if !options.no_build {
         let placed: Vec<Wanted> = planned.wanted.iter().chain(&planned.copies).cloned().collect();
         index::write(env, repo, &planned.build, &placed).map_err(|error| ActivateError::Index(Box::new(error)))?;
+        migrate_out(repo)?;
     }
     Ok(Activation { build: planned.build, steps: planned.steps, backups, answered })
 }
 
 // builds (or with dry_run only renders, or with no_build reads the index), then plans every link without touching one
 pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> Result<Planned, ActivateError> {
-    let (build, statics, unplaced) = if options.no_build {
-        let (build, statics) = index::load(env, repo).map_err(|error| ActivateError::Index(Box::new(error)))?;
-        (build, statics, Vec::new())
+    let (build, statics, unplaced, skipped) = if options.no_build {
+        let (build, statics) = index::load(env, runner, repo).map_err(|error| ActivateError::Index(Box::new(error)))?;
+        (build, statics, Vec::new(), Vec::new())
     } else {
         let build = build::build(env, runner, repo, options)?;
         let inputs_file = env.state_dir.join("inputs");
         let mut inputs = Inputs::load(&inputs_file)?;
-        let (statics, unplaced) = static_files(env, repo, &build.registry, &mut inputs)?;
+        let (statics, unplaced, skipped) = static_files(env, runner, repo, &build.registry, build.settings.secret_key.as_deref(), &mut inputs)?;
         inputs.save(&inputs_file)?;
-        (build, statics, unplaced)
+        (build, statics, unplaced, skipped)
     };
 
     let (copies, wanted): (Vec<Wanted>, Vec<Wanted>) = wanted(&build, statics)?.into_iter().partition(|file| file.root);
@@ -198,8 +204,23 @@ pub fn plan_activation(env: &Env, runner: &dyn Runner, repo: &Repo, options: Opt
     // packages, links, root copies, services, settings, loose files nobody placed, then reloads once everything is in place
     let unplaced = unplaced.into_iter().map(|file| Step::Unplaced { file });
     let reloads = reload_steps(&build, &changed);
-    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(setting_steps).chain(unplaced).chain(reloads).collect();
+    let steps = missing_packages(env, runner, &build.state)?.into_iter().chain(links).chain(copy_steps).chain(service_steps).chain(setting_steps).chain(skipped).chain(unplaced).chain(reloads).collect();
     Ok(Planned { build, wanted, copies, steps, manifest, next })
+}
+
+// out/ from before each machine had its own dir under it: once this machine's links point into out/<machine>/, everything
+// at the top that isn't a machine's dir (one holding .maw/index.json) is the old layout and goes
+fn migrate_out(repo: &Repo) -> Result<(), ActivateError> {
+    let out = repo.root.join("out");
+    if !out.join(".maw/index.json").exists() {
+        return Ok(());
+    }
+    let entries = fs::read_dir(&out).map_err(io(&out))?.filter_map(|entry| entry.ok()).map(|entry| entry.path());
+    let old: Vec<PathBuf> = entries.filter(|path| !(path.is_dir() && path.join(".maw/index.json").exists())).collect();
+    old.iter().try_for_each(|path| match path.is_dir() {
+        true => fs::remove_dir_all(path).map_err(io(path)),
+        false => fs::remove_file(path).map_err(io(path)),
+    })
 }
 
 // one reload per program with a reload command whose files changed
@@ -344,6 +365,7 @@ fn wanted(build: &Report, statics: Vec<Wanted>) -> Result<Vec<Wanted>, ActivateE
         source: output.out.clone(),
         hash: output.hash.clone(),
         root: output.root,
+        secret: None,
     });
 
     // keyed by destination, failing on the first destination claimed twice
@@ -358,7 +380,11 @@ fn wanted(build: &Report, statics: Vec<Wanted>) -> Result<Vec<Wanted>, ActivateE
 }
 
 // static/<name>/<path> goes where the registry puts <name>'s <path>; loose files go by answer or heuristic
-fn static_files(env: &Env, repo: &Repo, registry: &Registry, inputs: &mut Inputs) -> Result<(Vec<Wanted>, Vec<PathBuf>), ActivateError> {
+// static files where they go, loose ones with no destination, and encrypted ones this machine can't decrypt; an encrypted
+// file (<file>.age) is placed as its decrypted copy in the state dir, under its name without .age
+type Statics = (Vec<Wanted>, Vec<PathBuf>, Vec<Step>);
+
+fn static_files(env: &Env, runner: &dyn Runner, repo: &Repo, registry: &Registry, secret_key: Option<&str>, inputs: &mut Inputs) -> Result<Statics, ActivateError> {
     let root = repo.static_dir();
     let mut unplaced = Vec::new();
 
@@ -383,15 +409,32 @@ fn static_files(env: &Env, repo: &Repo, registry: &Registry, inputs: &mut Inputs
         })
         .collect();
 
+    // this machine's key, looked for only when there's something to decrypt
+    let is_secret = |path: &PathBuf| path.extension().is_some_and(|ext| ext == "age");
+    let key = named.iter().any(|(_, _, path)| is_secret(path)).then(|| secrets::key(env, secret_key));
+    let mut skipped = Vec::new();
+
     // root-scope names are copied rather than linked
-    let wanted = named
-        .into_iter()
-        .map(|(name, key, path)| {
-            let destination = registry::resolve(env, &registry.spec(&name, &key));
-            Ok(Wanted { destination, hash: inputs.hash(&path)?, source: path, root: registry.entry(&name).root })
-        })
-        .collect::<Result<Vec<_>, ActivateError>>()?;
-    Ok((wanted, unplaced))
+    let mut wanted = Vec::new();
+    for (name, key_name, path) in named {
+        let root = registry.entry(&name).root;
+        if !is_secret(&path) {
+            let destination = registry::resolve(env, &registry.spec(&name, &key_name));
+            wanted.push(Wanted { destination, hash: inputs.hash(&path)?, source: path, root, secret: None });
+            continue;
+        }
+        let destination = registry::resolve(env, &registry.spec(&name, key_name.trim_end_matches(".age")));
+        let decrypted = match &key {
+            Some(Ok(key)) => secrets::plaintext(env, runner, repo, key, &path, inputs).map_err(|error| secrets::reason(repo, &error)),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Err("no key".into()),
+        };
+        match decrypted {
+            Ok(plain) => wanted.push(Wanted { destination, hash: inputs.hash(&plain)?, source: plain, root, secret: Some(path) }),
+            Err(reason) => skipped.push(Step::SecretSkipped { file: path.strip_prefix(&repo.root).unwrap_or(&path).display().to_string(), reason }),
+        }
+    }
+    Ok((wanted, unplaced, skipped))
 }
 
 // a loose file's registry name: its own if maw.nix answers for it, else its category
@@ -500,6 +543,53 @@ mod tests {
 
     fn run(fixture: &Fixture, options: Options) -> Activation {
         activate(&fixture.env, &fixture.runner, &fixture.repo, &Answer(None), options).unwrap()
+    }
+
+    #[test]
+    fn the_old_shared_out_moves_under_this_machine_leaving_other_machines_alone() {
+        let fixture = fixture();
+        let out = fixture.repo.root.join("out");
+        write(&out.join(".maw/index.json"), "{}");
+        write(&out.join("foot/foot.ini"), "old\n");
+        write(&out.join("desktop/.maw/index.json"), "{}");
+
+        run(&fixture, Options::default());
+        assert_eq!(fs::read_link(foot(&fixture)).unwrap(), fixture.repo.out_dir().join("foot/foot.ini"));
+        assert!(!out.join(".maw").exists() && !out.join("foot").exists());
+        assert!(out.join("desktop/.maw/index.json").exists() && fixture.repo.out_dir().join(".maw/index.json").exists());
+    }
+
+    #[test]
+    fn encrypted_files_link_to_their_decrypted_copy_and_foreign_ones_are_skipped() {
+        let mut fixture = testing::fixture(&[]);
+        write(&fixture.env.home.join(".ssh/id_ed25519"), "private");
+        write(&fixture.env.home.join(".ssh/id_ed25519.pub"), "ssh-ed25519 AAAA\n");
+        write(&fixture.repo.static_dir().join("rclone/rclone.conf.age"), "token = 1\n");
+        write(&fixture.repo.static_dir().join("git/foreign.age"), "?");
+
+        // age "decrypting" by copying, except files for other machines
+        fixture.runner = crate::runner::fake::FakeRunner::fallible(|program, args| match program {
+            "age" if args.last().unwrap().ends_with("foreign.age") => Err(RunError::Failed { program: "age".into(), stderr: "no identity matched".into() }),
+            "age" => {
+                let output = args.iter().position(|arg| arg == "-o").map(|at| args[at + 1].clone()).unwrap();
+                fs::copy(args.last().unwrap(), output).unwrap();
+                Ok(String::new())
+            }
+            _ => testing::fake(program, args),
+        });
+
+        let first = run(&fixture, Options::default());
+        let live = fixture.env.home.join(".config/rclone/rclone.conf");
+        assert_eq!(fs::read_link(&live).unwrap(), fixture.env.state_dir.join("secrets/rclone/rclone.conf"));
+        assert_eq!(fs::read_to_string(&live).unwrap(), "token = 1\n");
+        assert!(first.steps.iter().any(|step| matches!(step, Step::SecretSkipped { file, .. } if file == "static/git/foreign.age")));
+
+        // nothing changed: age isn't run again, for either file, and only the skip note remains
+        let decrypts = || fixture.runner.calls.borrow().iter().filter(|call| call.starts_with("age -d")).count();
+        let before = decrypts();
+        let second = run(&fixture, Options::default());
+        assert_eq!(decrypts(), before);
+        assert!(second.steps.iter().all(|step| matches!(step, Step::SecretSkipped { .. })));
     }
 
     #[test]

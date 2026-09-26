@@ -59,7 +59,7 @@ This creates the repo, or fills in whatever an existing one is missing, and reco
   maw.nix        # written by maw
   modules/       # one <name>.nix per program
   static/        # verbatim files
-  out/           # rendered output, committed with the repo
+  out/           # rendered output, a dir per machine, committed with the repo
 .EE
 .PP
 Every other command finds the repo through that recorded path, so it works from any directory.
@@ -74,19 +74,19 @@ maw init git@github.com:you/dotfiles.git ~/dots   # or anywhere
 .PP
 Given a git url, \fBinit\fR clones the repo, prints the plan of what activating would do, and asks \fBactivate now? [Y/n]\fR. Saying yes installs every declared package, links and copies every file, and enables every service: the machine becomes the one the repo describes.
 .PP
-Nix isn't needed for that. If it isn't installed, maw activates from the committed \fBout/\fR and its index, \fBout/.maw/index.json\fR, which every activation keeps up to date. To do the same by hand: \fBmaw activate --no-build\fR. Install nix (\fBmaw install nix\fR) before editing modules; without it maw can't render them.
+Nix isn't needed for that. If it isn't installed, maw activates from the committed \fBout/<machine>/\fR and its index, \fBout/<machine>/.maw/index.json\fR, which every activation keeps up to date; name the new machine after one that has been activated with nix (see more than one machine). To do the same by hand: \fBmaw activate --no-build\fR. Install nix (\fBmaw install nix\fR) before editing modules; without it maw can't render them.
 .SH "BUILDING"
 .PP
 .EX
 maw build
 .EE
 .PP
-Renders every module into \fBout/<name>/\fR, named after the file's destination: \fBout/niri/config.kdl\fR, \fBout/waybar/style.css\fR. Output lists what happened:
+Renders every module into \fBout/<machine>/<name>/\fR (each machine renders into its own dir, since machines can differ), named after the file's destination: \fBout/laptop/niri/config.kdl\fR, \fBout/laptop/waybar/style.css\fR. Output lists what happened:
 .PP
 .EX
 eval niri
-write out/niri/config.kdl
-remove out/foot/foot.ini
+write out/laptop/niri/config.kdl
+remove out/laptop/foot/foot.ini
 .EE
 .PP
 \fBup to date\fR means nothing needed doing.
@@ -108,7 +108,7 @@ maw activate
 .PP
 Builds, then symlinks every file into place:
 .IP \(bu 2
-rendered files link to \fBout/\fR: \fB~/.config/niri/config.kdl -> ~/dotfiles/out/niri/config.kdl\fR
+rendered files link to \fBout/\fR: \fB~/.config/niri/config.kdl -> ~/dotfiles/out/laptop/niri/config.kdl\fR
 .IP \(bu 2
 files in \fBstatic/<name>/\fR link as they are, each file on its own: \fBstatic/nvim/init.lua\fR goes to \fB~/.config/nvim/init.lua\fR
 .PP
@@ -241,6 +241,26 @@ anything else goes at the top of \fBstatic/\fR, like a loose file
 When the registry alone would put the copy somewhere else, the original path is recorded in \fBmaw.nix\fR \fBpaths\fR. Adding a file maw already links is an error.
 .PP
 \fBedit\fR, \fBnew\fR, and \fBadd\fR all take \fB--no-activate\fR, to change several things and activate once at the end, e.g. when moving an existing setup into maw.
+.SS "Encrypted files"
+.PP
+Files with passwords or tokens, like \fBrclone.conf\fR, can live in the repo encrypted, so it can be public:
+.PP
+.EX
+maw add --secret ~/.config/rclone/rclone.conf   # encrypted into static/rclone/rclone.conf.age
+maw secret edit ~/.config/rclone/rclone.conf    # decrypted into your editor, encrypted back
+maw secret rekey                                # re-encrypted for every machine, after adding one
+.EE
+.PP
+.EX
+record hosts/laptop.pub
+encrypt ~/.config/rclone/rclone.conf -> static/rclone/rclone.conf.age
+.EE
+.PP
+Files are encrypted with age (https://age-encryption.org) to your SSH key: \fB~/.ssh/id_ed25519\fR, else \fB~/.ssh/id_rsa\fR, or \fBmaw.secretKey = "~/.ssh/other";\fR in \fBconfig.nix\fR. Each machine's public key is in the repo as \fBhosts/<name>.pub\fR (written the first time a machine encrypts), and every file is encrypted to all of them, so each machine decrypts with its own key and no private key leaves its machine. It needs \fBage\fR (\fBmaw install age\fR); maw itself doesn't depend on it.
+.PP
+On activation, an encrypted file is decrypted into \fB~/.local/state/maw/secrets/\fR (readable only by you) and the live file links to that copy; the plaintext never enters the repo. It's decrypted again only when the encrypted file changes, so a key with a passphrase is asked for rarely. Edits made through the live file last until the encrypted file next changes; \fBmaw secret edit\fR is how an edit reaches the repo.
+.PP
+A new machine can't decrypt anything until it's a recipient. Its first activation skips encrypted files with a note (\fBskip static/rclone/rclone.conf.age: ... isn't encrypted for this machine\fR). To add it: run \fBmaw secret rekey\fR there, which records its key as \fBhosts/<name>.pub\fR (and warns about each file it can't open yet), push; then \fBmaw secret rekey\fR and push on a machine that can decrypt, and pull on the new one.
 .SS "Checking"
 .PP
 .EX
@@ -275,6 +295,49 @@ maw diff
 .EE
 .PP
 A unified diff of each live file against what maw would put there, the same as \fBmaw activate --force\fR would leave. Removed links diff against nothing. Neither command writes anything.
+.SS "More than one machine"
+.PP
+One repo can serve several machines that are mostly alike, like a laptop and a desktop. Each machine has a name: \fBmaw init\fR asks for it (your hostname by default), and \fBmaw host\fR shows it, or renames the machine and activates for what the new name gets (not a generation, since the name belongs to the machine):
+.PP
+.EX
+maw host            # laptop, with hosts/laptop.nix
+maw host desktop    # this machine is now desktop
+.EE
+.PP
+The name is kept in \fB~/.config/maw/host\fR, and each machine renders into \fBout/<name>/\fR. (A repo from before machines had names keeps its rendered files straight under \fBout/\fR; the first activation moves them into this machine's dir.) What differs between machines goes in three places:
+.IP \(bu 2
+\fBConfig values\fR: \fBhosts/<name>.nix\fR is merged over \fBconfig.nix\fR on that machine only, key by key, so it holds just what differs:
+.PP
+  ```nix
+  # hosts/laptop.nix
+  { output = "eDP-1"; scale = 2; font.size = 13; }
+  ```
+.PP
+  It can be a function of \fB{ lib, theme, host }\fR like \fBconfig.nix\fR.
+.IP \(bu 2
+\fBModules\fR: every module gets \fBhost\fR, the machine's name, to decide with. \fBlib.onHosts\fR limits a whole module to some machines, so the others don't get its files or services:
+.PP
+  ```nix
+  { lib, ... }:
+  lib.onHosts [ "laptop" ] (lib.service "tlp" { run = "exec tlp start"; })
+  ```
+.IP \(bu 2
+\fBPackages and services\fR: \fBmaw install --here tlp\fR and \fBmaw sv enable --here tlp\fR record them for this machine only, under \fBhosts\fR in \fBmaw.nix\fR; \fBmaw adopt\fR takes \fBhere <name>\fR as well as \fBkeep\fR. \fBmaw remove\fR and \fBmaw sv disable\fR drop a name from both the shared lists and this machine's.
+.PP
+  ```nix
+  hosts = {
+    laptop = {
+      packages = {
+        xbps = [ "tlp" ];
+      };
+      services = {
+        system = [ "tlp" ];
+      };
+    };
+  };
+  ```
+.PP
+Everything else (\fBstatus\fR, \fBquery\fR, \fBadopt\fR, rollback) sees what this machine declares: the shared lists plus its own. A second machine gets set up with \fBmaw init <your repo url>\fR: it asks the name first, then activates what that name declares.
 .SS "Wallpaper themes"
 .PP
 maw can make a color palette from your wallpaper with matugen (https://github.com/InioX/matugen), for every module to use. It's optional: nothing about it runs, and matugen isn't needed, until you set \fBmaw.theme\fR in \fBconfig.nix\fR or run \fBmaw wallpaper\fR. Wallpapers live in \fBstatic/wallpapers/\fR, so every machine has them:
@@ -652,7 +715,7 @@ maw pull      # fast-forward only, then activate
 .PP
 Both need a remote: \fBgit -C ~/dotfiles remote add origin <url>\fR. \fBpull\fR refuses to merge; if both sides changed, sort it out with git, then \fBmaw activate\fR.
 .PP
-Since \fBout/\fR is committed, push after activating rather than after editing: then the other machine pulls output that already matches the source, re-renders nothing, and makes no commit of its own. Pushing source that was never activated means the pulling machine renders and commits new \fBout/\fR itself, and the two sides diverge until one of them pulls the other's commit.
+Each machine renders into its own \fBout/<machine>/\fR, so machines never rewrite each other's output: a pull brings the other machines' source changes and their dirs, and the activation after it renders this machine's.
 .SH "WHERE FILES GO"
 .PP
 You never write destination paths. Each program name maps to destinations through the registry, checked in this order:

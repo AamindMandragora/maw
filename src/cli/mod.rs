@@ -13,6 +13,7 @@ use crate::init::runit::Runit;
 use crate::init::{InitBackend, Scope};
 use crate::packages::{self, Change};
 use crate::registry;
+use crate::secrets;
 use crate::repo::Repo;
 use crate::rollback;
 use crate::scaffold;
@@ -82,6 +83,8 @@ pub enum Command {
         name: Option<String>,
         #[arg(long, help = "only copy; activate later")]
         no_activate: bool,
+        #[arg(long, help = "encrypt it into static/ instead, for every machine's key")]
+        secret: bool,
     },
     #[command(about = "show what activating would change in each live file", after_help = "see: maw help checking")]
     Diff,
@@ -98,6 +101,8 @@ pub enum Command {
         packages: Vec<String>,
         #[arg(long, help = "print what would change without changing anything")]
         dry_run: bool,
+        #[arg(long, help = "record them for this machine only")]
+        here: bool,
     },
     #[command(about = "remove packages and drop them from maw.nix; their modules stay", after_help = "see: maw help removing")]
     Remove {
@@ -138,6 +143,16 @@ pub enum Command {
         #[command(subcommand)]
         action: SvAction,
     },
+    #[command(about = "show or set this machine's name, which picks its hosts/<name>.nix and own packages", after_help = "see: maw help more than one machine")]
+    Host {
+        #[arg(help = "a new name for this machine")]
+        name: Option<String>,
+    },
+    #[command(about = "encrypted files in static/: edit one, or re-encrypt all for every machine", after_help = "see: maw help encrypted files")]
+    Secret {
+        #[command(subcommand)]
+        action: SecretAction,
+    },
     #[command(about = "set the wallpaper the theme comes from, or show it", after_help = "see: maw help wallpaper themes")]
     Wallpaper {
         #[arg(add = ArgValueCompleter::new(complete::wallpapers), help = "an image (copied into static/wallpapers/), a name already there, or random")]
@@ -171,7 +186,12 @@ pub enum SvAction {
     #[command(about = "declared and enabled services, and whether they run")]
     List,
     #[command(about = "record a service in maw.nix and link it into place")]
-    Enable(ServiceName),
+    Enable {
+        #[command(flatten)]
+        service: ServiceName,
+        #[arg(long, help = "record it for this machine only")]
+        here: bool,
+    },
     #[command(about = "stop and unlink a service, and drop it from maw.nix")]
     Disable(ServiceName),
     #[command(about = "sv status")]
@@ -180,6 +200,17 @@ pub enum SvAction {
     Restart(ServiceName),
     #[command(about = "follow a service's log")]
     Log(ServiceName),
+}
+
+#[derive(Subcommand, Clone, Debug)]
+pub enum SecretAction {
+    #[command(about = "decrypt a file into your editor, then encrypt it back and activate")]
+    Edit {
+        #[arg(help = "the live file, or its static/<name>/<file>.age")]
+        file: PathBuf,
+    },
+    #[command(about = "re-encrypt every file for every machine in hosts/*.pub, after adding one")]
+    Rekey,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -279,7 +310,9 @@ pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
         Command::Init { target, path } => init(env, runner, &target, path.as_deref()),
         Command::Build { force } => build(env, runner, force),
         Command::Activate { dry_run, force, no_commit, no_build } => activate(env, runner, Options { dry_run, force, no_build }, !no_commit),
+        Command::Host { name } => host(env, runner, name.as_deref()),
         Command::Wallpaper { image } => wallpaper(env, runner, image.as_deref()),
+        Command::Secret { action } => secret(env, runner, action),
         Command::Generations => list_generations(env),
         Command::Commit { message } => {
             let repo = Repo::locate(env)?;
@@ -296,11 +329,11 @@ pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
         }
         Command::Edit { name, no_activate } => edit(env, runner, &name, !no_activate),
         Command::New { name, format, no_activate } => new(env, runner, &name, format.as_deref(), !no_activate),
-        Command::Add { path, name, no_activate } => add(env, runner, &path, name.as_deref(), !no_activate),
+        Command::Add { path, name, no_activate, secret } => add(env, runner, &path, name.as_deref(), !no_activate, secret),
         Command::Diff => diff(env, runner),
         Command::Status => status(env, runner),
         Command::Adopt { dry_run } => adopt(env, runner, dry_run),
-        Command::Install { packages, dry_run } => install(env, runner, &packages, dry_run),
+        Command::Install { packages, dry_run, here } => install(env, runner, &packages, dry_run, here),
         Command::Remove { packages, dry_run } => remove(env, runner, &packages, dry_run),
         Command::Query { package } => query(env, runner, package.as_deref()),
         Command::Search { term } => search(env, runner, &term),
@@ -341,7 +374,56 @@ fn init(env: &Env, runner: &dyn Runner, target: &str, clone_to: Option<&Path>) -
     };
     created.iter().for_each(|path| println!("create {}", env.pretty(path)));
     println!("dotfiles at {}", env.pretty(&repo.root));
+
+    // the machine's name decides what it gets, so it's settled before anything activates
+    let env = &name_machine(env, &repo)?;
+    let repo = repo.for_host(&env.host);
     if is_url { bootstrap(env, runner, &repo) } else { Ok(()) }
+}
+
+// machines the repo has a hosts/<name>.nix for
+fn known_hosts(repo: &Repo) -> Vec<String> {
+    let files = std::fs::read_dir(repo.root.join("hosts")).into_iter().flatten().filter_map(|entry| entry.ok()).map(|entry| entry.path());
+    let mut names: Vec<String> = files.filter(|path| path.extension().is_some_and(|ext| ext == "nix")).filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned())).collect();
+    names.sort();
+    names
+}
+
+// asks this machine's name the first time (the hostname by default, with the repo's hosts/ names as hints) and keeps it
+fn name_machine(env: &Env, repo: &Repo) -> Result<Env> {
+    if env.host_file().exists() {
+        return Ok(env.clone());
+    }
+    let known = known_hosts(repo);
+    let hint = if known.is_empty() { String::new() } else { format!(" (hosts/ has {})", known.join(", ")) };
+    let answer = Terminal.ask(&format!("this machine's name [{}]{hint}: ", env.host)).map(|answer| answer.trim().to_string());
+    let host = answer.filter(|answer| !answer.is_empty()).unwrap_or_else(|| env.host.clone());
+    set_host(env, &host)?;
+    Ok(Env { host, ..env.clone() })
+}
+
+// keeps this machine's name where maw and nix read it
+fn set_host(env: &Env, host: &str) -> Result<()> {
+    std::fs::create_dir_all(&env.config_dir)?;
+    std::fs::write(env.host_file(), format!("{host}\n"))?;
+    Ok(())
+}
+
+// shows this machine's name, or renames it and activates for what the new name gets, without a generation
+fn host(env: &Env, runner: &dyn Runner, name: Option<&str>) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let Some(name) = name else {
+        let file = repo.root.join("hosts").join(format!("{}.nix", env.host));
+        let note = if file.exists() { format!(", with {}", relative(&repo, &file)) } else { String::new() };
+        println!("{}{note}", env.host);
+        return Ok(());
+    };
+    set_host(env, name)?;
+    println!("host {name}");
+    let env = &Env { host: name.to_string(), ..env.clone() };
+    let repo = repo.for_host(name);
+    let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
+    finish(env, runner, &repo, &activation, false, false, &[])
 }
 
 // on a freshly cloned repo: show the plan, then activate if asked; without nix, from the committed index
@@ -433,11 +515,17 @@ fn new(env: &Env, runner: &dyn Runner, name: &str, format: Option<&str>, activat
     edit_then_activate(env, runner, &repo, &module, activate)
 }
 
-// copies into static/, then activates so the original is backed up and linked
-fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>, activate: bool) -> Result<()> {
+// copies (or encrypts) into static/, then activates so the original is backed up and linked
+fn add(env: &Env, runner: &dyn Runner, path: &Path, name: Option<&str>, activate: bool, secret: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
-    let copies = edit::add(env, runner, &repo, path, name)?;
-    copies.iter().for_each(|(file, copy)| println!("copy {} -> {}", env.pretty(file), relative(&repo, copy)));
+    let key = if secret { Some(secrets::key(env, build::settings(env, runner, &repo)?.secret_key.as_deref())?) } else { None };
+    let published = !secrets::recipients(&repo).iter().any(|file| file.file_stem().is_some_and(|stem| *stem == *repo.host));
+    let copies = edit::add(env, runner, &repo, path, name, key.as_deref())?;
+    if secret && published {
+        println!("record hosts/{}.pub", repo.host);
+    }
+    let verb = if secret { "encrypt" } else { "copy" };
+    copies.iter().for_each(|(file, copy)| println!("{verb} {} -> {}", env.pretty(file), relative(&repo, copy)));
     if !activate {
         return Ok(());
     }
@@ -515,6 +603,7 @@ pub fn status_lines(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<S
         Step::SettingReset { key } => line("stale", key.clone()),
         Step::SettingsSkipped { reason } => line("skipped", format!("settings: {reason}")),
         Step::Reload { name, .. } => line("reload", name.clone()),
+        Step::SecretSkipped { file, reason } => line("skipped", format!("{file}: {reason}")),
     });
 
     // source packages behind their template, things maw.nix doesn't know about, then config for programs that aren't installed
@@ -560,9 +649,16 @@ fn adopt(env: &Env, runner: &dyn Runner, dry_run: bool) -> Result<()> {
     std::fs::remove_file(&file)?;
 
     let (_, state) = edit::load(env, runner, &repo)?;
-    adopt::apply(&repo, state, &decisions)?;
-    decisions.iter().for_each(|(candidate, keep)| println!("{} {}", if *keep { "record" } else { "ignore" }, candidate_label(candidate)));
-    let kept = decisions.iter().filter(|(_, keep)| *keep).count();
+    adopt::apply(&repo, state, &env.host, &decisions)?;
+    decisions.iter().for_each(|(candidate, choice)| {
+        let verb = match choice {
+            adopt::Choice::Keep => "record",
+            adopt::Choice::Here => "record here",
+            adopt::Choice::Skip => "ignore",
+        };
+        println!("{verb} {}", candidate_label(candidate));
+    });
+    let kept = decisions.iter().filter(|(_, choice)| *choice != adopt::Choice::Skip).count();
     activate_after(env, runner, &repo, vec![format!("adopt {kept}, ignore {}", decisions.len() - kept)])
 }
 
@@ -570,6 +666,44 @@ fn adopt(env: &Env, runner: &dyn Runner, dry_run: bool) -> Result<()> {
 fn activate_after(env: &Env, runner: &dyn Runner, repo: &Repo, done: Vec<String>) -> Result<()> {
     let activation = activate::activate(env, runner, repo, &Terminal, Options::default())?;
     finish(env, runner, repo, &activation, false, true, &done)
+}
+
+// edits one encrypted file, or re-encrypts all of them for every machine, then activates
+fn secret(env: &Env, runner: &dyn Runner, action: SecretAction) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let key = secrets::key(env, build::settings(env, runner, &repo)?.secret_key.as_deref())?;
+    if let Some(published) = secrets::ensure_recipient(&repo, &key)? {
+        println!("record {}", relative(&repo, &published));
+    }
+    match action {
+        SecretAction::Edit { file } => {
+            // decrypted into a private scratch file, and encrypted back only if it changed
+            let encrypted = secrets::find(env, &repo, &file)?;
+            let temp = secrets::scratch(env, &encrypted)?;
+            secrets::decrypt(runner, &repo, &key, &encrypted, &temp)?;
+            let before = std::fs::read(&temp)?;
+            let edited = open_in_editor(runner, &temp).map(|_| std::fs::read(&temp));
+            let changed = matches!(&edited, Ok(Ok(after)) if *after != before);
+            if changed {
+                secrets::encrypt(runner, &repo, &temp, &encrypted)?;
+                secrets::store(env, &repo, &encrypted, &temp, &mut crate::inputs::Inputs::default())?;
+            }
+            std::fs::remove_file(&temp)?;
+            edited??;
+            if !changed {
+                println!("no change");
+                return Ok(());
+            }
+            println!("encrypt {}", relative(&repo, &encrypted));
+            activate_after(env, runner, &repo, vec![format!("edit {}", relative(&repo, &encrypted))])
+        }
+        SecretAction::Rekey => {
+            let (done, skipped) = secrets::rekey(env, runner, &repo, &key)?;
+            done.iter().for_each(|file| println!("rekey {}", relative(&repo, file)));
+            skipped.iter().for_each(|error| eprintln!("{} {error}", prefix(Tone::Warn, "warning:")));
+            activate_after(env, runner, &repo, vec![format!("rekey {} files", done.len())])
+        }
+    }
 }
 
 // sets the wallpaper theme from an image, a name in static/wallpapers/, or a random one there, then activates without
@@ -612,13 +746,14 @@ fn change_summary(change: &Change, verb: &str, record_verb: &str) -> Vec<String>
 }
 
 // prints the plan (asking before any crates.io fallback), then installs, records, scaffolds, and activates
-fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool) -> Result<()> {
+fn install(env: &Env, runner: &dyn Runner, requests: &[String], dry_run: bool, here: bool) -> Result<()> {
     let repo = Repo::locate(env)?;
     let ask: Option<&dyn Ask> = if dry_run { None } else { Some(&Terminal) };
-    let change = match packages::plan_install(env, runner, &repo, requests, ask) {
+    let mut change = match packages::plan_install(env, runner, &repo, requests, ask) {
         Err(packages::PackagesError::Draftable { name, flag, options }) if !dry_run => return offer_draft(env, runner, &repo, packages::PackagesError::Draftable { name, flag, options }),
         change => change?,
     };
+    change.here = here;
     let built = |target: &&packages::Target| target.backend == "xbps" && srcpkgs::is_source(&repo.srcpkgs_dir(), &target.spec);
     change.packages.iter().filter(built).for_each(|target| println!("build {}", target.spec));
     print_change(&change, "install", "record {} in maw.nix");
@@ -738,7 +873,7 @@ fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
 
     // source packages whose templates moved ahead, maw's own included, are rebuilt
     let (_, state) = edit::load(env, runner, &repo)?;
-    packages::outdated(env, runner, &repo, &state)?.into_iter().try_for_each(|(name, installed, template)| {
+    packages::outdated(env, runner, &repo, &state.here(&env.host))?.into_iter().try_for_each(|(name, installed, template)| {
         println!("rebuild {name} {installed} -> {template}");
         packages::build_source(env, runner, &repo, &name).map(|_| ())
     })?;
@@ -874,8 +1009,8 @@ fn sv(env: &Env, runner: &dyn Runner, action: SvAction) -> Result<()> {
     let repo = Repo::locate(env)?;
     match action {
         SvAction::List => sv_list(env, runner, &repo),
-        SvAction::Enable(service) => {
-            let scope = services::enable(env, runner, &repo, &service.name, service.scope())?;
+        SvAction::Enable { service, here } => {
+            let scope = services::enable(env, runner, &repo, &service.name, service.scope(), here)?;
             println!("record {} in maw.nix", service_label(scope, &service.name));
             let activation = activate::activate(env, runner, &repo, &Terminal, Options::default())?;
             finish(env, runner, &repo, &activation, false, true, &[])
@@ -994,6 +1129,7 @@ fn print_activation(env: &Env, repo: &Repo, activation: &Activation, dry_run: bo
         Step::SettingReset { key } => println!("reset {key}"),
         Step::SettingsSkipped { reason } => println!("skip settings: {reason}"),
         Step::Reload { name, .. } => println!("reload {name}"),
+        Step::SecretSkipped { file, reason } => println!("skip {file}: {reason}"),
     });
 
     if dry_run && !activation.steps.is_empty() {

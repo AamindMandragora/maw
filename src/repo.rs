@@ -33,6 +33,8 @@ const MAW_NIX: &str = "{
 #[derive(Debug, Clone)]
 pub struct Repo {
     pub root: PathBuf,
+    // the machine it's used from, which has its own dir under out/
+    pub host: String,
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> RepoError + '_ {
@@ -61,14 +63,14 @@ impl Repo {
         if !root.is_dir() {
             return Err(RepoError::Missing(root));
         }
-        Ok(Repo { root })
+        Ok(Repo { root, host: env.host.clone() })
     }
 
     // scaffolds missing files, git-inits if needed, and records the repo; returns what it created
     pub fn init(env: &Env, runner: &dyn Runner, path: &Path) -> Result<(Repo, Vec<PathBuf>), RepoError> {
         fs::create_dir_all(path).map_err(io(path))?;
         let root = fs::canonicalize(path).map_err(io(path))?;
-        let repo = Repo { root };
+        let repo = Repo { root, host: env.host.clone() };
 
         let files = [("default.nix", DEFAULT_NIX), ("config.nix", CONFIG_NIX), ("maw.nix", MAW_NIX)];
         let dirs = ["modules", "static", "out"];
@@ -104,8 +106,14 @@ impl Repo {
         self.root.join("maw.nix")
     }
 
+    // rendered files for this machine: out/<machine>/, since machines render differently
     pub fn out_dir(&self) -> PathBuf {
-        self.root.join("out")
+        self.root.join("out").join(&self.host)
+    }
+
+    // this repo as used from a machine of another name
+    pub fn for_host(&self, host: &str) -> Repo {
+        Repo { root: self.root.clone(), host: host.into() }
     }
 
     pub fn srcpkgs_dir(&self) -> PathBuf {
@@ -153,7 +161,7 @@ mod tests {
         let runner = FakeRunner::new(|_, _| String::new());
         let (repo, created) = Repo::init(&env, &runner, &dir.path().join("dots")).unwrap();
 
-        assert!(repo.maw_file().is_file() && repo.out_dir().is_dir());
+        assert!(repo.maw_file().is_file() && repo.root.join("out").is_dir());
         assert_eq!(created.len(), 7);
         assert_eq!(runner.calls.borrow()[0], format!("git -C {} init -q", repo.root.display()));
         assert_eq!(Repo::locate(&env).unwrap().root, repo.root);

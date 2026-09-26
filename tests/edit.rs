@@ -54,9 +54,9 @@ fn added_files_link_back_in_place() {
     write(&env.home.join("notes.txt"), "hi\n");
     write(&env.home.join(".tmux.conf"), "set -g mouse on\n");
 
-    add(&env, &SystemRunner, &repo, &env.home.join(".config/nvim"), None).unwrap();
-    add(&env, &SystemRunner, &repo, &env.home.join("notes.txt"), None).unwrap();
-    add(&env, &SystemRunner, &repo, &env.home.join(".tmux.conf"), Some("tmux")).unwrap();
+    add(&env, &SystemRunner, &repo, &env.home.join(".config/nvim"), None, None).unwrap();
+    add(&env, &SystemRunner, &repo, &env.home.join("notes.txt"), None, None).unwrap();
+    add(&env, &SystemRunner, &repo, &env.home.join(".tmux.conf"), Some("tmux"), None).unwrap();
     // same content, but each live file is a real file in the way of its link
     assert!(diff(&env, &SystemRunner, &repo).unwrap().is_empty());
     assert_eq!(status(&env, &SystemRunner, &repo).unwrap().len(), 3);

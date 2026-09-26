@@ -133,8 +133,9 @@ fn available(env: &Env, runner: &dyn Runner, src: &SrcPkgs, pkgver: &str) -> boo
 // everything a rollback to a generation would change in packages, without changing it
 pub fn plan(env: &Env, runner: &dyn Runner, repo: &Repo, number: Option<u32>) -> Result<Plan, RollbackError> {
     let generation = target(env, number)?;
-    let then = state_at(env, runner, repo, &generation.commit)?;
+    let then = state_at(env, runner, repo, &generation.commit)?.here(&env.host);
     let (_, now) = edit::load(env, runner, repo)?;
+    let now = now.here(&env.host);
     let src = packages::srcpkgs(env, runner, repo)?;
 
     // every backend's plan, merged

@@ -27,10 +27,11 @@ lib.program "foot" {
 
 The arguments:
 
-- `config`: the contents of `config.nix`. It can be an attrset, or a function taking `{ lib }`, `{ theme }`, or both.
+- `config`: the contents of `config.nix`, with this machine's `hosts/<name>.nix` merged over it. It can be an attrset, or a function taking any of `{ lib, theme, host }`.
 - `lib`: the nixpkgs lib plus maw's additions (below).
 - `maw`: the contents of `maw.nix`.
 - `theme`: the palette from the current wallpaper, `{ }` before there is one; see "Wallpaper themes" in `maw help usage`.
+- `host`: this machine's name; see "More than one machine" in `maw help usage`. `lib.onHosts [ "laptop" ] <files>` gives the files on those machines and nothing elsewhere.
 
 A module takes the arguments it names; list only the ones you use.
 

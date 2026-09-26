@@ -82,7 +82,10 @@ pub struct Report {
     // edited out/ files moved aside by --force: (file, backup)
     pub backups: Vec<(PathBuf, PathBuf)>,
     pub registry: Registry,
+    // what this machine declares: maw.nix's shared lists plus its own
     pub state: MawState,
+    // maw.nix as written, every machine's lists included, for writing back
+    pub raw_state: MawState,
     pub settings: Settings,
     // declared dconf values, GVariant text by key path
     pub dconf: BTreeMap<String, String>,
@@ -108,11 +111,13 @@ pub struct Settings {
     pub flatpak_names: BTreeMap<String, String>,
     // how wallpaper palettes are made; setting it turns theming on
     pub theme: Option<ThemeSettings>,
+    // the ssh key that decrypts encrypted files, if not ~/.ssh/id_ed25519 or id_rsa
+    pub secret_key: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_commit: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new(), theme: None }
+        Settings { auto_commit: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new(), theme: None, secret_key: None }
     }
 }
 
@@ -155,7 +160,8 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let mut inputs = Inputs::load(&inputs_file)?;
 
     let shared_hash = shared_hash(env, repo, &mut inputs)?;
-    let (registry, state) = load_registry(env, runner, repo, &mut inputs)?;
+    let (registry, raw_state) = load_registry(env, runner, repo, &mut inputs)?;
+    let state = raw_state.here(&env.host);
     let settings = eval_settings(env, runner, repo, &shared_hash)?;
 
     // the wallpaper theme, brought up to date before any module reads it
@@ -199,6 +205,7 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
         outputs,
         registry,
         state,
+        raw_state,
         settings,
         dconf,
     };
@@ -290,13 +297,27 @@ fn flatpak_wrappers(env: &Env, repo: &Repo, state: &MawState, settings: &Setting
 }
 
 // what every module depends on: config.nix, maw.nix, and the maw lib
+// this machine's name as a file nix reads, written from the hostname the first time
+fn ensure_host_file(env: &Env) -> Result<PathBuf, BuildError> {
+    let file = env.host_file();
+    if !file.exists() {
+        fs::create_dir_all(&env.config_dir).map_err(io(&env.config_dir))?;
+        fs::write(&file, format!("{}\n", env.host)).map_err(io(&file))?;
+    }
+    Ok(file)
+}
+
 fn shared_hash(env: &Env, repo: &Repo, inputs: &mut Inputs) -> Result<String, BuildError> {
     let lib_hash = combine(&[
         &inputs.hash(&env.nix_dir().join("lib.nix"))?,
         &inputs.hash(&env.nix_dir().join("default.nix"))?,
         env!("CARGO_PKG_VERSION"),
     ]);
-    Ok(combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash]))
+    // this machine's name and its hosts/<name>.nix change what config.nix means
+    let host_hash = inputs.hash(&ensure_host_file(env)?)?;
+    let host_config = repo.root.join("hosts").join(format!("{}.nix", env.host));
+    let host_config_hash = if host_config.exists() { inputs.hash(&host_config)? } else { String::new() };
+    Ok(combine(&[&inputs.hash(&repo.config_file())?, &inputs.hash(&repo.maw_file())?, &lib_hash, &host_hash, &host_config_hash]))
 }
 
 fn eval_settings(env: &Env, runner: &dyn Runner, repo: &Repo, key: &str) -> Result<Settings, BuildError> {

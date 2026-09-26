@@ -63,6 +63,8 @@ impl std::fmt::Display for Target {
 // what an install or remove does: packages changed, maw.nix entries changed, modules created
 #[derive(Debug, Default, PartialEq)]
 pub struct Change {
+    // record for this machine only
+    pub here: bool,
     pub packages: Vec<Target>,
     pub recorded: Vec<Target>,
     pub scaffolded: Vec<String>,
@@ -94,6 +96,7 @@ impl<'a> Context<'a> {
     // asks every backend what it has installed, once
     fn load(env: &Env, runner: &'a dyn Runner, repo: &Repo) -> Result<Self, PackagesError> {
         let (registry, state) = edit::load(env, runner, repo)?;
+        let state = state.here(&env.host);
         let backends: Vec<Box<dyn Backend + 'a>> = NAMES.iter().filter_map(|name| backend::for_name(name, runner, env)).collect();
         let installed = backends
             .iter()
@@ -258,7 +261,7 @@ pub fn plan_install(env: &Env, runner: &dyn Runner, repo: &Repo, requests: &[Str
         .filter(|program| context.registry.has(program) && !repo.module_file(program).exists() && !repo.static_dir().join(program).exists())
         .collect();
     let recorded = targets.iter().filter(|target| !declared(&context.state, &target.backend).contains(&target.spec)).cloned().collect();
-    Ok(Change { packages, recorded, scaffolded })
+    Ok(Change { packages, recorded, scaffolded, here: false })
 }
 
 // a package known to build no programs, which nothing can install
@@ -272,7 +275,9 @@ pub fn install(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> 
 
     let (_, mut state) = edit::load(env, runner, repo)?;
     if !change.recorded.is_empty() {
-        change.recorded.iter().for_each(|target| state.packages.entry(target.backend.clone()).or_default().push(target.spec.clone()));
+        // for every machine, or with here this one only
+        let lists = if change.here { &mut state.own(&env.host).packages } else { &mut state.packages };
+        change.recorded.iter().for_each(|target| lists.entry(target.backend.clone()).or_default().push(target.spec.clone()));
         state.write(&repo.maw_file())?;
     }
     change.scaffolded.iter().try_for_each(|program| edit::new_module(env, runner, repo, program, None).map(|_| ()))?;
@@ -342,7 +347,7 @@ pub fn plan_remove(env: &Env, runner: &dyn Runner, repo: &Repo, requests: &[Stri
     let targets = requests.iter().map(|request| context.find(request)).collect::<Result<Vec<_>, _>>()?;
     let packages = targets.iter().filter(|target| context.is_installed(target)).cloned().collect();
     let recorded = targets.iter().filter(|target| declared(&context.state, &target.backend).contains(&target.spec)).cloned().collect();
-    Ok(Change { packages, recorded, scaffolded: Vec::new() })
+    Ok(Change { packages, recorded, scaffolded: Vec::new(), here: false })
 }
 
 // removes the packages and drops them from maw.nix, as planned
@@ -352,17 +357,9 @@ pub fn remove(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> R
         return Ok(());
     }
 
-    // keep every declared spec that isn't being dropped, and drop lists left empty
+    // dropped from the shared lists and this machine's own
     let (_, mut state) = edit::load(env, runner, repo)?;
-    state.packages = state
-        .packages
-        .into_iter()
-        .map(|(backend, specs)| {
-            let kept: Vec<String> = specs.into_iter().filter(|spec| !change.recorded.contains(&Target { backend: backend.clone(), spec: spec.clone() })).collect();
-            (backend, kept)
-        })
-        .filter(|(_, specs)| !specs.is_empty())
-        .collect();
+    change.recorded.iter().for_each(|target| state.forget(&env.host, false, &target.backend, &target.spec));
     state.write(&repo.maw_file())?;
     Ok(())
 }
@@ -370,6 +367,7 @@ pub fn remove(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> R
 // upgrades every unpinned package but xbps's, which upgrade through its own sync
 pub fn upgrade(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Target>, PackagesError> {
     let (_, state) = edit::load(env, runner, repo)?;
+    let state = state.here(&env.host);
     let unpinned: Vec<Target> = ["flatpak", "cargo", "go", "uv", "npm"]
         .iter()
         .flat_map(|backend| declared(&state, backend).into_iter().map(|spec| Target { backend: backend.to_string(), spec }))
@@ -396,6 +394,7 @@ pub struct Row {
 // everything installed by hand or declared, per backend; declared-but-missing rows have no version
 pub fn overview(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Row>, PackagesError> {
     let (_, state) = edit::load(env, runner, repo)?;
+    let state = state.here(&env.host);
     let per_backend = NAMES
         .iter()
         .filter_map(|name| backend::for_name(name, runner, env))

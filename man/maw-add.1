@@ -4,13 +4,16 @@
 .SH NAME
 maw\-add \- copy a file or dir into static/, then activate so it\*(Aqs linked back in place
 .SH SYNOPSIS
-\fBmaw add\fR [\fB\-\-no\-activate\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPATH\fR> [\fINAME\fR] 
+\fBmaw add\fR [\fB\-\-no\-activate\fR] [\fB\-\-secret\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPATH\fR> [\fINAME\fR] 
 .SH DESCRIPTION
 copy a file or dir into static/, then activate so it\*(Aqs linked back in place
 .SH OPTIONS
 .TP
 \fB\-\-no\-activate\fR
 only copy; activate later
+.TP
+\fB\-\-secret\fR
+encrypt it into static/ instead, for every machine\*(Aqs key
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

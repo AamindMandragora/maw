@@ -1,3 +1,4 @@
+use crate::secrets;
 use crate::activate::{self, ActivateError};
 use crate::build::{self, BuildError};
 use crate::env::Env;
@@ -12,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EditError {
+    #[error(transparent)]
+    Secrets(#[from] crate::secrets::SecretsError),
     #[error("no module or static dir {0}; create one with `maw new {0}`")]
     NoSuch(String),
     #[error("{0} already exists")]
@@ -173,7 +176,8 @@ fn indented_string(text: &str, indent: usize) -> String {
 }
 
 // copies a file, or every file in a dir, into static/ so each lands back where it came from; returns (file, copy) pairs
-pub fn add(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, name: Option<&str>) -> Result<Vec<(PathBuf, PathBuf)>, EditError> {
+// secret_key encrypts each file into static/ as <file>.age with this key's machine among the recipients, instead of copying it
+pub fn add(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, name: Option<&str>, secret_key: Option<&Path>) -> Result<Vec<(PathBuf, PathBuf)>, EditError> {
     let path = std::path::absolute(path).map_err(io(path))?;
     if is_managed(repo, &path) {
         return Err(EditError::Managed(env.pretty(&path)));
@@ -182,8 +186,12 @@ pub fn add(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, name: Optio
 
     let files = if path.is_dir() { activate::walk(&path)? } else { vec![path.clone()] };
     let added: Vec<Added> = files.iter().map(|file| added(env, repo, &registry, &path, file, name)).collect();
-    if let Some(taken) = added.iter().find(|added| added.copy.exists()) {
-        return Err(EditError::Exists(env.pretty(&taken.copy)));
+    let encrypted = |copy: &PathBuf| PathBuf::from(format!("{}.age", copy.display()));
+    if let Some(taken) = added.iter().map(|added| if secret_key.is_some() { encrypted(&added.copy) } else { added.copy.clone() }).find(|copy| copy.exists()) {
+        return Err(EditError::Exists(env.pretty(&taken)));
+    }
+    if let Some(key) = secret_key {
+        secrets::ensure_recipient(repo, key)?;
     }
 
     // copy, then record an answer wherever the registry alone would put the copy somewhere else
@@ -191,7 +199,14 @@ pub fn add(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, name: Optio
         .iter()
         .map(|added| {
             fs::create_dir_all(added.copy.parent().unwrap()).map_err(io(&added.copy))?;
-            fs::copy(&added.file, &added.copy).map_err(io(&added.file))?;
+            match secret_key {
+                Some(_) => {
+                    let age = encrypted(&added.copy);
+                    secrets::encrypt(runner, repo, &added.file, &age)?;
+                    secrets::store(env, repo, &age, &added.file, &mut crate::inputs::Inputs::default())?;
+                }
+                None => drop(fs::copy(&added.file, &added.copy).map_err(io(&added.file))?),
+            }
             Ok((destination(env, &registry, added) != Some(added.file.clone())).then(|| answer(env, added)))
         })
         .collect::<Result<Vec<_>, EditError>>()?;
@@ -201,7 +216,8 @@ pub fn add(env: &Env, runner: &dyn Runner, repo: &Repo, path: &Path, name: Optio
         answers.into_iter().for_each(|(name, key, spec)| record(&mut state, name, key, spec));
         state.write(&repo.maw_file())?;
     }
-    Ok(added.into_iter().map(|added| (added.file, added.copy)).collect())
+    let placed = |added: Added| if secret_key.is_some() { (added.file, encrypted(&added.copy)) } else { (added.file, added.copy) };
+    Ok(added.into_iter().map(placed).collect())
 }
 
 // where one added file goes in static/: explicit name, registry, ~/.config/<name>/, or loose
@@ -319,7 +335,7 @@ mod tests {
         let file = fixture.env.home.join(".config/nvim/lua/keys.lua");
         write(&file, "-- keys");
 
-        let copies = add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join(".config/nvim"), None).unwrap();
+        let copies = add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join(".config/nvim"), None, None).unwrap();
         assert_eq!(copies, [(file, fixture.repo.static_dir().join("nvim/lua/keys.lua"))]);
         assert!(!fs::read_to_string(fixture.repo.maw_file()).unwrap().contains("nvim"));
     }
@@ -328,7 +344,7 @@ mod tests {
     fn add_uses_registry_destinations() {
         let fixture = fixture(&[]);
         write(&fixture.env.home.join(".bashrc"), "alias ll='ls -l'");
-        let copies = add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join(".bashrc"), None).unwrap();
+        let copies = add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join(".bashrc"), None, None).unwrap();
         assert_eq!(copies[0].1, fixture.repo.static_dir().join("bash/.bashrc"));
     }
 
@@ -336,7 +352,7 @@ mod tests {
     fn add_records_where_an_unknown_file_came_from() {
         let fixture = fixture(&[]);
         write(&fixture.env.home.join("notes.txt"), "hi");
-        let copies = add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join("notes.txt"), None).unwrap();
+        let copies = add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join("notes.txt"), None, None).unwrap();
 
         assert_eq!(copies[0].1, fixture.repo.static_dir().join("notes.txt"));
         assert!(fs::read_to_string(fixture.repo.maw_file()).unwrap().contains(r#""notes.txt" = { "notes.txt" = "~/notes.txt"; };"#));
@@ -346,7 +362,7 @@ mod tests {
     fn add_with_a_name_records_the_original_path() {
         let fixture = fixture(&[]);
         write(&fixture.env.home.join(".tmux.conf"), "set -g mouse on");
-        add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join(".tmux.conf"), Some("tmux")).unwrap();
+        add(&fixture.env, &fixture.runner, &fixture.repo, &fixture.env.home.join(".tmux.conf"), Some("tmux"), None).unwrap();
 
         assert!(fixture.repo.static_dir().join("tmux/.tmux.conf").is_file());
         assert!(fs::read_to_string(fixture.repo.maw_file()).unwrap().contains(r#"tmux = { ".tmux.conf" = "~/.tmux.conf"; };"#));
@@ -359,10 +375,10 @@ mod tests {
         write(&copy, "");
         let live = fixture.env.home.join(".config/nvim/init.lua");
         write(&live, "");
-        assert!(matches!(add(&fixture.env, &fixture.runner, &fixture.repo, &live, None), Err(EditError::Exists(_))));
+        assert!(matches!(add(&fixture.env, &fixture.runner, &fixture.repo, &live, None, None), Err(EditError::Exists(_))));
 
         fs::remove_file(&live).unwrap();
         symlink(&copy, &live).unwrap();
-        assert!(matches!(add(&fixture.env, &fixture.runner, &fixture.repo, &live, None), Err(EditError::Managed(_))));
+        assert!(matches!(add(&fixture.env, &fixture.runner, &fixture.repo, &live, None, None), Err(EditError::Managed(_))));
     }
 }

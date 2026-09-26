@@ -60,7 +60,7 @@ This creates the repo, or fills in whatever an existing one is missing, and reco
   maw.nix        # written by maw
   modules/       # one <name>.nix per program
   static/        # verbatim files
-  out/           # rendered output, committed with the repo
+  out/           # rendered output, a dir per machine, committed with the repo
 ```
 
 Every other command finds the repo through that recorded path, so it works from any directory.
@@ -76,7 +76,7 @@ maw init git@github.com:you/dotfiles.git ~/dots   # or anywhere
 
 Given a git url, `init` clones the repo, prints the plan of what activating would do, and asks `activate now? [Y/n]`. Saying yes installs every declared package, links and copies every file, and enables every service: the machine becomes the one the repo describes.
 
-Nix isn't needed for that. If it isn't installed, maw activates from the committed `out/` and its index, `out/.maw/index.json`, which every activation keeps up to date. To do the same by hand: `maw activate --no-build`. Install nix (`maw install nix`) before editing modules; without it maw can't render them.
+Nix isn't needed for that. If it isn't installed, maw activates from the committed `out/<machine>/` and its index, `out/<machine>/.maw/index.json`, which every activation keeps up to date; name the new machine after one that has been activated with nix (see [more than one machine](#more-than-one-machine)). To do the same by hand: `maw activate --no-build`. Install nix (`maw install nix`) before editing modules; without it maw can't render them.
 
 ## Building
 
@@ -84,12 +84,12 @@ Nix isn't needed for that. If it isn't installed, maw activates from the committ
 maw build
 ```
 
-Renders every module into `out/<name>/`, named after the file's destination: `out/niri/config.kdl`, `out/waybar/style.css`. Output lists what happened:
+Renders every module into `out/<machine>/<name>/` (each machine renders into its own dir, since machines can differ), named after the file's destination: `out/laptop/niri/config.kdl`, `out/laptop/waybar/style.css`. Output lists what happened:
 
 ```
 eval niri
-write out/niri/config.kdl
-remove out/foot/foot.ini
+write out/laptop/niri/config.kdl
+remove out/laptop/foot/foot.ini
 ```
 
 `up to date` means nothing needed doing.
@@ -109,7 +109,7 @@ maw activate
 
 Builds, then symlinks every file into place:
 
-- rendered files link to `out/`: `~/.config/niri/config.kdl -> ~/dotfiles/out/niri/config.kdl`
+- rendered files link to `out/`: `~/.config/niri/config.kdl -> ~/dotfiles/out/laptop/niri/config.kdl`
 - files in `static/<name>/` link as they are, each file on its own: `static/nvim/init.lua` goes to `~/.config/nvim/init.lua`
 
 ```
@@ -239,6 +239,27 @@ When the registry alone would put the copy somewhere else, the original path is 
 
 `edit`, `new`, and `add` all take `--no-activate`, to change several things and activate once at the end, e.g. when moving an existing setup into maw.
 
+### Encrypted files
+
+Files with passwords or tokens, like `rclone.conf`, can live in the repo encrypted, so it can be public:
+
+```sh
+maw add --secret ~/.config/rclone/rclone.conf   # encrypted into static/rclone/rclone.conf.age
+maw secret edit ~/.config/rclone/rclone.conf    # decrypted into your editor, encrypted back
+maw secret rekey                                # re-encrypted for every machine, after adding one
+```
+
+```
+record hosts/laptop.pub
+encrypt ~/.config/rclone/rclone.conf -> static/rclone/rclone.conf.age
+```
+
+Files are encrypted with [age](https://age-encryption.org) to your SSH key: `~/.ssh/id_ed25519`, else `~/.ssh/id_rsa`, or `maw.secretKey = "~/.ssh/other";` in `config.nix`. Each machine's public key is in the repo as `hosts/<name>.pub` (written the first time a machine encrypts), and every file is encrypted to all of them, so each machine decrypts with its own key and no private key leaves its machine. It needs `age` (`maw install age`); maw itself doesn't depend on it.
+
+On activation, an encrypted file is decrypted into `~/.local/state/maw/secrets/` (readable only by you) and the live file links to that copy; the plaintext never enters the repo. It's decrypted again only when the encrypted file changes, so a key with a passphrase is asked for rarely. Edits made through the live file last until the encrypted file next changes; `maw secret edit` is how an edit reaches the repo.
+
+A new machine can't decrypt anything until it's a recipient. Its first activation skips encrypted files with a note (`skip static/rclone/rclone.conf.age: ... isn't encrypted for this machine`). To add it: run `maw secret rekey` there, which records its key as `hosts/<name>.pub` (and warns about each file it can't open yet), push; then `maw secret rekey` and push on a machine that can decrypt, and pull on the new one.
+
 ### Checking
 
 ```sh
@@ -272,6 +293,49 @@ maw diff
 ```
 
 A unified diff of each live file against what maw would put there, the same as `maw activate --force` would leave. Removed links diff against nothing. Neither command writes anything.
+
+### More than one machine
+
+One repo can serve several machines that are mostly alike, like a laptop and a desktop. Each machine has a name: `maw init` asks for it (your hostname by default), and `maw host` shows it, or renames the machine and activates for what the new name gets (not a generation, since the name belongs to the machine):
+
+```sh
+maw host            # laptop, with hosts/laptop.nix
+maw host desktop    # this machine is now desktop
+```
+
+The name is kept in `~/.config/maw/host`, and each machine renders into `out/<name>/`. (A repo from before machines had names keeps its rendered files straight under `out/`; the first activation moves them into this machine's dir.) What differs between machines goes in three places:
+
+- **Config values**: `hosts/<name>.nix` is merged over `config.nix` on that machine only, key by key, so it holds just what differs:
+
+  ```nix
+  # hosts/laptop.nix
+  { output = "eDP-1"; scale = 2; font.size = 13; }
+  ```
+
+  It can be a function of `{ lib, theme, host }` like `config.nix`.
+- **Modules**: every module gets `host`, the machine's name, to decide with. `lib.onHosts` limits a whole module to some machines, so the others don't get its files or services:
+
+  ```nix
+  { lib, ... }:
+  lib.onHosts [ "laptop" ] (lib.service "tlp" { run = "exec tlp start"; })
+  ```
+
+- **Packages and services**: `maw install --here tlp` and `maw sv enable --here tlp` record them for this machine only, under `hosts` in `maw.nix`; `maw adopt` takes `here <name>` as well as `keep`. `maw remove` and `maw sv disable` drop a name from both the shared lists and this machine's.
+
+  ```nix
+  hosts = {
+    laptop = {
+      packages = {
+        xbps = [ "tlp" ];
+      };
+      services = {
+        system = [ "tlp" ];
+      };
+    };
+  };
+  ```
+
+Everything else (`status`, `query`, `adopt`, rollback) sees what this machine declares: the shared lists plus its own. A second machine gets set up with `maw init <your repo url>`: it asks the name first, then activates what that name declares.
 
 ### Wallpaper themes
 
@@ -657,7 +721,7 @@ maw pull      # fast-forward only, then activate
 
 Both need a remote: `git -C ~/dotfiles remote add origin <url>`. `pull` refuses to merge; if both sides changed, sort it out with git, then `maw activate`.
 
-Since `out/` is committed, push after activating rather than after editing: then the other machine pulls output that already matches the source, re-renders nothing, and makes no commit of its own. Pushing source that was never activated means the pulling machine renders and commits new `out/` itself, and the two sides diverge until one of them pulls the other's commit.
+Each machine renders into its own `out/<machine>/`, so machines never rewrite each other's output: a pull brings the other machines' source changes and their dirs, and the activation after it renders this machine's.
 
 ## Where files go
 

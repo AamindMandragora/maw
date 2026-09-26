@@ -260,10 +260,10 @@ impl App {
         }
         let run = |command: Command, label: String| Some(Request::Run { command, label });
         match then {
-            InputFor::Install => run(Command::Install { packages: text.split_whitespace().map(String::from).collect(), dry_run: false }, format!("install {text}")),
+            InputFor::Install => run(Command::Install { packages: text.split_whitespace().map(String::from).collect(), dry_run: false, here: false }, format!("install {text}")),
             InputFor::Find => Some(Request::Find(text.into())),
             InputFor::NewModule => run(Command::New { name: text.into(), format: None, no_activate: false }, format!("new {text}")),
-            InputFor::AddFile => run(Command::Add { path: text.into(), name: None, no_activate: false }, format!("add {text}")),
+            InputFor::AddFile => run(Command::Add { path: text.into(), name: None, no_activate: false, secret: false }, format!("add {text}")),
             InputFor::CommitMessage => run(Command::Commit { message: Some(text.into()) }, "commit".into()),
             InputFor::Answer => None,
         }
@@ -324,7 +324,7 @@ impl App {
         match (self.current_tab(), key.code) {
             (Tab::Packages, KeyCode::Char('i')) => self.popup = Some(input("install", InputFor::Install)),
             (Tab::Packages, KeyCode::Enter) if self.finding.is_some() && !row_key.is_empty() => {
-                return run(Command::Install { packages: vec![row_key.clone()], dry_run: false }, format!("install {row_key}"));
+                return run(Command::Install { packages: vec![row_key.clone()], dry_run: false, here: false }, format!("install {row_key}"));
             }
             (Tab::Packages, KeyCode::Char('f')) => self.popup = Some(input("find in the repos", InputFor::Find)),
             (Tab::Packages, KeyCode::Char('r')) if !row_key.is_empty() => {
@@ -337,7 +337,7 @@ impl App {
             }
             (Tab::Modules, KeyCode::Char('n')) => self.popup = Some(input("new module for", InputFor::NewModule)),
             (Tab::Modules, KeyCode::Char('a')) => self.popup = Some(input("add file or dir", InputFor::AddFile)),
-            (Tab::Services, KeyCode::Char('e')) if !row_key.is_empty() => return run(Command::Sv { action: SvAction::Enable(service()) }, format!("enable {}", service().name)),
+            (Tab::Services, KeyCode::Char('e')) if !row_key.is_empty() => return run(Command::Sv { action: SvAction::Enable { service: service(), here: false } }, format!("enable {}", service().name)),
             (Tab::Services, KeyCode::Char('d')) if !row_key.is_empty() => {
                 let name = service().name;
                 self.popup = Some(confirm(format!("disable {name}?"), Command::Sv { action: SvAction::Disable(service()) }, format!("disable {name}")));

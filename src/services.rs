@@ -83,8 +83,8 @@ fn module_enables(build: &Report, scope: Scope, name: &str) -> bool {
     build.outputs.iter().filter_map(|output| output.service.as_ref()).any(|service| service.scope == scope && service.name == name && service.enable)
 }
 
-// records a service as enabled in maw.nix; activating links it. Returns its scope
-pub fn enable(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, scope: Option<Scope>) -> Result<Scope, ServicesError> {
+// records a service as enabled in maw.nix, for every machine or with here only this one; activating links it. Returns its scope
+pub fn enable(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, scope: Option<Scope>, here: bool) -> Result<Scope, ServicesError> {
     let mut build = load(env, runner, repo)?;
     let scope = scope_of(env, &build, name, scope)?;
     let from_module = module_enables(&build, scope, name);
@@ -93,10 +93,11 @@ pub fn enable(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, scope: Op
     }
 
     // module-defined services are enabled by their module, so only others go into maw.nix
-    let listed = build.state.services.entry(scope.to_string()).or_default();
-    if !from_module && !listed.contains(&name.to_string()) {
-        listed.push(name.into());
-        build.state.write(&repo.maw_file())?;
+    let declared = build.state.services.get(&scope.to_string()).is_some_and(|names| names.contains(&name.to_string()));
+    if !from_module && !declared {
+        let lists = if here { &mut build.raw_state.own(&env.host).services } else { &mut build.raw_state.services };
+        lists.entry(scope.to_string()).or_default().push(name.into());
+        build.raw_state.write(&repo.maw_file())?;
     }
     Ok(scope)
 }
@@ -112,12 +113,11 @@ pub fn disable(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, scope: O
     if fs::symlink_metadata(Runit.enabled_link(env, scope, name)).is_ok() {
         system::disable(env, runner, scope, name)?;
     }
-    let listed = build.state.services.entry(scope.to_string()).or_default();
-    let recorded = listed.contains(&name.to_string());
-    listed.retain(|listed| listed != name);
-    build.state.services.retain(|_, names| !names.is_empty());
+    // dropped from the shared lists and this machine's own
+    let recorded = build.state.services.get(&scope.to_string()).is_some_and(|names| names.contains(&name.to_string()));
+    build.raw_state.forget(&env.host, true, &scope.to_string(), name);
     if recorded {
-        build.state.write(&repo.maw_file())?;
+        build.raw_state.write(&repo.maw_file())?;
     }
     Ok((scope, recorded))
 }
@@ -161,7 +161,7 @@ mod tests {
     fn enabling_a_stock_service_records_it_and_activation_links_it() {
         let fixture = fixture(&[]);
         stock(&fixture, "dbus");
-        assert_eq!(enable(&fixture.env, &fixture.runner, &fixture.repo, "dbus", None).unwrap(), Scope::System);
+        assert_eq!(enable(&fixture.env, &fixture.runner, &fixture.repo, "dbus", None, false).unwrap(), Scope::System);
         assert!(fs::read_to_string(fixture.repo.maw_file()).unwrap().contains(r#"system = [ "dbus" ];"#));
 
         activate_now(&fixture);
@@ -169,10 +169,22 @@ mod tests {
     }
 
     #[test]
+    fn here_records_it_for_this_machine_only_and_disabling_drops_it_there() {
+        let fixture = fixture(&[]);
+        stock(&fixture, "tlp");
+        enable(&fixture.env, &fixture.runner, &fixture.repo, "tlp", None, true).unwrap();
+        let text = fs::read_to_string(fixture.repo.maw_file()).unwrap();
+        assert!(text.contains("  services = { };\n") && text.contains("  hosts = {\n    host = {\n"), "{text}");
+
+        disable(&fixture.env, &fixture.runner, &fixture.repo, "tlp", None).unwrap();
+        assert!(!fs::read_to_string(fixture.repo.maw_file()).unwrap().contains("tlp"));
+    }
+
+    #[test]
     fn disabling_unlinks_now_and_drops_the_record() {
         let fixture = fixture(&[]);
         stock(&fixture, "dbus");
-        enable(&fixture.env, &fixture.runner, &fixture.repo, "dbus", None).unwrap();
+        enable(&fixture.env, &fixture.runner, &fixture.repo, "dbus", None, false).unwrap();
         activate_now(&fixture);
 
         assert_eq!(disable(&fixture.env, &fixture.runner, &fixture.repo, "dbus", None).unwrap(), (Scope::System, true));
@@ -190,7 +202,7 @@ mod tests {
     #[test]
     fn unknown_services_are_an_error() {
         let fixture = fixture(&[]);
-        assert!(matches!(enable(&fixture.env, &fixture.runner, &fixture.repo, "nope", None), Err(ServicesError::Unknown(_))));
+        assert!(matches!(enable(&fixture.env, &fixture.runner, &fixture.repo, "nope", None, false), Err(ServicesError::Unknown(_))));
     }
 
     #[test]
