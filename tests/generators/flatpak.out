@@ -1,0 +1,9 @@
+[Context]
+filesystems=~/Documents;
+sockets=wayland;!x11;
+
+[Environment]
+ELECTRON_OZONE_PLATFORM_HINT=auto
+
+[Session Bus Policy]
+org.freedesktop.Notifications=talk

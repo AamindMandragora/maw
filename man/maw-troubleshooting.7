@@ -1,0 +1,51 @@
+.TH "MAW-TROUBLESHOOTING" "7" "" "maw 0.2.3" "maw manual"
+.SH NAME
+maw-troubleshooting \- doctor, logs, and where to look
+.SH DESCRIPTION
+.PP
+When something on the machine doesn't work, start with \fBmaw doctor\fR. For anything maw manages, the commands below show where it stands.
+.SH "DOCTOR"
+.PP
+.EX
+maw doctor
+.EE
+.PP
+\fBstatus\fR compares your machine with your repo; \fBdoctor\fR looks for problems that break a desktop quietly, which nothing in your repo would show:
+.PP
+.EX
+warn no shared session bus
+     declare a core dbus user service: `maw help modules`, under lib.service
+warn /etc/pam.d/greetd doesn't unlock the keyring
+     add `-auth optional pam_gnome_keyring.so` and `-session optional pam_gnome_keyring.so auto_start`
+.EE
+.PP
+It checks for:
+.IP \(bu 2
+a session bus the keyring, apps, and user services share
+.IP \(bu 2
+greetd starting your session through \fBdbus-run-session\fR, which gives it a private bus
+.IP \(bu 2
+greetd without a \fBvt\fR
+.IP \(bu 2
+a keyring your login doesn't unlock
+.IP \(bu 2
+Electron apps without the hint to use Wayland
+.IP \(bu 2
+user services without \fBturnstiled\fR
+.IP \(bu 2
+the bin dirs of declared cargo, go, uv, npm, and flatpak programs missing from \fBPATH\fR
+.PP
+With nothing to report, it prints \fBall good\fR.
+.SH "WHERE TO LOOK"
+.IP \(bu 2
+\fBA file isn't what you declared\fR: \fBmaw status\fR lists everything out of sync, and \fBmaw diff\fR shows each file's difference; a file edited in place is drift (\fBmaw help drift\fR).
+.IP \(bu 2
+\fBA service isn't running\fR: \fBmaw sv status <name>\fR, then \fBmaw sv log <name>\fR; see logs (\fBmaw help logs\fR).
+.IP \(bu 2
+\fBA module doesn't evaluate\fR: \fBmaw build\fR names the file and line; \fBmaw edit <name>\fR reopens it after an error.
+.IP \(bu 2
+\fBBefore a risky change\fR: \fBmaw activate --dry-run\fR lists every step without taking any.
+.IP \(bu 2
+\fBAfter a bad change\fR: \fBmaw rollback\fR returns files and packages to the last generation; see rolling back (\fBmaw help rolling back\fR).
+.PP
+Next: chapter 15, reference (\fBmaw help 15\fR).

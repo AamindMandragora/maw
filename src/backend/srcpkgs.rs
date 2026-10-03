@@ -249,6 +249,47 @@ impl<'a> SrcPkgs<'a> {
         save_patched(&self.env, &recorded)
     }
 
+    // install, then what the builds left behind is cleaned up; a cleanup that fails costs only disk space
+    pub fn install_and_clean(&self, names: &[String], force: bool) -> Result<(), BackendError> {
+        self.install(names, force)?;
+        let _ = self.clean();
+        Ok(())
+    }
+
+    // frees what builds leave behind: the dependencies xbps-src downloaded to build with (the next build downloads what
+    // it needs again), and built packages nothing will install again, those neither installed nor recorded in a
+    // generation (which rollback installs from here). Returns the bytes freed
+    pub fn clean(&self) -> Result<u64, BackendError> {
+        if !self.clone.join("xbps-src").exists() {
+            return Ok(0);
+        }
+        let repocache = self.clone.join(format!("hostdir/repocache-{}", std::env::consts::ARCH));
+        let cached = size(&repocache);
+        if repocache.exists() {
+            fs::remove_dir_all(&repocache).map_err(io(&repocache))?;
+        }
+
+        // every version anything may still want: installed now, or in any generation
+        let installed = Xbps::new(self.runner, &self.env).list()?.into_iter().map(|pkg| format!("{}-{}", pkg.name, pkg.version));
+        let recorded = crate::generations::load(&self.env).unwrap_or_default().into_iter().flat_map(|generation| generation.packages.get("xbps").cloned().unwrap_or_default());
+        let keep: std::collections::BTreeSet<String> = installed.chain(recorded).collect();
+        let built = self.repos().into_iter().map(|repo| self.prune_repo(&repo, &keep)).collect::<Result<Vec<_>, _>>()?;
+        Ok(cached + built.iter().sum::<u64>())
+    }
+
+    // deletes a local repo's packages whose version isn't kept, then drops them from its index; returns the bytes freed
+    fn prune_repo(&self, repo: &Path, keep: &std::collections::BTreeSet<String>) -> Result<u64, BackendError> {
+        let files = fs::read_dir(repo).into_iter().flatten().filter_map(|entry| Some(entry.ok()?.path()));
+        let stale: Vec<PathBuf> = files.filter(|path| pkgver(path).is_some_and(|pkgver| !keep.contains(&pkgver))).collect();
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        let freed = stale.iter().map(|path| fs::metadata(path).map_or(0, |meta| meta.len())).sum();
+        stale.iter().try_for_each(|path| fs::remove_file(path).map_err(io(path)))?;
+        self.runner.run("xbps-rindex", &["-c".into(), repo.display().to_string()])?;
+        Ok(freed)
+    }
+
     // whether an installed package came from one of our local repos rather than void's
     pub fn is_ours(&self, name: &str) -> bool {
         Xbps::new(self.runner, &self.env).origin(name).is_some_and(|origin| self.repos().iter().any(|repo| Path::new(&origin) == repo))
@@ -304,6 +345,22 @@ impl<'a> SrcPkgs<'a> {
 }
 
 // copies a directory tree, files keeping their permissions
+// a built package's version from its file name: "maw-0.2.3_1.x86_64.xbps" -> "maw-0.2.3_1"
+fn pkgver(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    Some(name.strip_suffix(".xbps")?.rsplit_once('.')?.0.to_string())
+}
+
+// bytes under a dir, nothing if it's missing
+fn size(dir: &Path) -> u64 {
+    let entries = fs::read_dir(dir).into_iter().flatten().filter_map(|entry| entry.ok());
+    entries.map(|entry| match entry.file_type() {
+        Ok(kind) if kind.is_dir() => size(&entry.path()),
+        _ => entry.metadata().map_or(0, |meta| meta.len()),
+    })
+    .sum()
+}
+
 fn copy_dir(from: &Path, to: &Path) -> Result<(), BackendError> {
     fs::create_dir_all(to).map_err(io(to))?;
 
@@ -335,7 +392,7 @@ mod tests {
             Self::answering(|_, _| String::new())
         }
 
-        fn answering(respond: impl Fn(&str, &[String]) -> String + 'static) -> Self {
+        fn answering(respond: impl Fn(&str, &[String]) -> String + Send + Sync + 'static) -> Self {
             Setup { dir: tempfile::tempdir().unwrap(), runner: FakeRunner::new(respond) }
         }
 
@@ -370,6 +427,28 @@ mod tests {
         setup.src().new_template("hello", "me <me@x>").unwrap();
         assert_eq!(setup.src().version("hello").as_deref(), Some("0.1.0_1"));
         assert!(setup.src().has("hello") && !setup.src().has("other"));
+    }
+
+    #[test]
+    fn cleaning_keeps_what_is_installed_or_in_a_generation() {
+        let setup = Setup::answering(|program, args| match (program, args.first().map(String::as_str)) {
+            ("xbps-query", Some("-r")) if args.contains(&"-l".to_string()) => "ii maw-0.2.3_1    declarative system manager\n".into(),
+            _ => String::new(),
+        });
+        setup.cloned();
+        fs::create_dir_all(setup.dir.path().join("root/var/db/xbps")).unwrap();
+        let binpkgs = setup.dir.path().join("clone/hostdir/binpkgs");
+        ["maw-0.1.1_1", "maw-0.2.0_1", "maw-0.2.3_1"].iter().for_each(|pkgver| write(&binpkgs.join(format!("{pkgver}.x86_64.xbps")), "1234"));
+        write(&binpkgs.join("x86_64-repodata"), "");
+        let generation = r#"{"number":1,"time":"t","commit":"c","message":"m","packages":{"xbps":["maw-0.2.0_1"]}}"#;
+        write(&setup.dir.path().join("home/.local/state/maw/generations"), &format!("{generation}\n"));
+
+        write(&setup.dir.path().join(format!("clone/hostdir/repocache-{}/rust-1.0_1.x86_64.xbps", std::env::consts::ARCH)), "123456");
+        assert_eq!(setup.src().clean().unwrap(), 10);
+        assert!(!setup.dir.path().join(format!("clone/hostdir/repocache-{}", std::env::consts::ARCH)).exists());
+        let left: Vec<String> = fs::read_dir(&binpkgs).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+        assert_eq!(left, ["maw-0.2.0_1.x86_64.xbps", "maw-0.2.3_1.x86_64.xbps", "x86_64-repodata"]);
+        assert!(setup.calls().contains(&format!("xbps-rindex -c {}", binpkgs.display())));
     }
 
     #[test]

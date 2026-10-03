@@ -1,0 +1,48 @@
+.TH "MAW-MACHINES" "7" "" "maw 0.2.3" "maw manual"
+.SH NAME
+maw-machines \- one repo for several machines
+.SH DESCRIPTION
+.PP
+One repo can serve several machines that are mostly alike, like a laptop and a desktop. Each machine has a name of letters, digits, \fB-\fR, \fB_\fR, and \fB.\fR: \fBmaw init\fR asks for it (your hostname by default), and \fBmaw host\fR shows it, or renames the machine and activates for what the new name gets (without a generation; if that activation fails, the old name stays):
+.PP
+.EX
+maw host            # laptop, with hosts/laptop.nix
+maw host desktop    # this machine is now desktop
+.EE
+.PP
+The name is kept in \fB~/.config/maw/host\fR, and each machine renders into \fBout/<name>/\fR. What differs between machines goes in three places:
+.IP \(bu 2
+\fBConfig values\fR: \fBhosts/<name>.nix\fR is merged over \fBconfig.nix\fR on that machine only, key by key (attrsets merge; a list or any other value replaces the one in \fBconfig.nix\fR), so it holds just what differs:
+.PP
+  ```nix
+  # hosts/laptop.nix
+  { output = "eDP-1"; scale = 2; font.size = 13; }
+  ```
+.PP
+  It can be a function of \fB{ lib, theme, host }\fR like \fBconfig.nix\fR.
+.IP \(bu 2
+\fBModules\fR: every module gets \fBhost\fR, the machine's name, to decide with. \fBlib.onHosts\fR limits a whole module to some machines, so the others don't get its files or services:
+.PP
+  ```nix
+  { lib, ... }:
+  lib.onHosts [ "laptop" ] (lib.service "tlp" { run = "exec tlp start"; })
+  ```
+.IP \(bu 2
+\fBPackages and services\fR: \fBmaw install --here tlp\fR and \fBmaw sv enable --here tlp\fR record them for this machine only, under \fBhosts\fR in \fBmaw.nix\fR; \fBmaw adopt\fR takes \fBhere <name>\fR as well as \fBkeep\fR. \fBmaw remove\fR and \fBmaw sv disable\fR drop a name from both the shared lists and this machine's.
+.PP
+  ```nix
+  hosts = {
+    laptop = {
+      packages = {
+        xbps = [ "tlp" ];
+      };
+      services = {
+        system = [ "tlp" ];
+      };
+    };
+  };
+  ```
+.PP
+Everything else (\fBstatus\fR, \fBquery\fR, \fBadopt\fR, rollback) sees what this machine declares: the shared lists plus its own. A second machine gets set up with \fBmaw init <your repo url>\fR: it asks the name first, then activates what that name declares.
+.PP
+Next: chapter 12, history (\fBmaw help 12\fR).

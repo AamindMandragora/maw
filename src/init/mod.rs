@@ -41,6 +41,9 @@ pub struct ServiceDef {
     pub enable: bool,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    // a user service turnstile starts and waits for before the session
+    #[serde(default)]
+    pub core: bool,
 }
 
 // a service supervisor: how services are written to disk, enabled, and controlled

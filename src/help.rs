@@ -1,30 +1,50 @@
 use crate::style::{Tone, paint};
 
-// one user doc, compiled in so help always matches the installed maw
-pub struct Topic {
+// one chapter of the manual, compiled in so help always matches the installed maw; its number is its place in CHAPTERS
+pub struct Chapter {
     pub name: &'static str,
     pub summary: &'static str,
     pub text: &'static str,
 }
 
-pub const TOPICS: [Topic; 4] = [
-    Topic { name: "usage", summary: "setting up, building, activating, day-to-day commands", text: include_str!("../docs/usage.md") },
-    Topic { name: "migrating", summary: "moving an existing setup into maw, step by step", text: include_str!("../docs/migrating.md") },
-    Topic { name: "modules", summary: "writing modules: lib.program, lib.raw, config.nix", text: include_str!("../docs/modules.md") },
-    Topic { name: "formats", summary: "every output format and how nix values map to it", text: include_str!("../docs/formats.md") },
+pub const CHAPTERS: [Chapter; 15] = [
+    Chapter { name: "introduction", summary: "what maw is, getting help, the tui", text: include_str!("../docs/manual/01-introduction.md") },
+    Chapter { name: "getting-started", summary: "making a repo, building, activating", text: include_str!("../docs/manual/02-getting-started.md") },
+    Chapter { name: "day-to-day", summary: "writing, editing, adding, and checking config", text: include_str!("../docs/manual/03-day-to-day.md") },
+    Chapter { name: "modules", summary: "writing modules: lib.program, lib.service, config.nix", text: include_str!("../docs/manual/04-modules.md") },
+    Chapter { name: "formats", summary: "every output format and how nix values map to it", text: include_str!("../docs/manual/05-formats.md") },
+    Chapter { name: "packages", summary: "installing, removing, finding, updating, adopting", text: include_str!("../docs/manual/06-packages.md") },
+    Chapter { name: "source-packages", summary: "templates of your own, drafted from nixpkgs or the aur", text: include_str!("../docs/manual/07-source-packages.md") },
+    Chapter { name: "services", summary: "runit services for the system and your session", text: include_str!("../docs/manual/08-services.md") },
+    Chapter { name: "secrets", summary: "encrypted files, so the repo can be public", text: include_str!("../docs/manual/09-secrets.md") },
+    Chapter { name: "themes", summary: "colors from your wallpaper", text: include_str!("../docs/manual/10-themes.md") },
+    Chapter { name: "machines", summary: "one repo for several machines", text: include_str!("../docs/manual/11-machines.md") },
+    Chapter { name: "history", summary: "generations, rolling back, sharing", text: include_str!("../docs/manual/12-history.md") },
+    Chapter { name: "migrating", summary: "moving an existing setup into maw, step by step", text: include_str!("../docs/manual/13-migrating.md") },
+    Chapter { name: "troubleshooting", summary: "doctor, logs, and where to look", text: include_str!("../docs/manual/14-troubleshooting.md") },
+    Chapter { name: "reference", summary: "where files go, and what maw keeps", text: include_str!("../docs/manual/15-reference.md") },
 ];
 
-// a whole topic by name, else the section whose heading best matches: exact, then prefix, then substring
-pub fn find(query: &str) -> Option<String> {
-    let query = query.trim().to_lowercase();
-    if let Some(topic) = TOPICS.iter().find(|topic| topic.name == query) {
-        return Some(topic.text.to_string());
+// a chapter by number (`4`) or name (`source packages` or `source-packages`)
+pub fn chapter(query: &str) -> Option<&'static Chapter> {
+    let query = query.trim().to_lowercase().replace(' ', "-");
+    match query.parse::<usize>() {
+        Ok(number) => CHAPTERS.get(number.checked_sub(1)?),
+        Err(_) => CHAPTERS.iter().find(|chapter| chapter.name == query),
     }
+}
 
-    // every heading in every topic, as (normalized title, topic text, line index)
-    let headings: Vec<(String, &str, usize)> = TOPICS
+// a whole chapter, else the section whose heading best matches: exact, then prefix, then substring
+pub fn find(query: &str) -> Option<String> {
+    if let Some(chapter) = chapter(query) {
+        return Some(chapter.text.to_string());
+    }
+    let query = query.trim().to_lowercase();
+
+    // every heading in every chapter, as (normalized title, chapter text, line index)
+    let headings: Vec<(String, &str, usize)> = CHAPTERS
         .iter()
-        .flat_map(|topic| headings(topic.text).into_iter().map(|(index, _, title)| (title, topic.text, index)))
+        .flat_map(|chapter| headings(chapter.text).into_iter().map(|(index, _, title)| (title, chapter.text, index)))
         .collect();
 
     let matchers: [&dyn Fn(&str) -> bool; 3] = [&|title| title == query, &|title| title.starts_with(&query), &|title| title.contains(&query)];
@@ -128,10 +148,13 @@ pub(crate) fn links(line: &str) -> String {
     let Some(middle) = line[start..].find("](").map(|offset| start + offset) else { return line.to_string() };
     let Some(end) = line[middle..].find(')').map(|offset| middle + offset) else { return line.to_string() };
 
+    // a chapter (04-modules.md) by its name, a section in one (02-getting-started.md#drift) by its heading
     let text = &line[start + 1..middle];
     let target = &line[middle + 2..end];
-    let replacement = match target.strip_suffix(".md").filter(|doc| !doc.contains('/')) {
-        Some(doc) => format!("`maw help {doc}`"),
+    let page = target.split_once(".md").filter(|(page, _)| !page.contains('/') && !target.starts_with("http"));
+    let replacement = match page {
+        Some((page, "")) => format!("`maw help {}`", page.trim_start_matches(|char: char| char.is_ascii_digit() || char == '-').replace('-', " ")),
+        Some((_, anchor)) => format!("{text} (`maw help {}`)", anchor.trim_start_matches('#').replace('-', " ")),
         None if target.starts_with("http") => format!("{text} ({target})"),
         None => text.to_string(),
     };
@@ -143,8 +166,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn topics_are_found_by_name() {
-        assert!(find("formats").unwrap().starts_with("# Formats"));
+    fn chapters_are_found_by_number_or_name() {
+        assert!(find("5").unwrap().starts_with("# 5. Formats"));
+        assert!(find("source packages").unwrap().starts_with("# 7. Source packages"));
+        assert!(find("source-packages").unwrap().starts_with("# 7. Source packages"));
+        assert!(chapter("0").is_none() && chapter("16").is_none());
+    }
+
+    #[test]
+    fn chapter_links_name_the_chapter_or_section() {
+        assert_eq!(links("see [modules](04-modules.md) and [drift](02-getting-started.md#drift)"), "see `maw help modules` and drift (`maw help drift`)");
     }
 
     #[test]
@@ -193,12 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn every_doc_link_points_at_a_topic() {
-        let is_topic_link = |line: &&str| line.contains(".md)") && !line.contains("](http");
-        TOPICS.iter().flat_map(|topic| topic.text.lines()).filter(is_topic_link).for_each(|line| {
+    fn every_doc_link_points_at_a_chapter_or_section() {
+        let is_doc_link = |line: &&str| line.contains(".md") && line.contains("](") && !line.contains("](http");
+        CHAPTERS.iter().flat_map(|chapter| chapter.text.lines()).filter(is_doc_link).for_each(|line| {
             let rendered = links(line);
-            let doc = rendered.split("maw help ").nth(1).unwrap().split('`').next().unwrap();
-            assert!(find(doc).is_some(), "{line}");
+            rendered.split("maw help ").skip(1).for_each(|query| assert!(find(query.split('`').next().unwrap()).is_some(), "{line}"));
         });
+    }
+
+    #[test]
+    fn every_chapter_is_numbered_in_order() {
+        CHAPTERS.iter().enumerate().for_each(|(index, chapter)| assert!(chapter.text.starts_with(&format!("# {}. ", index + 1)), "{}", chapter.name));
     }
 }

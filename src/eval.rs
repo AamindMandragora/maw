@@ -36,6 +36,9 @@ pub struct RenderedFile {
     // set by lib.dconf: GVariant text by full key path
     #[serde(default)]
     pub dconf: Option<BTreeMap<String, String>>,
+    // the same file rendered with placeholder colors, when there's a theme
+    #[serde(default)]
+    pub plain: Option<Box<RenderedFile>>,
 }
 
 // a cached evaluation, valid while its key matches
@@ -64,21 +67,27 @@ fn nix_error(what: &str, error: RunError) -> EvalError {
     }
 }
 
-// json of an evaluation, from the cache when the key matches, else from nix-instantiate; true if fresh
-fn eval_cached(runner: &dyn Runner, what: &str, cache_file: &Path, key: &str, args: Vec<String>) -> Result<(Value, bool), EvalError> {
-    let cached = fs::read(cache_file).ok().and_then(|bytes| serde_json::from_slice::<CacheEntry>(&bytes).ok());
-    if let Some(entry) = cached.filter(|entry| entry.key == key) {
-        return Ok((entry.value, false));
-    }
+// a cached value, if its key still matches
+fn cached(cache_file: &Path, key: &str) -> Option<Value> {
+    let entry = serde_json::from_slice::<CacheEntry>(&fs::read(cache_file).ok()?).ok()?;
+    (entry.key == key).then_some(entry.value)
+}
 
-    let stdout = runner.run("nix-instantiate", &args).map_err(|error| nix_error(what, error))?;
-    let value: Value = serde_json::from_str(&stdout).map_err(|source| EvalError::Shape { what: what.into(), source })?;
-
+fn save_cache(cache_file: &Path, key: &str, value: &Value) -> Result<(), EvalError> {
     let io = |source| EvalError::Io { path: cache_file.into(), source };
     fs::create_dir_all(cache_file.parent().unwrap()).map_err(io)?;
-    let entry = CacheEntry { key: key.into(), value };
-    fs::write(cache_file, serde_json::to_vec(&entry).unwrap()).map_err(io)?;
-    Ok((entry.value, true))
+    fs::write(cache_file, serde_json::to_vec(&CacheEntry { key: key.into(), value: value.clone() }).unwrap()).map_err(io)
+}
+
+// json of an evaluation, from the cache when the key matches, else from nix-instantiate; true if fresh
+fn eval_cached(runner: &dyn Runner, what: &str, cache_file: &Path, key: &str, args: Vec<String>) -> Result<(Value, bool), EvalError> {
+    if let Some(value) = cached(cache_file, key) {
+        return Ok((value, false));
+    }
+    let stdout = runner.run("nix-instantiate", &args).map_err(|error| nix_error(what, error))?;
+    let value: Value = serde_json::from_str(&stdout).map_err(|source| EvalError::Shape { what: what.into(), source })?;
+    save_cache(cache_file, key, &value)?;
+    Ok((value, true))
 }
 
 // nix-instantiate args shared by every evaluation, followed by the extra ones
@@ -114,10 +123,42 @@ pub fn eval_nixpkgs_meta(runner: &dyn Runner, env: &Env, nixpkgs: &Path, attr: &
 // evaluates modules.<name> of the dotfiles repo; true if nix actually ran
 pub fn eval_module(runner: &dyn Runner, env: &Env, repo_root: &Path, name: &str, key: &str) -> Result<(Vec<RenderedFile>, bool), EvalError> {
     let args = nix_args(env, &["-A".into(), format!("modules.{name}"), repo_root.display().to_string()]);
-    let cache_file = env.cache_dir().join("modules").join(format!("{name}.json"));
-    let (value, fresh) = eval_cached(runner, &format!("modules/{name}.nix"), &cache_file, key, args)?;
-    let files = serde_json::from_value(value).map_err(|source| EvalError::Shape { what: format!("modules.{name}"), source })?;
-    Ok((files, fresh))
+    let (value, fresh) = eval_cached(runner, &format!("modules/{name}.nix"), &module_cache(env, name), key, args)?;
+    Ok((files(name, value)?, fresh))
+}
+
+fn module_cache(env: &Env, name: &str) -> PathBuf {
+    env.cache_dir().join("modules").join(format!("{name}.json"))
+}
+
+fn files(name: &str, value: Value) -> Result<Vec<RenderedFile>, EvalError> {
+    serde_json::from_value(value).map_err(|source| EvalError::Shape { what: format!("modules.{name}"), source })
+}
+
+// modules as (name, cache key), each with its files and whether it was evaluated now. Every module whose cache is
+// stale is evaluated in one nix-instantiate, so nix starts and reads maw's lib once; if that fails, they're evaluated
+// one at a time, so the error names the module it came from
+pub fn eval_modules(runner: &dyn Runner, env: &Env, repo_root: &Path, modules: &[(String, String)]) -> Result<Vec<(String, Vec<RenderedFile>, bool)>, EvalError> {
+    let stale: Vec<&(String, String)> = modules.iter().filter(|(name, key)| cached(&module_cache(env, name), key).is_none()).collect();
+    let plain_names = stale.iter().all(|(name, _)| name.chars().all(|char| char.is_ascii_alphanumeric() || "._+-".contains(char)));
+    if stale.len() > 1 && plain_names {
+        let names: String = stale.iter().map(|(name, _)| format!(" \"{name}\"")).collect();
+        let expression = format!("{{ root }}: let modules = (import (/. + root)).modules; in {{ inherit (modules){names}; }}");
+        let args = nix_args(env, &["-E".into(), expression, "--argstr".into(), "root".into(), repo_root.display().to_string()]);
+        let batch = runner.run("nix-instantiate", &args).ok().and_then(|stdout| serde_json::from_str::<BTreeMap<String, Value>>(&stdout).ok());
+        // each module's result cached as if evaluated alone; a failed batch leaves the caches for one at a time
+        batch.iter().flatten().try_for_each(|(name, value)| match stale.iter().find(|(stale, _)| stale == name) {
+            Some((_, key)) => save_cache(&module_cache(env, name), key, value),
+            None => Ok(()),
+        })?;
+    }
+    modules
+        .iter()
+        .map(|(name, key)| {
+            let (files, _) = eval_module(runner, env, repo_root, name, key)?;
+            Ok((name.clone(), files, stale.iter().any(|(stale, _)| stale == name)))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -131,6 +172,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(&dir.path().join("home"), &dir.path().join("sys"), &dir.path().join("share"));
         (dir, env)
+    }
+
+    #[test]
+    fn stale_modules_are_evaluated_together() {
+        let (_dir, env) = setup();
+        let batch = format!(r#"{{"foot":{FOOT},"niri":{FOOT}}}"#);
+        let runner = FakeRunner::new(move |_, args| if args.contains(&"-E".to_string()) { batch.clone() } else { FOOT.into() });
+        let modules = [("foot".to_string(), "k1".to_string()), ("niri".to_string(), "k1".to_string())];
+
+        let first = eval_modules(&runner, &env, Path::new("/dots"), &modules).unwrap();
+        assert_eq!(first.iter().map(|(name, files, fresh)| (name.as_str(), files.len(), *fresh)).collect::<Vec<_>>(), [("foot", 1, true), ("niri", 1, true)]);
+        assert_eq!(runner.calls.borrow().len(), 1);
+
+        // both cached now; a changed key alone is evaluated alone
+        eval_modules(&runner, &env, Path::new("/dots"), &[modules[0].clone(), ("niri".into(), "k2".into())]).unwrap();
+        assert_eq!(runner.calls.borrow().len(), 2);
+        assert!(runner.calls.borrow()[1].contains("-A modules.niri"));
+    }
+
+    #[test]
+    fn a_failed_batch_finds_the_module_to_blame() {
+        let (_dir, env) = setup();
+        let runner = FakeRunner::fallible(|_, args| match args.iter().find(|arg| arg.starts_with("modules.")).map(String::as_str) {
+            Some("modules.bad") => Err(RunError::Failed { program: "nix-instantiate".into(), stderr: "error: undefined variable 'x'".into() }),
+            Some(_) => Ok(FOOT.into()),
+            None => Err(RunError::Failed { program: "nix-instantiate".into(), stderr: "error: undefined variable 'x'".into() }),
+        });
+        let modules = [("foot".to_string(), "k".to_string()), ("bad".to_string(), "k".to_string())];
+        let error = eval_modules(&runner, &env, Path::new("/dots"), &modules).unwrap_err();
+        assert_eq!(error.to_string(), "modules/bad.nix: undefined variable 'x'");
     }
 
     #[test]

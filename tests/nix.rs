@@ -93,6 +93,13 @@ fn service_rejects_unknown_scope() {
     assert_eq!(eval(r#"(builtins.head (lib.service "x" { scope = "user"; run = "x"; })).scope"#), "user");
 }
 
+// only user services can be core, since turnstile is what waits for them
+#[test]
+fn only_user_services_are_core() {
+    assert!(eval_error(r#"lib.service "x" { run = "x"; core = true; }"#).contains("maw: service x is core; only user services can be"));
+    assert_eq!(eval(r#"(builtins.head (lib.service "x" { scope = "user"; run = "x"; core = true; })).service.core"#), true);
+}
+
 // config.nix and hosts/<name>.nix get onHosts, and the host file merges over config
 #[test]
 fn host_config_merges_with_on_hosts() {
@@ -116,6 +123,28 @@ fn host_config_merges_with_on_hosts() {
     let content: String = serde_json::from_slice(&output.stdout).unwrap();
     let config: Value = serde_json::from_str(&content).unwrap();
     assert_eq!(config, json!({ "a": { "x": 1, "y": 3 }, "list": [9], "here": "yes", "there": [] }));
+}
+
+// with a theme, each file carries its rendering under placeholder colors; files that don't use the theme match it
+#[test]
+fn themed_files_carry_a_placeholder_rendering() {
+    let dotfiles = tempfile::tempdir().unwrap();
+    let root = dotfiles.path();
+    let write = |path: &str, text: &str| {
+        fs::create_dir_all(root.join(path).parent().unwrap()).unwrap();
+        fs::write(root.join(path), text).unwrap();
+    };
+    write("config.nix", r##"{ theme, ... }: { accent = theme.colors.primary or "#000000"; }"##);
+    write("maw.nix", "{ }");
+    write("modules/term.nix", r#"{ config, theme, ... }: [ { name = "term"; key = "main"; content = "${config.accent} ${theme.wallpaper}"; } { name = "term"; key = "plain"; content = "size 12"; } ]"#);
+    write("state/theme.json", r##"{ "wallpaper": "/w/sea.jpg", "colors": { "primary": "#a1b2c3" }, "base16": { }, "source": "#a1b2c3", "settings": { "mode": "dark" } }"##);
+
+    let state_dir = format!("maw-state={}", root.join("state").display());
+    let expression = format!("map (file: [ file.content file.plain.content ]) (import ./nix/default.nix {{ dotfiles = {}; }}).modules.term", root.display());
+    let output = instantiate(&["-I", &state_dir], &expression);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let files: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(files, json!([["#a1b2c3 /w/sea.jpg", "#808080 <wallpaper>"], ["size 12", "size 12"]]));
 }
 
 // the scaffolder reads empty homepages, and meson wins over cargoDeps

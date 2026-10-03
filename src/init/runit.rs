@@ -31,6 +31,12 @@ fn log_script(dir: &str) -> String {
     format!("#!/bin/sh\nmkdir -p {dir}\nexec svlogd -tt {dir}\n")
 }
 
+// turnstile-ready's conf: the user services turnstile brings up before the session starts, and where it lives
+pub fn ready_conf(env: &Env, core: &[&str]) -> (PathBuf, String) {
+    let content = format!("# written by maw: user services the session waits for\ncore_services=\"{}\"\n", core.join(" "));
+    (env.home.join(".config/service/turnstile-ready/conf"), content)
+}
+
 impl InitBackend for Runit {
     fn render(&self, name: &str, scope: Scope, service: &ServiceDef) -> Vec<(String, String, bool)> {
         let log_dir = match scope {
@@ -89,7 +95,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn service(run: &str) -> ServiceDef {
-        ServiceDef { run: run.into(), log: true, enable: true, env: BTreeMap::from([("A".into(), "it's".into())]) }
+        ServiceDef { run: run.into(), log: true, enable: true, env: BTreeMap::from([("A".into(), "it's".into())]), core: false }
     }
 
     #[test]

@@ -34,12 +34,7 @@ cargo build --release
 
 ## Docs
 
-- [usage](docs/usage.md): setting up, activating, packages, services, generations, the TUI
-- [migrating](docs/migrating.md): moving an existing setup into maw
-- [modules](docs/modules.md) and [formats](docs/formats.md): writing config in Nix
-- [development](docs/development.md): layout, tests, releasing
-
-The same text is in `maw help` and the man pages.
+The [manual](docs/README.md) is in fifteen chapters, from [getting started](docs/manual/02-getting-started.md) to [troubleshooting](docs/manual/14-troubleshooting.md). The same text is in `maw help` and the man pages. Contributors: [development](docs/development.md) covers layout, tests, and releasing.
 
 ## License
 

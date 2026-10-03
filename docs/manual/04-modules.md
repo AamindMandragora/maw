@@ -1,4 +1,4 @@
-# Modules
+# 4. Modules
 
 A dotfiles repo looks like this:
 
@@ -30,8 +30,8 @@ The arguments:
 - `config`: the contents of `config.nix`, with this machine's `hosts/<name>.nix` merged over it. It can be an attrset, or a function taking any of `{ lib, theme, host }`.
 - `lib`: the nixpkgs lib plus maw's additions (below).
 - `maw`: the contents of `maw.nix`.
-- `theme`: the palette from the current wallpaper, `{ }` before there is one; see "Wallpaper themes" in `maw help usage`.
-- `host`: this machine's name; see "More than one machine" in `maw help usage`. `lib.onHosts [ "laptop" ] <files>` gives the files on those machines and nothing elsewhere.
+- `theme`: the palette from the current wallpaper, `{ }` before there is one; see [themes](10-themes.md).
+- `host`: this machine's name; see [machines](11-machines.md). `lib.onHosts [ "laptop" ] <files>` gives the files on those machines and nothing elsewhere.
 
 A module takes the arguments it names; list only the ones you use.
 
@@ -39,7 +39,7 @@ A module takes the arguments it names; list only the ones you use.
 
 | option | default | meaning |
 |---|---|---|
-| `format` | `"raw"` | how to render `settings`; see [formats.md](formats.md) |
+| `format` | `"raw"` | how to render `settings`; see [formats.md](05-formats.md) |
 | `settings` | | the file's contents as Nix values |
 | `files` | `{ main = settings; }` | several files, keyed by role |
 | `executable` | `false` | mark the output executable |
@@ -63,7 +63,7 @@ A plain string or `lib.raw` as a file's settings is written verbatim, whatever t
 
 ## `lib.service name { ... }`
 
-Describes a runit service. maw writes its `run` and `log/run` files and enables it; see "Services" in `maw help usage`.
+Describes a runit service. maw writes its `run` and `log/run` files and enables it; see [services](08-services.md).
 
 | option | default | meaning |
 |---|---|---|
@@ -72,6 +72,7 @@ Describes a runit service. maw writes its `run` and `log/run` files and enables 
 | `log` | `true` | log through svlogd to `/var/log/<name>/` or `~/.local/state/log/<name>/` |
 | `enable` | `true` | link it into place; `false` writes the definition but leaves it off |
 | `env` | `{ }` | variables exported before `run`, literally: no `$` expansion |
+| `core` | `false` | a user service the session waits for at login, like the session bus |
 
 ```nix
 { config, lib, ... }:
@@ -97,6 +98,19 @@ spawn-at-startup = [
 
 Until then a graphical service like swaybg fails and runit retries it every second, so it comes up moments after the compositor does. A service whose restart doesn't come back up is a warning after activating, not an error: `maw sv log <name>` shows why. A module can return a service alongside program files as a list: `[ (lib.program "x" { ... }) (lib.service "x" { ... }) ]`.
 
+A `core` user service is one turnstile starts and waits for before your session begins. maw lists every enabled one in `~/.config/service/turnstile-ready/conf`. The session bus is the usual one, so the keyring and every app share it:
+
+```nix
+lib.service "dbus" {
+  scope = "user";
+  core = true;
+  run = ''
+    [ -d "$TURNSTILE_ENV_DIR" ] && echo "unix:path=/run/user/$(id -u)/bus" > "$TURNSTILE_ENV_DIR/DBUS_SESSION_BUS_ADDRESS"
+    exec dbus-daemon --session --nofork --nopidfile --address="unix:path=/run/user/$(id -u)/bus"
+  '';
+}
+```
+
 ## Reloading
 
 When an activation changes a program's files, maw runs its reload command once all files are in place: `pkill -USR2 -x waybar`, `dunstctl reload`, `makoctl reload`, and so on. The registry knows the command for common programs; `reload` in `lib.program` sets or overrides it:
@@ -109,6 +123,29 @@ lib.program "waybar" {
 ```
 
 The command runs through `sh -c` as you. A program that isn't running fails its reload, and the failure is ignored. Programs that watch their own config, like niri and alacritty, need none. Services restart on their own instead; see `lib.service`.
+
+## `lib.flatpak id { ... }`
+
+A flatpak app's permissions and environment, written as flatpak's own overrides for you (`~/.local/share/flatpak/overrides/<id>`), the same file `flatpak override --user` writes. They apply the next time the app starts.
+
+| option | default | meaning |
+|---|---|---|
+| `env` | `{ }` | variables set inside the app |
+| `sockets` | `[ ]` | like `"wayland"`, `"x11"`, `"pulseaudio"` |
+| `filesystems` | `[ ]` | like `"~/Documents"`, `"xdg-download"`, `"home:ro"` |
+| `devices` | `[ ]` | like `"dri"`, `"all"` |
+| `shared` | `[ ]` | `"network"`, `"ipc"` |
+| `talk`, `own` | `[ ]` | session bus names the app may talk to or own |
+
+An item starting with `!` takes a permission away, like `"!x11"`. To run an Electron app like Slack on Wayland:
+
+```nix
+{ lib, ... }:
+lib.flatpak "com.slack.Slack" {
+  env.ELECTRON_OZONE_PLATFORM_HINT = "auto";
+  sockets = [ "wayland" ];
+}
+```
 
 ## `lib.dconf { ... }`
 
@@ -132,7 +169,7 @@ maw writes each key with `dconf write`, and only when its value differs. A key y
 
 ## `lib.color`
 
-For deriving colors from others, say from a [wallpaper theme](usage.md). Each takes `"#rrggbb"` or `"rrggbb"` and returns the same shape:
+For deriving colors from others, say from a [wallpaper theme](10-themes.md). Each takes `"#rrggbb"` or `"rrggbb"` and returns the same shape:
 
 - `lib.color.rotate degrees color`: the same saturation and lightness at another hue. `rotate 35 theme.colors.error` turns the palette's soft red amber, a warning color that always matches
 - `lib.color.lighten amount color`: lightness moved by `amount` (0 to 1; negative darkens)
@@ -174,7 +211,7 @@ Anything several modules use, like colors, fonts, or your terminal, belongs in `
 }
 ```
 
-Then `config.colors.text` in fuzzel, waybar, and niri all read the same value. With a [wallpaper theme](usage.md), colors can come from the palette instead, in one place:
+Then `config.colors.text` in fuzzel, waybar, and niri all read the same value. With a [wallpaper theme](10-themes.md), colors can come from the palette instead, in one place:
 
 ```nix
 { lib, theme }:
@@ -207,3 +244,5 @@ nix-instantiate --eval --strict --raw -I maw=./nix \
 ```
 
 Each module evaluates to a list of `{ name, key, content, executable, scope, reload }`, one entry per file.
+
+Next: chapter 5, formats (`maw help 5`).

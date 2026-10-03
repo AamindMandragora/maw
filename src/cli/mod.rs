@@ -4,6 +4,7 @@ use crate::backend::SystemBackend;
 use crate::backend::srcpkgs;
 use crate::backend::xbps::Xbps;
 use crate::build::{self, BuildError, Report};
+use crate::history;
 use crate::complete;
 use crate::edit;
 use crate::env::Env;
@@ -90,6 +91,8 @@ pub enum Command {
     Diff,
     #[command(about = "everything out of sync: files, packages, services, and config for missing programs", after_help = "see: maw help checking")]
     Status,
+    #[command(about = "check the session for problems that break a desktop quietly, like a missing session bus", after_help = "see: maw help doctor")]
+    Doctor,
     #[command(about = "record installed packages and enabled services maw.nix doesn't know about", after_help = "see: maw help adopting")]
     Adopt {
         #[arg(long, help = "print the checklist without opening it")]
@@ -143,24 +146,24 @@ pub enum Command {
         #[command(subcommand)]
         action: SvAction,
     },
-    #[command(about = "show or set this machine's name", after_help = "see: maw help more than one machine")]
+    #[command(about = "show or set this machine's name", after_help = "see: maw help machines")]
     Host {
         #[arg(help = "a new name for this machine")]
         name: Option<String>,
     },
-    #[command(about = "encrypted files in static/: edit one, or re-encrypt all for every machine", after_help = "see: maw help encrypted files")]
+    #[command(about = "encrypted files in static/: edit one, or re-encrypt all for every machine", after_help = "see: maw help secrets")]
     Secret {
         #[command(subcommand)]
         action: SecretAction,
     },
-    #[command(about = "set the wallpaper the theme comes from, or show it", after_help = "see: maw help wallpaper themes")]
+    #[command(about = "set the wallpaper the theme comes from, or show it", after_help = "see: maw help themes")]
     Wallpaper {
         #[arg(add = ArgValueCompleter::new(complete::wallpapers), help = "an image (copied into static/wallpapers/), a name already there, or random")]
         image: Option<String>,
     },
-    #[command(about = "list generations: each activation that changed something", after_help = "see: maw help generations")]
+    #[command(about = "list generations: each activation that changed something", after_help = "see: maw help history")]
     Generations,
-    #[command(about = "commit every change in the repo", after_help = "see: maw help generations")]
+    #[command(about = "commit every change in the repo", after_help = "see: maw help history")]
     Commit {
         #[arg(short, long, help = "the message; without it git opens your editor")]
         message: Option<String>,
@@ -169,14 +172,23 @@ pub enum Command {
     Push,
     #[command(about = "pull the repo from its remote, then activate", after_help = "see: maw help sharing")]
     Pull,
+    #[command(about = "fold generations FROM through TO, both included, into one commit, rewriting the repo's history", after_help = "see: maw help squashing")]
+    Squash {
+        #[arg(help = "the first generation to fold in")]
+        from: u32,
+        #[arg(help = "the last generation to fold in")]
+        to: u32,
+        #[arg(short, long, help = "don't ask first")]
+        yes: bool,
+    },
     #[command(about = "packages built from your own xbps-src templates in srcpkgs/", after_help = "see: maw help source packages")]
     Src {
         #[command(subcommand)]
         action: SrcAction,
     },
-    #[command(about = "read the docs: a topic, a command, or any section by its heading")]
+    #[command(about = "read the manual: a chapter, a command, or any section by its heading")]
     Help {
-        #[arg(help = "usage, migrating, modules, formats, a command, or a heading like `drift`", add = ArgValueCompleter::new(complete::topics))]
+        #[arg(help = "a chapter by number or name, a command, or a heading like `drift`", add = ArgValueCompleter::new(complete::topics))]
         query: Vec<String>,
     },
 }
@@ -204,12 +216,12 @@ pub enum SvAction {
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum SecretAction {
-    #[command(about = "decrypt a file into your editor, then encrypt it back and activate", after_help = "see: maw help encrypted files")]
+    #[command(about = "decrypt a file into your editor, then encrypt it back and activate", after_help = "see: maw help secrets")]
     Edit {
         #[arg(help = "the live file, or its static/<name>/<file>.age")]
         file: PathBuf,
     },
-    #[command(about = "re-encrypt every file for every machine in hosts/*.pub, after adding one", after_help = "see: maw help encrypted files")]
+    #[command(about = "re-encrypt every file for every machine in hosts/*.pub, after adding one", after_help = "see: maw help secrets")]
     Rekey,
 }
 
@@ -234,6 +246,8 @@ pub enum SrcAction {
         #[arg(add = ArgValueCompleter::new(complete::templates), help = "a template in srcpkgs/")]
         name: String,
     },
+    #[command(about = "free the build cache: old builds nothing needs and dependencies no build uses", after_help = "see: maw help source packages")]
+    Clean,
 }
 
 #[derive(clap::Args, Clone, Debug)]
@@ -325,8 +339,9 @@ pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
         Command::Generations => list_generations(env),
         Command::Commit { message } => {
             let repo = Repo::locate(env)?;
-            if !generations::commit(runner, &repo, message.as_deref())? {
-                println!("nothing to commit");
+            match generations::commit(runner, &repo, message.as_deref())? {
+                true => auto_push(env, runner, &repo, false),
+                false => println!("nothing to commit"),
             }
             Ok(())
         }
@@ -334,14 +349,17 @@ pub fn run(env: &Env, runner: &dyn Runner, command: Command) -> Result<()> {
         Command::Pull => {
             let repo = Repo::locate(env)?;
             save_edited_out(env, &repo)?;
-            let moved = generations::pull(runner, &repo)?;
-            activate_after(env, runner, &repo, if moved { vec!["pull".into()] } else { Vec::new() })
+            let pulled = history::pull(runner, &repo)?;
+            print_pull(&pulled);
+            activate_after(env, runner, &repo, if pulled.moved { vec!["pull".into()] } else { Vec::new() })
         }
+        Command::Squash { from, to, yes } => squash(env, runner, from, to, yes),
         Command::Edit { name, no_activate } => edit(env, runner, &name, !no_activate),
         Command::New { name, format, no_activate } => new(env, runner, &name, format.as_deref(), !no_activate),
         Command::Add { path, name, no_activate, secret } => add(env, runner, &path, name.as_deref(), !no_activate, secret),
         Command::Diff => diff(env, runner),
         Command::Status => status(env, runner),
+        Command::Doctor => doctor(env, runner),
         Command::Adopt { dry_run } => adopt(env, runner, dry_run),
         Command::Install { packages, dry_run, here } => install(env, runner, &packages, dry_run, here),
         Command::Remove { packages, dry_run } => remove(env, runner, &packages, dry_run),
@@ -500,13 +518,65 @@ fn finish(env: &Env, runner: &dyn Runner, repo: &Repo, activation: &Activation, 
     if activation.build.is_empty() && activation.steps.is_empty() && activation.answered.is_empty() && done.is_empty() {
         println!("up to date");
     }
-    if dry_run || !commit || !activation.build.settings.auto_commit || (!generations::changed(activation) && done.is_empty()) {
+    if dry_run || !commit || !activation.build.settings.auto_commit {
         return Ok(());
     }
-    let summary: Vec<String> = done.iter().cloned().chain(generations::summary(repo, activation)).collect();
+    let by_hand = generations::hand_changes(runner, repo)?;
+    if !generations::changed(repo, activation) && done.is_empty() && by_hand.is_empty() {
+        return Ok(());
+    }
+    let summary: Vec<String> = done.iter().cloned().chain(generations::summary(repo, activation)).chain(by_hand).collect();
     let generation = generations::record(env, runner, repo, &summary, &Terminal)?;
     let short = generation.commit.get(..7).unwrap_or(&generation.commit);
     println!("generation {} ({short})", generation.number);
+    auto_push(env, runner, repo, false);
+    Ok(())
+}
+
+// pushes after a commit unless maw.autoPush is off; a push that fails (offline, the remote moved on) is a warning
+fn auto_push(env: &Env, runner: &dyn Runner, repo: &Repo, force: bool) {
+    if !build::settings(env, runner, repo).map_or(true, |settings| settings.auto_push) {
+        return;
+    }
+    match history::push(runner, repo, force) {
+        Ok(true) => println!("push"),
+        Ok(false) => {}
+        Err(_) => eprintln!("{} couldn't push; `maw pull`, then `maw push`", prefix(Tone::Warn, "warning:")),
+    }
+}
+
+// what a pull did beyond moving: a rewritten history, this machine's commits put back on top or left aside
+fn print_pull(pulled: &history::Pulled) {
+    if pulled.rewritten {
+        println!("the remote's history was rewritten (a squash)");
+    }
+    if pulled.replayed > 0 {
+        println!("move {} unpushed commit{} on top", pulled.replayed, if pulled.replayed == 1 { "" } else { "s" });
+    }
+    let Some(backup) = &pulled.backup else { return };
+    match pulled.stranded {
+        0 => println!("keep the old history on branch {backup}; `git branch -D {backup}` once you don't need it"),
+        count => eprintln!("{} {count} unpushed commit{} didn't apply; they're on branch {backup}: `git cherry-pick {backup}~{count}..{backup}`", prefix(Tone::Warn, "warning:"), if count == 1 { "" } else { "s" }),
+    }
+}
+
+// shows what a squash folds together, asks, squashes, then force-pushes
+fn squash(env: &Env, runner: &dyn Runner, from: u32, to: u32, yes: bool) -> Result<()> {
+    let repo = Repo::locate(env)?;
+    let plan = history::plan_squash(env, runner, &repo, from, to)?;
+    let numbers: Vec<String> = plan.generations.iter().map(u32::to_string).collect();
+    println!("squash generations {} ({} commits) into one; {} later commits move on top", numbers.join(" "), plan.commits, plan.after);
+    println!("this rewrites history: the remote is force-pushed, and other machines' `maw pull` puts their unpushed commits on top");
+    if !yes {
+        match Terminal.ask("squash? [y/N] ") {
+            None if !std::io::stdin().is_terminal() => anyhow::bail!("no terminal to ask; `maw squash {from} {to} --yes` to squash"),
+            Some(answer) if answer.trim().eq_ignore_ascii_case("y") => {}
+            _ => anyhow::bail!("not squashed"),
+        }
+    }
+    let backup = history::squash(env, runner, &repo, &plan)?;
+    println!("generation {to} is generations {from}-{to}; the old history is on branch {backup}");
+    auto_push(env, runner, &repo, true);
     Ok(())
 }
 
@@ -608,6 +678,19 @@ fn status(env: &Env, runner: &dyn Runner) -> Result<()> {
     Ok(())
 }
 
+// each problem with its fix under it, or `all good`; outside a repo, PATH isn't checked
+fn doctor(env: &Env, runner: &dyn Runner) -> Result<()> {
+    let state = Repo::locate(env).ok().and_then(|repo| edit::load(env, runner, &repo).ok()).map(|(_, state)| state.here(&env.host));
+    let vars: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let found = crate::doctor::check(env, runner, &vars, state.as_ref());
+    found.iter().for_each(|finding| println!("{} {}
+     {}", prefix(Tone::Warn, "warn"), finding.problem, finding.fix));
+    if found.is_empty() {
+        println!("all good");
+    }
+    Ok(())
+}
+
 // the status report as labeled lines, `clean` when there's nothing; the status tab shows the same lines
 pub fn status_lines(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<String>> {
     let report = status::report(env, runner, repo, &std::env::var("PATH").unwrap_or_default())?;
@@ -646,7 +729,13 @@ pub fn status_lines(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<S
     let undeclared = report.undeclared.iter().map(|candidate| line("undeclared", candidate_label(candidate)));
     let orphans = report.orphans.iter().map(|name| {
         let module = repo.module_file(name);
-        let source = if module.exists() { relative(repo, &module) } else { format!("static/{name}/") };
+        let static_dir = repo.static_dir().join(name);
+        let source = match (module.exists(), static_dir.exists()) {
+            (true, _) => relative(repo, &module),
+            (false, true) => relative(repo, &static_dir) + "/",
+            // rendered by a module named something else
+            (false, false) => relative(repo, &repo.out_dir().join(name)) + "/",
+        };
         line("orphan", format!("{source} ({name} isn't installed)"))
     });
     let lines: Vec<String> = steps.chain(outdated).chain(undeclared).chain(orphans).collect();
@@ -964,7 +1053,7 @@ fn sync(env: &Env, runner: &dyn Runner, release: bool) -> Result<()> {
     Ok(())
 }
 
-// a topic, a command's --help, or a doc section, paged on a terminal
+// a chapter, a command's --help, or a section, paged on a terminal
 fn show_help(runner: &dyn Runner, query: &str) -> Result<()> {
     let terminal = std::io::stdout().is_terminal();
     let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -FRX".into());
@@ -974,7 +1063,7 @@ fn show_help(runner: &dyn Runner, query: &str) -> Result<()> {
     let shows_color = !pager.split_whitespace().next().is_some_and(|program| program.ends_with("less")) || less_colors;
     let color = colored(&std::io::stdout()) && shows_color;
     let Some(text) = help_text(query, color) else {
-        anyhow::bail!("no help on {query}; `maw help` lists topics");
+        anyhow::bail!("no help on {query}; `maw help` lists the chapters");
     };
 
     // $PAGER, else less; printing directly if there's no terminal or no pager
@@ -986,14 +1075,14 @@ fn show_help(runner: &dyn Runner, query: &str) -> Result<()> {
     Ok(())
 }
 
-// the topic list for no query, else the first of: topic, command, section
+// the chapter list for no query, else the first of: chapter, command, section
 fn help_text(query: &str, color: bool) -> Option<String> {
     if query.is_empty() {
-        let topics: String = help::TOPICS.iter().map(|topic| format!("  {:<11}{}\n", topic.name, topic.summary)).collect();
-        return Some(format!("topics:\n{topics}\nmaw help <topic | command | heading>, e.g. `maw help drift`\n"));
+        let chapters: String = help::CHAPTERS.iter().enumerate().map(|(index, chapter)| format!("{:>3} {:<17}{}\n", index + 1, chapter.name.replace('-', " "), chapter.summary)).collect();
+        return Some(format!("the maw manual:\n{chapters}\nmaw help <number | chapter | command | heading>, e.g. `maw help 2` or `maw help drift`\n"));
     }
     let render = |markdown: String| help::render(&markdown, color);
-    if help::TOPICS.iter().any(|topic| topic.name == query) {
+    if help::chapter(query).is_some() {
         return help::find(query).map(render);
     }
 
@@ -1004,6 +1093,14 @@ fn help_text(query: &str, color: bool) -> Option<String> {
     match found {
         Some(subcommand) if subcommand.get_after_help().is_none_or(|after| after.to_string() != format!("see: maw help {query}")) => Some(subcommand.render_long_help().to_string()),
         _ => help::find(query).map(render),
+    }
+}
+
+// a size the way du -h would round it, in MB or GB
+fn megabytes(bytes: u64) -> String {
+    match bytes as f64 / 1e6 {
+        size if size >= 1000.0 => format!("{:.1} GB", size / 1000.0),
+        size => format!("{size:.0} MB"),
     }
 }
 
@@ -1039,6 +1136,11 @@ fn src(env: &Env, runner: &dyn Runner, action: SrcAction) -> Result<()> {
                 activate_after(env, runner, &repo, vec![format!("update {name} to {new}")])
             }
         },
+        SrcAction::Clean => {
+            let freed = packages::clean_sources(env, runner, &repo)?;
+            println!("{}", if freed == 0 { "nothing to clean".to_string() } else { format!("freed {}", megabytes(freed)) });
+            Ok(())
+        }
         SrcAction::Build { name } => {
             let upgraded = packages::build_source(env, runner, &repo, &name)?;
             println!("{} {name}", if upgraded { "build and upgrade" } else { "build" });
@@ -1183,7 +1285,9 @@ fn relative(repo: &Repo, path: &Path) -> String {
 }
 
 fn print_build(env: &Env, repo: &Repo, report: &Report) {
-    let relative = |path: &PathBuf| relative(repo, path);
+    // themed files are named like their out/ copies, under themed/
+    let themed = build::themed_dir(env, repo);
+    let relative = |path: &PathBuf| path.strip_prefix(&themed).map_or_else(|_| relative(repo, path), |file| format!("themed/{}", file.display()));
     report.evaluated.iter().for_each(|name| println!("eval {name}"));
     report.backups.iter().for_each(|(file, moved)| println!("backup {} -> {}", relative(file), env.pretty(moved)));
     report.written.iter().for_each(|path| println!("write {}", relative(path)));
@@ -1248,9 +1352,10 @@ mod tests {
     }
 
     #[test]
-    fn help_resolves_topics_commands_and_sections() {
-        assert!(help_text("", false).unwrap().contains("formats"));
-        assert!(help_text("formats", false).unwrap().starts_with("Formats"));
+    fn help_resolves_chapters_commands_and_sections() {
+        assert!(help_text("", false).unwrap().contains("  7 source packages  templates of your own"));
+        assert!(help_text("formats", false).unwrap().starts_with("5. Formats"));
+        assert!(help_text("2", false).unwrap().starts_with("2. Getting started"));
         assert!(help_text("add", false).unwrap().contains("Usage: maw add"));
         assert!(help_text("drift", false).unwrap().starts_with("Drift"));
         assert!(help_text("nonsense words", false).is_none());

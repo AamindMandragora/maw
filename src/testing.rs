@@ -35,7 +35,7 @@ pub fn fake(program: &str, args: &[String]) -> Result<String, RunError> {
         "cargo" => Ok(fake_cargo(&args)),
         "curl" => Ok(fake_crates_io(&args)),
         "go" | "flatpak" | "uv" | "npm" | "dconf" | "sh" | "xbps-install" | "xbps-remove" | "xbps-rindex" | "xbps-pkgdb" | "sv" | "tail" => Ok(String::new()),
-        "install" | "cp" | "ln" | "rm" | "mkdir" | "git" => real(program, &args),
+        "install" | "cp" | "ln" | "rm" | "mkdir" | "git" | "env" => real(program, &args),
         "date" => Ok("2026-09-23 12:00\n".into()),
         _ => Ok(fake_nix(&args)),
     }

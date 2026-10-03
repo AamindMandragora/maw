@@ -28,6 +28,8 @@ pub enum PackagesError {
     MissingTool { program: &'static str, package: &'static str },
     #[error("{0} is neither installed nor declared")]
     Unknown(String),
+    #[error("no source called {0}; use one of {sources}", sources = NAMES.iter().chain(&DRAFTS).map(|name| format!("{name}:")).collect::<Vec<_>>().join(" "))]
+    UnknownSource(String),
     #[error(transparent)]
     Backend(#[from] BackendError),
     #[error(transparent)]
@@ -310,6 +312,9 @@ pub fn install(env: &Env, runner: &dyn Runner, repo: &Repo, change: &Change) -> 
 
 // installs targets per backend; xbps names with a srcpkgs template are built and installed from binpkgs instead
 pub fn install_targets(env: &Env, runner: &dyn Runner, repo: &Repo, targets: &[Target]) -> Result<(), PackagesError> {
+    if targets.iter().any(|target| target.backend == "uv") {
+        crate::build::refresh_uv_options(env, runner, repo)?;
+    }
     install_with(env, runner, &srcpkgs(env, runner, repo)?, targets)
 }
 
@@ -317,7 +322,7 @@ pub fn install_targets(env: &Env, runner: &dyn Runner, repo: &Repo, targets: &[T
 pub fn install_with(env: &Env, runner: &dyn Runner, src: &SrcPkgs, targets: &[Target]) -> Result<(), PackagesError> {
     let (built, fetched): (Vec<Target>, Vec<Target>) = targets.iter().cloned().partition(|target| target.backend == "xbps" && src.has(&target.spec));
     if !built.is_empty() {
-        src.install(&built.into_iter().map(|target| target.spec).collect::<Vec<_>>(), false)?;
+        src.install_and_clean(&built.into_iter().map(|target| target.spec).collect::<Vec<_>>(), false)?;
     }
     Ok(grouped(&fetched).into_iter().try_for_each(|(name, specs)| backend::for_name(&name, runner, env).unwrap().install(&specs))?)
 }
@@ -330,10 +335,15 @@ pub fn build_source(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str) -> 
     }
     let installed = Xbps::new(runner, env).list()?.iter().any(|pkg| pkg.name == name);
     match installed {
-        true => src.install(&[name.to_string()], true)?,
+        true => src.install_and_clean(&[name.to_string()], true)?,
         false => src.build(&[name.to_string()])?,
     }
     Ok(installed)
+}
+
+// frees the build cache; see SrcPkgs::clean
+pub fn clean_sources(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<u64, PackagesError> {
+    Ok(srcpkgs(env, runner, repo)?.clean()?)
 }
 
 // declared source packages a build would change, as (name, installed, what a build makes): a template at another
@@ -398,7 +408,10 @@ pub fn upgrade(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Vec<Target
         .filter(|target| spec_base(&target.spec) == target.spec)
         .collect();
 
-    // flatpak updates in place; the rest upgrade by installing again
+    // flatpak updates in place; the rest upgrade by installing again, uv tools with their current options
+    if unpinned.iter().any(|target| target.backend == "uv") {
+        crate::build::refresh_uv_options(env, runner, repo)?;
+    }
     grouped(&unpinned).into_iter().try_for_each(|(name, specs)| match name.as_str() {
         "flatpak" => Flatpak::new(runner, env).update(&specs),
         _ => backend::for_name(&name, runner, env).unwrap().install(&specs),
@@ -459,29 +472,36 @@ pub fn search(env: &Env, runner: &dyn Runner, term: &str) -> Result<Found, Packa
     match term.split_once(':') {
         Some((name, term)) if NAMES.contains(&name) => return Ok(Found { hits: search_in(backend::for_name(name, runner, env).unwrap().as_ref(), term)?, ..Found::default() }),
         Some((name, term)) if DRAFTS.contains(&name) => return Ok(search_drafts(env, runner, term, &[name])),
+        // a mistyped source, like nix:, rather than a term with a colon in it
+        Some((name, _)) if !name.is_empty() && name.chars().all(|char| char.is_ascii_lowercase()) => return Err(PackagesError::UnknownSource(name.into())),
         _ => {}
     }
 
-    // xbps in full, the others' best ten each
-    let xbps = search_in(&Xbps::new(runner, env), term)?;
-    let others = NAMES[1..].iter().filter_map(|name| backend::for_name(name, runner, env)).flat_map(|backend| search_in(backend.as_ref(), term).unwrap_or_default().into_iter().take(10));
-    let hits: Vec<(Target, Pkg, bool)> = xbps.into_iter().chain(others).collect();
-    if !hits.is_empty() {
-        return Ok(Found { hits, ..Found::default() });
-    }
-    Ok(search_drafts(env, runner, term, &DRAFTS))
+    // xbps in full, the others' best ten each, then what could be drafted from the aur and nixpkgs; every source is
+    // asked at once, since most of them answer over the network
+    std::thread::scope(|scope| {
+        let others: Vec<_> = NAMES[1..].iter().map(|name| scope.spawn(move || backend::for_name(name, runner, env).map(|backend| search_in(backend.as_ref(), term).unwrap_or_default()).unwrap_or_default())).collect();
+        let drafts = scope.spawn(|| search_drafts(env, runner, term, &DRAFTS));
+        let xbps = search_in(&Xbps::new(runner, env), term)?;
+        let others = others.into_iter().flat_map(|other| other.join().unwrap_or_default().into_iter().take(10));
+        let hits: Vec<(Target, Pkg, bool)> = xbps.into_iter().chain(others).collect();
+        let drafts = drafts.join().unwrap_or_default();
+        Ok(Found { hits: hits.into_iter().chain(drafts.hits).collect(), unreachable: drafts.unreachable })
+    })
 }
 
 // matches in the aur and nixpkgs, never installed; the ones that didn't answer are named
 fn search_drafts(env: &Env, runner: &dyn Runner, term: &str, sources: &[&str]) -> Found {
-    let searched = sources.iter().map(|source| {
-        let found = match *source {
-            "aur" => aur::search(runner, term),
-            _ => nixos::search(env, runner, term),
-        };
-        (source, found)
+    let search = |source: &str| match source {
+        "aur" => aur::search(runner, term),
+        _ => nixos::search(env, runner, term),
+    };
+    // both at once, then in the order asked
+    let searched: Vec<_> = std::thread::scope(|scope| {
+        let asked: Vec<_> = sources.iter().map(|source| (source, scope.spawn(move || search(source)))).collect();
+        asked.into_iter().map(|(source, asking)| (source, asking.join().unwrap_or(Err(crate::scaffold::ScaffoldError::NixSearch)))).collect()
     });
-    searched.fold(Found::default(), |mut found, (source, result)| {
+    searched.into_iter().fold(Found::default(), |mut found, (source, result)| {
         match result {
             Ok(pkgs) => found.hits.extend(pkgs.into_iter().map(|pkg| (Target { backend: source.to_string(), spec: pkg.source.clone() }, pkg, false))),
             Err(_) => found.unreachable.push(source.to_string()),
@@ -759,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn search_looks_everywhere_and_drafts_only_when_nothing_installs() {
+    fn search_looks_everywhere_and_lists_drafts_last() {
         let fixture = fixture(&[]);
         let backends = |term: &str| -> Vec<String> {
             search(&fixture.env, &fixture.runner, term).unwrap().hits.into_iter().map(|(target, ..)| target.to_string()).collect()
@@ -768,10 +788,10 @@ mod tests {
         assert_eq!(backends("bat"), ["cargo:bat"]);
         assert_eq!(backends("cargo:ripgrep"), ["cargo:ripgrep"]);
 
-        // nothing installable: the aur and nixpkgs are asked, and one that doesn't answer is named
-        let found = search(&fixture.env, &fixture.runner, "nothing").unwrap();
-        assert!(found.hits.is_empty());
+        // the aur and nixpkgs are always asked, and one that doesn't answer is named
+        let found = search(&fixture.env, &fixture.runner, "foot").unwrap();
         assert_eq!(found.unreachable, ["nixpkgs"]);
+        assert!(matches!(search(&fixture.env, &fixture.runner, "nix:foot"), Err(PackagesError::UnknownSource(name)) if name == "nix"));
     }
 
     // a srcpkgs template in the repo and a clone that's already set up, so nothing is ever really cloned

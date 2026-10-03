@@ -158,7 +158,7 @@ To install maw through maw itself, copy `srcpkgs/maw/` into your dotfiles' `srcp
 
 ## Docs
 
-`docs/usage.md`, `docs/migrating.md`, `docs/modules.md`, and `docs/formats.md` are compiled into the binary and served by `maw help`, so they're user-facing twice: keep them readable as plain text, with headings that make sense as `maw help <heading>`. Link between them as `[formats.md](formats.md)`; the terminal renders that as `maw help formats`. A test checks that every command's `see:` line names a real heading. This file isn't compiled in.
+The manual's chapters, `docs/manual/NN-<name>.md`, are compiled into the binary and served by `maw help`, so they're user-facing twice: keep them readable as plain text, with headings that make sense as `maw help <heading>`. Each starts with `# N. Title` and ends by pointing at the next. Link to a chapter as `[formats](05-formats.md)` and to a section as `[drift](02-getting-started.md#drift)`; the terminal renders those as `maw help formats` and `drift (maw help drift)`. Tests check that every link and every command's `see:` line resolve, and that chapters are numbered in order. A new chapter goes in `CHAPTERS` in `src/help.rs`. This file isn't compiled in.
 
 ## Pinned nixpkgs lib
 

@@ -34,19 +34,45 @@ let
   # lib knows this machine for onHosts: a module's files on the named machines only
   hostLib = lib // { onHosts = names: value: if builtins.elem host names then value else [ ]; };
 
+  # the theme with every color a fixed gray and the wallpaper a placeholder: what out/ is rendered with, so the files
+  # git tracks stay the same whatever the wallpaper
+  gray = value: if lib.hasPrefix "#" value then "#808080" else "808080";
+  placeholder =
+    value:
+    if builtins.isAttrs value then
+      builtins.mapAttrs (_: placeholder) value
+    else if builtins.isList value then
+      map placeholder value
+    else if builtins.isString value && builtins.match "#?[0-9a-fA-F]{6}" value != null then
+      gray value
+    else
+      value;
+  plainTheme = if theme == { } then { } else placeholder theme // { wallpaper = "<wallpaper>"; };
+
   # a file of config values, or a function of lib, theme, and host
-  load = file: let value = import file; in if builtins.isFunction value then call value { inherit theme host; lib = hostLib; } else value;
+  load = theme: file: let value = import file; in if builtins.isFunction value then call value { inherit theme host; lib = hostLib; } else value;
 
   # config.nix, with this machine's hosts/<name>.nix merged over it; attrsets merge, lists and other values are replaced
   hostConfigFile = dotfiles + "/hosts/${host}.nix";
-  config = lib.recursiveUpdate (load (dotfiles + "/config.nix")) (if builtins.pathExists hostConfigFile then load hostConfigFile else { });
+  configWith = theme: lib.recursiveUpdate (load theme (dotfiles + "/config.nix")) (if builtins.pathExists hostConfigFile then load theme hostConfigFile else { });
+  config = configWith theme;
   maw = import (dotfiles + "/maw.nix");
 
   # every modules/<name>.nix, keyed by name
   moduleFiles = lib.filterAttrs (file: type: type == "regular" && lib.hasSuffix ".nix" file) (
     builtins.readDir (dotfiles + "/modules")
   );
-  evalModule = file: lib.flatten (call (import (dotfiles + "/modules/${file}")) { inherit config maw theme host; lib = hostLib; });
+  evalWith = theme: file: lib.flatten (call (import (dotfiles + "/modules/${file}")) { inherit maw theme host; config = configWith theme; lib = hostLib; });
+
+  # each file with its placeholder rendering beside it, when there's a theme and both renderings have the same files
+  evalModule =
+    file:
+    let
+      files = evalWith theme file;
+      plain = evalWith plainTheme file;
+      same = builtins.length plain == builtins.length files && builtins.all (pair: pair.fst.name == pair.snd.name && pair.fst.key == pair.snd.key) (lib.zipLists files plain);
+    in
+    if theme == { } || !same then files else lib.zipListsWith (file: plain: file // { inherit plain; }) files plain;
 in
 {
   modules = lib.mapAttrs' (file: _: lib.nameValuePair (lib.removeSuffix ".nix" file) (evalModule file)) moduleFiles;

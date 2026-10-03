@@ -1,4 +1,4 @@
-# Formats
+# 5. Formats
 
 Set with `format = "<name>"` in `lib.program`, or call the generator directly (`lib.toCSS { ... }`). Every format accepts `lib.raw` at any node.
 
@@ -157,3 +157,5 @@ vt = 1
 ## raw
 
 The default format. `settings` is a string written as-is.
+
+Next: chapter 6, packages (`maw help 6`).

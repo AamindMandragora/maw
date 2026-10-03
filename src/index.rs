@@ -52,6 +52,9 @@ pub struct Entry {
     // the source is an encrypted file, placed as its decrypted copy
     #[serde(default)]
     pub secret: bool,
+    // the source is out/'s placeholder copy of a file that follows the wallpaper, placed from the state dir
+    #[serde(default)]
+    pub themed: bool,
 }
 
 // a destination as it reads on any machine: under home as ~/..., anything else relative to the system root
@@ -66,12 +69,14 @@ fn portable(env: &Env, path: &Path) -> String {
 pub fn write(env: &Env, repo: &Repo, build: &Report, wanted: &[Wanted]) -> Result<(), IndexError> {
     let services: HashMap<&PathBuf, &ServiceRef> = build.outputs.iter().filter_map(|output| Some((&output.out, output.service.as_ref()?))).collect();
     let reloads: HashMap<&PathBuf, &String> = build.outputs.iter().filter_map(|output| Some((&output.out, output.reload.as_ref()?))).collect();
+    let tracked: HashMap<&PathBuf, &PathBuf> = build.outputs.iter().filter_map(|output| Some((&output.out, &output.tracked.as_ref()?.0))).collect();
     let files = wanted
         .iter()
         .map(|file| Entry {
-            // a decrypted file is recorded by its encrypted one, which is in the repo
-            source: file.secret.as_ref().unwrap_or(&file.source).strip_prefix(&repo.root).unwrap_or(file.secret.as_ref().unwrap_or(&file.source)).to_path_buf(),
+            // a decrypted file is recorded by its encrypted one, and a themed one by its out/ copy, both in the repo
+            source: file.secret.as_ref().or(tracked.get(&file.source).copied()).unwrap_or(&file.source).strip_prefix(&repo.root).unwrap_or(&file.source).to_path_buf(),
             secret: file.secret.is_some(),
+            themed: tracked.contains_key(&file.source),
             destination: portable(env, &file.destination),
             root: file.root,
             service: services.get(&file.source).map(|service| (service.name.clone(), service.scope, service.enable)),
@@ -120,12 +125,15 @@ pub fn load(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<(Report, Vec<
 
 // one rendered file as an output, read back from out/
 fn output(env: &Env, repo: &Repo, entry: &Entry) -> Result<Output, IndexError> {
-    let out = repo.root.join(&entry.source);
+    // a themed file from this machine's last build, or out/'s placeholder copy on a machine that hasn't built yet
+    let tracked = repo.root.join(&entry.source);
+    let live = crate::build::themed_dir(env, repo).join(tracked.strip_prefix(repo.out_dir()).unwrap_or(&tracked));
+    let out = if entry.themed && live.exists() { live } else { tracked.clone() };
     let content = fs::read_to_string(&out).map_err(|source| IndexError::Io { path: out.clone(), source })?;
     let mode = fs::metadata(&out).map_err(|source| IndexError::Io { path: out.clone(), source })?.permissions().mode();
 
     // out/<machine>/<name>/... names the program; a service is named by its ref
-    let relative = out.strip_prefix(repo.out_dir()).unwrap_or(&entry.source);
+    let relative = tracked.strip_prefix(repo.out_dir()).unwrap_or(&entry.source);
     let folder = relative.components().next().map(|part| part.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
     let name = entry.service.as_ref().map_or(folder, |(name, _, _)| name.clone());
     Ok(Output {
@@ -138,6 +146,7 @@ fn output(env: &Env, repo: &Repo, entry: &Entry) -> Result<Output, IndexError> {
         content,
         service: entry.service.clone().map(|(name, scope, enable)| ServiceRef { name, scope, enable }),
         reload: entry.reload.clone(),
+        tracked: entry.themed.then(|| (tracked.clone(), fs::read_to_string(&tracked).unwrap_or_default())),
         out,
     })
 }

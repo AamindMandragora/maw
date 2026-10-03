@@ -47,15 +47,32 @@ fn origin(name: &str, resolved: &str, from: &str) -> (String, String) {
     (source.into(), commit.into())
 }
 
+// top-level packages from npm's hidden lockfile, when every one came from the registry
+fn from_lockfile(text: &str) -> Option<Vec<Pkg>> {
+    let lock: Value = serde_json::from_str(text).ok()?;
+    let top = lock["packages"].as_object()?.iter().filter_map(|(path, package)| Some((path.strip_prefix("node_modules/")?, package))).filter(|(name, _)| !name.contains("/node_modules/"));
+    top.map(|(name, package)| {
+        let field = |key: &str| package[key].as_str().unwrap_or_default().to_string();
+        let (source, build) = origin(name, &field("resolved"), "");
+        (source == name).then(|| Pkg { source, build, name: name.into(), version: field("version"), manual: true, ..Pkg::default() })
+    })
+    .collect()
+}
+
 impl Backend for Npm<'_> {
     fn name(&self) -> &str {
         "npm"
     }
 
-    // packages installed under the prefix; none before the first install or without npm
+    // packages installed under the prefix; none before the first install or without npm. npm's own lockfile answers
+    // without starting node, unless something came from git or a url, whose spec only npm ls knows
     fn list(&self) -> Result<Vec<Pkg>, BackendError> {
         if !self.prefix.join("lib/node_modules").is_dir() {
             return Ok(Vec::new());
+        }
+        let lockfile = std::fs::read_to_string(self.prefix.join("lib/node_modules/.package-lock.json")).ok();
+        if let Some(pkgs) = lockfile.as_deref().and_then(from_lockfile) {
+            return Ok(pkgs);
         }
         let body = match self.npm(&["ls", "-g", "--depth=0", "--json", "--long"]) {
             Err(RunError::Spawn { .. }) => return Ok(Vec::new()),
@@ -159,6 +176,20 @@ mod tests {
         ]);
         assert_eq!(Npm::new(&runner, &env).pin(&pkgs[0]), "@scope/tool@2.0.0");
         assert_eq!((Npm::new(&runner, &env).pin(&pkgs[2]).as_str(), pkgs[2].build.as_str()), ("github:user/mytool", "4c638f60aaaabbbbccccddddeeeeffff00001111"));
+    }
+
+    #[test]
+    fn the_lockfile_answers_unless_something_came_from_git() {
+        let (dir, runner, env) = setup();
+        let lockfile = dir.path().join(".local/lib/node_modules/.package-lock.json");
+        std::fs::write(&lockfile, r#"{"packages":{"node_modules/cowsay":{"version":"1.6.0","resolved":"https://registry.npmjs.org/cowsay/-/cowsay-1.6.0.tgz"},"node_modules/cowsay/node_modules/dep":{"version":"1.0.0"},"node_modules/@scope/tool":{"version":"2.0.0","resolved":"https://registry.npmjs.org/@scope/tool/-/tool-2.0.0.tgz"}}}"#).unwrap();
+        let pkgs = Npm::new(&runner, &env).list().unwrap();
+        assert_eq!(pkgs.iter().map(|pkg| (pkg.source.as_str(), pkg.version.as_str())).collect::<Vec<_>>(), [("@scope/tool", "2.0.0"), ("cowsay", "1.6.0")]);
+        assert!(runner.calls.borrow().is_empty());
+
+        std::fs::write(&lockfile, r#"{"packages":{"node_modules/mytool":{"version":"0.1.0","resolved":"git+ssh://git@github.com/user/mytool.git#4c63"}}}"#).unwrap();
+        Npm::new(&runner, &env).list().unwrap();
+        assert!(runner.calls.borrow()[0].starts_with("npm ls"));
     }
 
     #[test]

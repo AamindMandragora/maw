@@ -34,12 +34,12 @@ maw add ~/.gitconfig --no-activate
 maw add ~/.local/bin/powermenu --no-activate
 .EE
 .PP
-Each copy lands back exactly where it came from; see "Adding verbatim files" in \fBmaw help usage\fR.
+Each copy lands back exactly where it came from; see adding verbatim files (\fBmaw help adding verbatim files\fR).
 .SS "What to leave out"
 .IP \(bu 2
 Files an app rewrites on its own, like a GUI's settings file or a plugin lockfile. Linked, they turn into drift every time the app saves.
 .IP \(bu 2
-Anything holding secrets or tokens (\fBgh/hosts.yml\fR, \fBrclone.conf\fR), unless you encrypt it with \fBmaw add --secret\fR; see "Encrypted files" in \fBmaw help usage\fR.
+Anything holding secrets or tokens (\fBgh/hosts.yml\fR, \fBrclone.conf\fR), unless you encrypt it with \fBmaw add --secret\fR; see \fBmaw help secrets\fR.
 .IP \(bu 2
 Configs for programs you no longer have installed.
 .SH "3. CHECK BEFORE TOUCHING ANYTHING"
@@ -99,3 +99,5 @@ mv ~/.local/state/maw/backups/.config/foot/foot.ini ~/.config/foot/foot.ini
 .EE
 .PP
 A module or static file you remove from the repo is unlinked on the next \fBmaw activate\fR; its backup stays where it is, so restore it the same way.
+.PP
+Next: chapter 14, troubleshooting (\fBmaw help 14\fR).

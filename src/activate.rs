@@ -620,12 +620,12 @@ mod tests {
         write(&fixture.repo.module_file("gtk"), "prefer-dark");
 
         // dconf that remembers what's written; everything else as the fixture answers it
-        let database = std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::<String, String>::new()));
+        let database = std::sync::Arc::new(std::sync::Mutex::new(BTreeMap::<String, String>::new()));
         let dconf = database.clone();
         fixture.runner = crate::runner::fake::FakeRunner::fallible(move |program, args| match (program, args.first().map(String::as_str)) {
-            ("dconf", Some("read")) => Ok(dconf.borrow().get(&args[1]).cloned().unwrap_or_default()),
+            ("dconf", Some("read")) => Ok(dconf.lock().unwrap().get(&args[1]).cloned().unwrap_or_default()),
             ("dconf", Some("write")) => {
-                dconf.borrow_mut().insert(args[1].clone(), args[2].clone());
+                dconf.lock().unwrap().insert(args[1].clone(), args[2].clone());
                 Ok(String::new())
             }
             _ => testing::fake(program, args),
@@ -636,18 +636,18 @@ mod tests {
         assert_eq!(reloads(&first), 1);
         assert!(first.steps.contains(&Step::Setting { key: "/org/gnome/desktop/interface/color-scheme".into(), value: "'prefer-dark'".into() }));
         assert!(fixture.runner.calls.borrow().contains(&"sh -c pkill -USR2 waybar".to_string()));
-        assert_eq!(database.borrow().values().collect::<Vec<_>>(), ["'prefer-dark'"]);
+        assert_eq!(database.lock().unwrap().values().collect::<Vec<_>>(), ["'prefer-dark'"]);
 
         // nothing changed: no reload, no writes
         assert!(run(&fixture, Options::default()).steps.is_empty());
 
         // an edited module reloads again; a setting changed by hand is reported, not overwritten
         write(&fixture.repo.module_file("waybar"), "bottom");
-        database.borrow_mut().insert("/org/gnome/desktop/interface/color-scheme".into(), "'prefer-light'".into());
+        database.lock().unwrap().insert("/org/gnome/desktop/interface/color-scheme".into(), "'prefer-light'".into());
         let third = run(&fixture, Options::default());
         assert_eq!(reloads(&third), 1);
         assert!(third.steps.contains(&Step::SettingEdited { key: "/org/gnome/desktop/interface/color-scheme".into() }));
-        assert_eq!(database.borrow().values().collect::<Vec<_>>(), ["'prefer-light'"]);
+        assert_eq!(database.lock().unwrap().values().collect::<Vec<_>>(), ["'prefer-light'"]);
     }
 
     fn foot(fixture: &Fixture) -> PathBuf {

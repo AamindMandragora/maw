@@ -1,0 +1,24 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH maw-squash 1  "maw-squash " 
+.SH NAME
+maw\-squash \- fold generations FROM through TO, both included, into one commit, rewriting the repo\*(Aqs history
+.SH SYNOPSIS
+\fBmaw squash\fR [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIFROM\fR> <\fITO\fR> 
+.SH DESCRIPTION
+fold generations FROM through TO, both included, into one commit, rewriting the repo\*(Aqs history
+.SH OPTIONS
+.TP
+\fB\-y\fR, \fB\-\-yes\fR
+don\*(Aqt ask first
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+print help
+.TP
+<\fIFROM\fR>
+the first generation to fold in
+.TP
+<\fITO\fR>
+the last generation to fold in
+.SH EXTRA
+see: maw help squashing

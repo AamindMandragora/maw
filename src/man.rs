@@ -1,19 +1,19 @@
 use crate::cli;
-use crate::help::{TOPICS, links};
+use crate::help::{CHAPTERS, links};
 
-// man pages: maw(1) from the command tree, the user docs as maw-<topic>(5 or 7)
+// man pages: maw(1) from the command tree, each manual chapter as maw-<chapter>(5 or 7)
 
-// which section each doc topic belongs in: file formats are 5, guides are 7
-fn section(topic: &str) -> u8 {
-    if matches!(topic, "modules" | "formats") { 5 } else { 7 }
+// which section each chapter belongs in: file formats are 5, guides are 7
+fn section(chapter: &str) -> u8 {
+    if matches!(chapter, "modules" | "formats") { 5 } else { 7 }
 }
 
 // every page as (file name, roff)
 pub fn pages() -> Vec<(String, String)> {
-    let docs = TOPICS.iter().map(|topic| {
-        let section = section(topic.name);
-        let name = format!("maw-{}", topic.name);
-        (format!("{name}.{section}"), roff(&name, section, topic.summary, topic.text))
+    let docs = CHAPTERS.iter().map(|chapter| {
+        let section = section(chapter.name);
+        let name = format!("maw-{}", chapter.name);
+        (format!("{name}.{section}"), roff(&name, section, chapter.summary, chapter.text))
     });
     let mut root = cli::command();
     root.build();
@@ -38,7 +38,7 @@ fn subcommand_pages(command: &clap::Command, prefix: &str) -> Vec<(String, Strin
 fn command_page() -> String {
     let mut page = Vec::new();
     clap_mangen::Man::new(cli::command()).render(&mut page).unwrap();
-    let see_also: Vec<String> = TOPICS.iter().map(|topic| format!("\\fBmaw-{}\\fR({})", topic.name, section(topic.name))).collect();
+    let see_also: Vec<String> = CHAPTERS.iter().map(|chapter| format!("\\fBmaw-{}\\fR({})", chapter.name, section(chapter.name))).collect();
     format!("{}.SH \"SEE ALSO\"\n{}\n", String::from_utf8(page).unwrap(), see_also.join(", "))
 }
 
@@ -146,7 +146,9 @@ mod tests {
         let names: Vec<String> = pages().into_iter().map(|(name, _)| name).collect();
         assert_eq!(names[0], "maw.1");
         assert!(names.contains(&"maw-install.1".to_string()) && names.contains(&"maw-sv-enable.1".to_string()));
-        assert!(names.ends_with(&["maw-usage.7".into(), "maw-migrating.7".into(), "maw-modules.5".into(), "maw-formats.5".into()]));
+        // the chapters come last, in order, the file formats in section 5
+        let chapters: Vec<&str> = names.iter().rev().take(15).rev().map(String::as_str).collect();
+        assert_eq!((chapters[0], chapters[3], chapters[14]), ("maw-introduction.7", "maw-modules.5", "maw-reference.7"));
     }
 
     #[test]

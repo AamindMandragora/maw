@@ -1,17 +1,42 @@
 use super::{Backend, BackendError, Pkg, spec_base, spec_program};
 use crate::env::Env;
 use crate::runner::{RunError, Runner};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 // python programs from pypi or git, installed with uv tool into their own environments
 pub struct Uv<'a> {
     runner: &'a dyn Runner,
     home: PathBuf,
+    options: BTreeMap<String, ToolOptions>,
+}
+
+// how one tool is installed, from maw.uv in config.nix: a python version, and requirements added to its environment
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolOptions {
+    pub python: Option<String>,
+    #[serde(default)]
+    pub requirements: Vec<String>,
+}
+
+// where the last build left maw.uv, for installs that don't evaluate config.nix themselves
+pub fn options_file(env: &Env) -> PathBuf {
+    env.state_dir.join("uv.json")
 }
 
 impl<'a> Uv<'a> {
     pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
-        Uv { runner, home: env.home.clone() }
+        let options = std::fs::read(options_file(env)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        Uv { runner, home: env.home.clone(), options }
+    }
+
+    // uv tool install's args for a spec: its options by tool name, then the requirement
+    fn install_args(&self, spec: &str) -> Vec<String> {
+        let options = self.options.iter().find(|(name, _)| name.to_lowercase() == spec_program(spec)).map(|(_, options)| options.clone()).unwrap_or_default();
+        let python = options.python.into_iter().flat_map(|version| ["--python".to_string(), version]);
+        let with = options.requirements.into_iter().flat_map(|requirement| ["--with".to_string(), requirement]);
+        ["tool", "install"].into_iter().map(String::from).chain(python).chain(with).chain([requirement(spec)]).collect()
     }
 
     fn uv(&self, args: &[&str]) -> Result<String, RunError> {
@@ -106,7 +131,7 @@ impl Backend for Uv<'_> {
     }
 
     fn install(&self, specs: &[String]) -> Result<(), BackendError> {
-        specs.iter().try_for_each(|spec| Ok(self.runner.interactive("uv", &["tool".into(), "install".into(), requirement(spec)])?))
+        specs.iter().try_for_each(|spec| Ok(self.runner.interactive("uv", &self.install_args(spec))?))
     }
 
     // uninstalls by tool name, found from the spec's source for git tools
@@ -195,6 +220,16 @@ mod tests {
         assert_eq!(uv.pin(&pkgs[0]), "git+https://github.com/user/croft@4c638f60aaaabbbbccccddddeeeeffff00001111");
         assert_eq!((pkgs[1].source.as_str(), uv.pin(&pkgs[1]).as_str()), ("ruff", "ruff@0.6.9"));
         assert!(crate::backend::satisfies(&uv, &pkgs, "git+https://github.com/user/croft@v1.0"));
+    }
+
+    #[test]
+    fn tools_install_with_their_options() {
+        let (dir, runner) = tools();
+        let env = Env::new(dir.path(), Path::new("/"), &dir.path().join("share"));
+        crate::testing::write(&options_file(&env), r#"{"OpenConnect-SSO":{"python":"3.12","requirements":["setuptools<81"]}}"#);
+        Uv::new(&runner, &env).install(&["openconnect-sso".into(), "ruff".into()]).unwrap();
+        let installs: Vec<String> = runner.calls.borrow().iter().filter(|call| call.contains(" install ")).cloned().collect();
+        assert_eq!(installs, ["uv tool install --python 3.12 --with setuptools<81 openconnect-sso@latest", "uv tool install ruff@latest"]);
     }
 
     #[test]

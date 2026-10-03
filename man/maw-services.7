@@ -1,0 +1,48 @@
+.TH "MAW-SERVICES" "7" "" "maw 0.2.3" "maw manual"
+.SH NAME
+maw-services \- runit services for the system and your session
+.SH DESCRIPTION
+.PP
+Services are supervised by runit. There are two kinds:
+.IP \(bu 2
+\fBsystem\fR services run from boot as root. Definitions live in \fB/etc/sv/<name>/\fR, enabled by a link in \fB/var/service/\fR.
+.IP \(bu 2
+\fBuser\fR services run as you, in your session, started by turnstile at login. Definitions live in \fB~/.config/sv/<name>/\fR, enabled by a link in \fB~/.config/service/\fR.
+.PP
+A service is enabled when \fBmaw.nix\fR lists it, or when a module defines it with \fBlib.service\fR (see \fBmaw help lib.service\fR):
+.PP
+.EX
+services = {
+  system = [ "NetworkManager" "dbus" ];
+  user = [ "pipewire" ];
+};
+.EE
+.PP
+\fBmaw activate\fR enables what's declared, disables what maw enabled that no longer is (\fBsv down\fR first), and restarts running services whose files changed:
+.PP
+.EX
+copy /etc/sv/backup/run
+enable backup
+restart rclone (user)
+.EE
+.PP
+Services maw didn't enable are never touched by activation.
+.SH "SERVICE COMMANDS"
+.PP
+.EX
+maw sv list                   # declared and enabled services, and their state
+maw sv enable NetworkManager  # record in maw.nix, then activate
+maw sv disable bluetoothd     # stop and unlink now, drop from maw.nix
+maw sv status greetd
+maw sv restart greetd
+maw sv log rclone             # follow its log
+.EE
+.PP
+A name is looked up in maw.nix and modules first, then among enabled services, then among definitions; \fB--user\fR or \fB--system\fR picks one when a name exists in both, e.g. while moving a system service to your session. \fBenable\fR works for any service with a definition, like the ones Void packages install into \fB/etc/sv\fR. A service a module enables can't be disabled from here: set \fBenable = false\fR in its \fBlib.service\fR.
+.PP
+\fBsv list\fR flags \fB(disabled)\fR for declared but not enabled and \fB(undeclared)\fR for enabled but not declared. Reading a system service's state needs root, so it shows \fB?\fR unless \fBsudo\fR needs no password.
+.SH "LOGS"
+.PP
+Services maw writes log through \fBsvlogd\fR: system ones to \fB/var/log/<name>/\fR, user ones to \fB~/.local/state/log/<name>/\fR, rotated automatically. \fBmaw sv log <name>\fR follows the \fBcurrent\fR file.
+.PP
+Next: chapter 9, secrets (\fBmaw help 9\fR).

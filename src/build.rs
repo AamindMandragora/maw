@@ -40,7 +40,7 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> BuildError + '_ {
 }
 
 // one rendered file under out/ and where it will be placed
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Output {
     pub name: String,
     pub key: String,
@@ -53,6 +53,9 @@ pub struct Output {
     pub service: Option<ServiceRef>,
     // run after the file changes, so the running program reads it
     pub reload: Option<String>,
+    // a file that follows the wallpaper is placed from maw's state dir; out/ keeps it with placeholder colors
+    // instead, as (out/ path, content), so git sees only real config changes
+    pub tracked: Option<(PathBuf, String)>,
 }
 
 // the service a file belongs to, so activation can enable and restart it
@@ -102,6 +105,9 @@ pub struct Settings {
     // commit the repo and record a generation after each activation that changes something
     #[serde(default = "yes")]
     pub auto_commit: bool,
+    // push every commit maw makes to the repo's remote
+    #[serde(default = "yes")]
+    pub auto_push: bool,
     // where maw keeps its void-packages clone for building srcpkgs; ~/ is home
     pub void_packages: Option<String>,
     // where maw keeps its nixpkgs clone for `src new --from-nix`; ~/ is home
@@ -113,11 +119,14 @@ pub struct Settings {
     pub theme: Option<ThemeSettings>,
     // the ssh key that decrypts encrypted files, if not ~/.ssh/id_ed25519 or id_rsa
     pub secret_key: Option<String>,
+    // how uv installs a tool, by its name
+    #[serde(default)]
+    pub uv: BTreeMap<String, crate::backend::uv::ToolOptions>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { auto_commit: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new(), theme: None, secret_key: None }
+        Settings { auto_commit: true, auto_push: true, void_packages: None, nixpkgs: None, flatpak_names: BTreeMap::new(), theme: None, secret_key: None, uv: BTreeMap::new() }
     }
 }
 
@@ -163,6 +172,9 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let (registry, raw_state) = load_registry(env, runner, repo, &mut inputs)?;
     let state = raw_state.here(&env.host);
     let settings = eval_settings(env, runner, repo, &shared_hash)?;
+    if !options.dry_run {
+        save_uv_options(env, &settings)?;
+    }
 
     // the wallpaper theme, brought up to date before any module reads it; a dry run renders with the theme as it is
     if !options.dry_run {
@@ -171,32 +183,33 @@ pub fn build(env: &Env, runner: &dyn Runner, repo: &Repo, options: Options) -> R
     let theme_file = theme::file(env);
     let theme_hash = if theme_file.exists() { inputs.hash(&theme_file)? } else { String::new() };
 
-    // evaluate each module, keyed by its own file plus the shared inputs and the theme
-    let modules = repo
+    // evaluate the modules, each keyed by its own file plus the shared inputs and the theme
+    let keyed = repo
         .module_names()?
         .into_iter()
-        .map(|name| {
-            let key = combine(&[&inputs.hash(&repo.module_file(&name))?, &shared_hash, &theme_hash]);
-            let (files, fresh) = eval::eval_module(runner, env, &repo.root, &name, &key)?;
-            Ok((name, files, fresh))
-        })
+        .map(|name| Ok((name.clone(), combine(&[&inputs.hash(&repo.module_file(&name))?, &shared_hash, &theme_hash]))))
         .collect::<Result<Vec<_>, BuildError>>()?;
+    let modules = eval::eval_modules(runner, env, &repo.root, &keyed)?;
 
     let files: Vec<&RenderedFile> = modules.iter().flat_map(|(_, files, _)| files).collect();
     let dconf = dconf_settings(&files)?;
-    let mut outputs: Vec<Output> = files.iter().filter(|file| file.dconf.is_none()).flat_map(|file| to_outputs(env, repo, &registry, file)).collect();
+    let mut outputs: Vec<Output> = files.iter().filter(|file| file.dconf.is_none()).flat_map(|file| themed_outputs(env, repo, &registry, file)).collect();
     outputs.extend(local_repo(env, repo, &state, &settings));
     outputs.extend(flatpak_wrappers(env, repo, &state, &settings));
+    outputs.extend(turnstile_ready(env, repo, &files));
     let placements = place_all(env, &outputs, options)?;
+    let tracked = write_tracked(&outputs, options.dry_run)?;
 
     // sort each file into the report by what happened to it
     let placed = || outputs.iter().zip(&placements);
     // the activation index lives in out/ too, written by activate rather than build
-    let keep: HashSet<PathBuf> = outputs.iter().map(|output| output.out.clone()).chain([index_file(repo)]).collect();
+    let tracked_files = outputs.iter().filter_map(|output| Some(output.tracked.as_ref()?.0.clone()));
+    let keep: HashSet<PathBuf> = outputs.iter().map(|output| output.out.clone()).chain(tracked_files).chain([index_file(repo)]).collect();
+    let removed = [prune(&repo.out_dir(), &keep, options.dry_run)?, prune(&themed_dir(env, repo), &keep, options.dry_run)?].concat();
     let report = Report {
         evaluated: modules.iter().filter(|(_, _, fresh)| *fresh).map(|(name, _, _)| name.clone()).collect(),
-        written: placed().filter(|(_, placement)| !matches!(placement, Placement::Unchanged | Placement::Drifted)).map(|(output, _)| output.out.clone()).collect(),
-        removed: prune(&repo.out_dir(), &keep, options.dry_run)?,
+        written: placed().filter(|(_, placement)| !matches!(placement, Placement::Unchanged | Placement::Drifted)).map(|(output, _)| output.out.clone()).chain(tracked).collect(),
+        removed,
         drifted: placed().filter(|(_, placement)| **placement == Placement::Drifted).map(|(output, _)| output.clone()).collect(),
         backups: placed()
             .filter_map(|(output, placement)| match placement {
@@ -277,6 +290,7 @@ fn local_repo(env: &Env, repo: &Repo, state: &MawState, settings: &Settings) -> 
             content,
             service: None,
             reload: None,
+            tracked: None,
         }
     })
 }
@@ -309,9 +323,32 @@ fn flatpak_wrappers(env: &Env, repo: &Repo, state: &MawState, settings: &Setting
                 content,
                 service: None,
                 reload: None,
+                tracked: None,
             }
         })
         .collect()
+}
+
+// turnstile-ready's conf, when an enabled user service is core
+fn turnstile_ready(env: &Env, repo: &Repo, files: &[&RenderedFile]) -> Option<Output> {
+    let core: Vec<&str> = files.iter().filter(|file| file.service.as_ref().is_some_and(|service| service.core && service.enable)).map(|file| file.name.as_str()).collect();
+    if core.is_empty() {
+        return None;
+    }
+    let (destination, content) = crate::init::runit::ready_conf(env, &core);
+    Some(Output {
+        name: ".maw".into(),
+        key: "turnstile-ready/conf".into(),
+        out: repo.out_dir().join(".maw/turnstile-ready.conf"),
+        destination,
+        root: false,
+        executable: false,
+        hash: hash_bytes(content.as_bytes()),
+        content,
+        service: None,
+        reload: None,
+        tracked: None,
+    })
 }
 
 // this machine's name as a file nix reads, written from the hostname the first time
@@ -362,6 +399,20 @@ fn eval_settings(env: &Env, runner: &dyn Runner, repo: &Repo, key: &str) -> Resu
     Ok(serde_json::from_value(value).map_err(|source| EvalError::Shape { what: "config.nix maw".into(), source })?)
 }
 
+// maw.uv where the uv backend reads it, written only when it changed
+fn save_uv_options(env: &Env, settings: &Settings) -> Result<(), BuildError> {
+    let file = crate::backend::uv::options_file(env);
+    if load_json::<BTreeMap<String, crate::backend::uv::ToolOptions>>(&file).ok().as_ref() != Some(&settings.uv) {
+        save_json(&file, &settings.uv)?;
+    }
+    Ok(())
+}
+
+// maw.uv brought up to date from config.nix, before uv installs anything
+pub fn refresh_uv_options(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<(), BuildError> {
+    save_uv_options(env, &settings(env, runner, repo)?)
+}
+
 // maw's settings alone, without building any module
 pub fn settings(env: &Env, runner: &dyn Runner, repo: &Repo) -> Result<Settings, BuildError> {
     let inputs_file = env.state_dir.join("inputs");
@@ -405,8 +456,36 @@ fn service_outputs(env: &Env, repo: &Repo, name: &str, scope: Scope, service: &c
             content,
             service: Some(service_ref.clone()),
             reload: None,
+            tracked: None,
         })
         .collect()
+}
+
+// a file's outputs; one that differs from its placeholder rendering follows the wallpaper, so it's placed from the
+// state dir while out/ keeps the placeholder
+fn themed_outputs(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -> Vec<Output> {
+    let live = to_outputs(env, repo, registry, file);
+    let Some(plain) = &file.plain else { return live };
+    let plain = to_outputs(env, repo, registry, plain);
+    let paired = live.into_iter().zip(plain);
+    paired
+        .map(|(output, plain)| match output.content == plain.content {
+            true => output,
+            false => Output { out: themed_dir(env, repo).join(plain.out.strip_prefix(repo.out_dir()).unwrap_or(&plain.out)), tracked: Some((plain.out, plain.content)), ..output },
+        })
+        .collect()
+}
+
+// where this machine's themed files are kept, mirroring out/<host>/
+pub fn themed_dir(env: &Env, repo: &Repo) -> PathBuf {
+    env.state_dir.join("themed").join(&repo.host)
+}
+
+// out/ copies of themed files, with placeholder colors; returns the ones written
+fn write_tracked(outputs: &[Output], dry_run: bool) -> Result<Vec<PathBuf>, BuildError> {
+    let tracked = outputs.iter().filter_map(|output| output.tracked.as_ref().map(|(path, content)| (path, content, output.executable)));
+    let stale = tracked.filter(|(path, content, _)| fs::read(path).ok().as_deref() != Some(content.as_bytes()));
+    stale.map(|(path, content, executable)| if dry_run { Ok(path.clone()) } else { write_if_changed(path, content, executable).map(|_| path.clone()) }).collect()
 }
 
 // where a rendered file lives in out/ and at its destination
@@ -423,6 +502,7 @@ fn to_output(env: &Env, repo: &Repo, registry: &Registry, file: &RenderedFile) -
         content: file.content.clone(),
         service: None,
         reload: file.reload.clone().or_else(|| entry.reload.clone()),
+        tracked: None,
     }
 }
 
@@ -517,6 +597,42 @@ mod tests {
         let bin = fixture.env.home.join(".local/bin");
         assert_eq!(wrappers.iter().map(|wrapper| wrapper.destination.clone()).collect::<Vec<_>>(), [bin.join("emote"), bin.join("zoom-meet")]);
         assert!(wrappers[0].executable && wrappers[0].content.ends_with("exec flatpak run com.tomjwatson.Emote \"$@\"\n"));
+    }
+
+    // a user service rendered by a module, core or not, enabled or not
+    fn service_file(name: &str, core: bool, enable: bool) -> RenderedFile {
+        let service = crate::init::ServiceDef { run: "exec x".into(), log: true, enable, env: BTreeMap::new(), core };
+        RenderedFile { name: name.into(), key: "service".into(), content: String::new(), executable: false, scope: "user".into(), service: Some(service), reload: None, dconf: None, plain: None }
+    }
+
+    #[test]
+    fn a_file_that_follows_the_theme_is_placed_from_the_state_dir() {
+        let fixture = fixture(&[]);
+        let file = |content: &str| RenderedFile { name: "foot".into(), key: "main".into(), content: content.into(), executable: false, scope: "user".into(), service: None, reload: None, dconf: None, plain: None };
+        let themed = RenderedFile { plain: Some(Box::new(file("color=808080\n"))), ..file("color=a1b2c3\n") };
+        let steady = RenderedFile { plain: Some(Box::new(file("size=12\n"))), ..file("size=12\n") };
+
+        let output = &themed_outputs(&fixture.env, &fixture.repo, &Registry::default(), &themed)[0];
+        assert_eq!(output.out, themed_dir(&fixture.env, &fixture.repo).join("foot/config"));
+        assert_eq!(output.tracked, Some((fixture.repo.out_dir().join("foot/config"), "color=808080\n".into())));
+        assert_eq!(output.content, "color=a1b2c3\n");
+        let output = &themed_outputs(&fixture.env, &fixture.repo, &Registry::default(), &steady)[0];
+        assert_eq!((output.out.clone(), output.tracked.clone()), (fixture.repo.out_dir().join("foot/config"), None));
+
+        // out/ gets the placeholder, written once
+        assert_eq!(write_tracked(&themed_outputs(&fixture.env, &fixture.repo, &Registry::default(), &themed), false).unwrap(), [fixture.repo.out_dir().join("foot/config")]);
+        assert_eq!(fs::read_to_string(fixture.repo.out_dir().join("foot/config")).unwrap(), "color=808080\n");
+        assert!(write_tracked(&themed_outputs(&fixture.env, &fixture.repo, &Registry::default(), &themed), false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn enabled_core_services_make_turnstile_wait() {
+        let fixture = fixture(&[]);
+        let (dbus, pipewire, off, swaybg) = (service_file("dbus", true, true), service_file("pipewire", true, true), service_file("off", true, false), service_file("swaybg", false, true));
+        let conf = turnstile_ready(&fixture.env, &fixture.repo, &[&dbus, &pipewire, &off, &swaybg]).unwrap();
+        assert_eq!(conf.destination, fixture.env.home.join(".config/service/turnstile-ready/conf"));
+        assert!(conf.content.ends_with("core_services=\"dbus pipewire\"\n"));
+        assert!(turnstile_ready(&fixture.env, &fixture.repo, &[&swaybg]).is_none());
     }
 
     #[test]

@@ -27,6 +27,10 @@
     format = "keyValue";
     files.main = "ghostty/config";
   };
+  # lib.flatpak's overrides, one file per app id
+  flatpak = {
+    dir = "~/.local/share/flatpak/overrides";
+  };
   git = {
     format = "ini";
     files.main = "git/config";
@@ -37,6 +41,10 @@
     files.main = "/etc/greetd/config.toml";
     dir = "/etc/greetd";
     root = true;
+  };
+  # vivaldi's launcher reads extra flags from here
+  vivaldi = {
+    files.main = "vivaldi-stable.conf";
   };
   # reload runs after the program's files change, so the running program reads them; niri and alacritty watch their own
   dunst = {

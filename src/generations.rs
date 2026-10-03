@@ -4,7 +4,7 @@ use crate::env::Env;
 use crate::repo::Repo;
 use crate::runner::{RunError, Runner};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Component, PathBuf};
@@ -21,8 +21,6 @@ pub enum GenerationsError {
     Backend(#[from] BackendError),
     #[error("{0} has no remote; add one with `git -C {0} remote add origin <url>`")]
     NoRemote(String),
-    #[error("can't fast-forward {0}; merge with git in {0}, then maw activate")]
-    PullFailed(String),
 }
 
 // one activation that changed something: the commit it left, and exactly what was installed
@@ -54,11 +52,29 @@ pub fn load(env: &Env) -> Result<Vec<Generation>, GenerationsError> {
         .collect()
 }
 
-// whether an activation did anything; drift and unplaced files are only reported
-pub fn changed(activation: &Activation) -> bool {
-    let drift = |step: &Step| matches!(step, Step::Replaced { .. } | Step::Edited { .. } | Step::Unplaced { .. } | Step::SettingEdited { .. } | Step::SettingsSkipped { .. } | Step::Reload { .. } | Step::SecretSkipped { .. } | Step::SecretBackedUp { .. });
-    let acted = activation.steps.iter().any(|step| !drift(step));
-    acted || !activation.build.written.is_empty() || !activation.build.removed.is_empty() || !activation.answered.is_empty()
+// replaces the whole log, for a squash that merged generations and moved the commits after them
+pub fn save(env: &Env, generations: &[Generation]) -> Result<(), GenerationsError> {
+    let path = log_file(env);
+    let lines: String = generations.iter().map(|generation| format!("{}\n", serde_json::to_string(generation).unwrap())).collect();
+    fs::create_dir_all(&env.state_dir).map_err(|source| GenerationsError::Io { path: env.state_dir.clone(), source })?;
+    fs::write(&path, lines).map_err(|source| GenerationsError::Io { path, source })
+}
+
+// whether an activation did anything; drift and unplaced files are only reported, and a new wallpaper's colors
+// (themed files outside the repo, and the services made of them) aren't a change to the config
+pub fn changed(repo: &Repo, activation: &Activation) -> bool {
+    let themed: Vec<&crate::build::Output> = activation.build.outputs.iter().filter(|output| output.tracked.is_some()).collect();
+    let themed_files: HashSet<&PathBuf> = themed.iter().map(|output| &output.destination).collect();
+    let themed_services: HashSet<&String> = themed.iter().filter_map(|output| Some(&output.service.as_ref()?.name)).collect();
+    let ignored = |step: &Step| match step {
+        Step::Replaced { .. } | Step::Edited { .. } | Step::Unplaced { .. } | Step::SettingEdited { .. } | Step::SettingsSkipped { .. } | Step::Reload { .. } | Step::SecretSkipped { .. } | Step::SecretBackedUp { .. } => true,
+        Step::Update { destination } | Step::Relink { destination } | Step::Copy { destination, .. } => themed_files.contains(destination),
+        Step::Restart { name, .. } => themed_services.contains(name),
+        _ => false,
+    };
+    let acted = activation.steps.iter().any(|step| !ignored(step));
+    let in_repo = |paths: &[PathBuf]| paths.iter().any(|path| path.starts_with(&repo.root));
+    acted || in_repo(&activation.build.written) || in_repo(&activation.build.removed) || !activation.answered.is_empty()
 }
 
 // the parts of a one-line summary: programs whose output changed, then counts and actions from the plan
@@ -107,12 +123,30 @@ pub fn summary(repo: &Repo, activation: &Activation) -> Vec<String> {
         .collect()
 }
 
+// what changed in the repo besides maw's own output, by folder, like static/wallpapers or modules/niri.nix: files
+// added or edited by hand, which an activation commits with everything else
+pub fn hand_changes(runner: &dyn Runner, repo: &Repo) -> Result<Vec<String>, GenerationsError> {
+    if !repo.root.join(".git").exists() {
+        return Ok(Vec::new());
+    }
+    let status = git(runner, repo, &["status", "--porcelain"])?;
+    // "XY path", or "XY old -> new" for a rename; the new path, cut to its first two parts
+    let folders = status.lines().filter_map(|line| line.get(3..)).map(|path| path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"')).filter(|path| !path.starts_with("out/"));
+    let named = folders.map(|path| path.trim_end_matches('/').splitn(3, '/').take(2).collect::<Vec<_>>().join("/"));
+    Ok(named.fold(Vec::new(), |mut seen, name| {
+        if !seen.contains(&name) {
+            seen.push(name);
+        }
+        seen
+    }))
+}
+
 // git args run in the repo
-fn in_repo(repo: &Repo, args: &[&str]) -> Vec<String> {
+pub(crate) fn in_repo(repo: &Repo, args: &[&str]) -> Vec<String> {
     ["-C".to_string(), repo.root.display().to_string()].into_iter().chain(args.iter().map(|arg| arg.to_string())).collect()
 }
 
-fn git(runner: &dyn Runner, repo: &Repo, args: &[&str]) -> Result<String, RunError> {
+pub(crate) fn git(runner: &dyn Runner, repo: &Repo, args: &[&str]) -> Result<String, RunError> {
     runner.run("git", &in_repo(repo, args))
 }
 
@@ -145,21 +179,6 @@ pub fn push(runner: &dyn Runner, repo: &Repo) -> Result<(), GenerationsError> {
         return Err(GenerationsError::NoRemote(repo.root.display().to_string()));
     };
     Ok(runner.interactive("git", &in_repo(repo, &["push", "-u", remote, "HEAD"]))?)
-}
-
-// fast-forwards from the upstream; true if that moved the repo. Activating afterwards is up to the caller
-pub fn pull(runner: &dyn Runner, repo: &Repo) -> Result<bool, GenerationsError> {
-    if git(runner, repo, &["remote"])?.trim().is_empty() {
-        return Err(GenerationsError::NoRemote(repo.root.display().to_string()));
-    }
-    let head = || git(runner, repo, &["rev-parse", "HEAD"]).unwrap_or_default();
-    let before = head();
-
-    // out/ is rebuilt by the activation after, so changes in it (a wallpaper theme's) never block a pull
-    // (a repo with nothing in out/ yet has nothing to discard, which git reports as an error)
-    git(runner, repo, &["checkout", "-q", "--", "out"]).ok();
-    runner.interactive("git", &in_repo(repo, &["pull", "--ff-only"])).map_err(|_| GenerationsError::PullFailed(repo.root.display().to_string()))?;
-    Ok(head() != before)
 }
 
 // every backend's installed packages as exact specs, backends with none left out
@@ -265,8 +284,34 @@ mod tests {
 
     #[test]
     fn drift_alone_is_no_change() {
+        let fixture = with_git(&[]);
         let activation = Activation { steps: vec![Step::Edited { destination: "/a".into() }], ..Activation::default() };
-        assert!(!changed(&activation));
+        assert!(!changed(&fixture.repo, &activation));
+    }
+
+    #[test]
+    fn a_new_wallpapers_colors_are_no_change() {
+        let fixture = with_git(&[]);
+        let swaybg = crate::build::Output {
+            destination: "/h/.config/sv/swaybg/run".into(),
+            out: fixture.env.state_dir.join("themed/host/sv/swaybg/run"),
+            tracked: Some((fixture.repo.out_dir().join("sv/swaybg/run"), String::new())),
+            service: Some(crate::build::ServiceRef { name: "swaybg".into(), scope: Scope::User, enable: true }),
+            ..crate::build::Output::default()
+        };
+        let built = |written: PathBuf| crate::build::Report { written: vec![written], outputs: vec![swaybg.clone()], ..crate::build::Report::default() };
+        let steps = vec![Step::Update { destination: swaybg.destination.clone() }, Step::Restart { scope: Scope::User, name: "swaybg".into() }];
+        assert!(!changed(&fixture.repo, &Activation { steps: steps.clone(), build: built(swaybg.out.clone()), ..Activation::default() }));
+
+        // the placeholder copy in out/ changing is a real change
+        assert!(changed(&fixture.repo, &Activation { steps, build: built(fixture.repo.out_dir().join("sv/swaybg/run")), ..Activation::default() }));
+    }
+
+    #[test]
+    fn hand_changes_are_named_by_folder() {
+        let fixture = with_git(&[]);
+        let runner = crate::runner::fake::FakeRunner::new(|_, _| "?? static/wallpapers/\n M modules/niri.nix\n D static/wallpapers/old.jpg\nR  a.nix -> modules/b.nix\n M out/laptop/niri/config.kdl\n".into());
+        assert_eq!(hand_changes(&runner, &fixture.repo).unwrap(), ["static/wallpapers", "modules/niri.nix", "modules/b.nix"]);
     }
 
     #[test]

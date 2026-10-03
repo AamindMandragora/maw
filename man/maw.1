@@ -40,6 +40,9 @@ show what activating would change in each live file
 maw\-status(1)
 everything out of sync: files, packages, services, and config for missing programs
 .TP
+maw\-doctor(1)
+check the session for problems that break a desktop quietly, like a missing session bus
+.TP
 maw\-adopt(1)
 record installed packages and enabled services maw.nix doesn\*(Aqt know about
 .TP
@@ -88,14 +91,17 @@ push the repo to its remote
 maw\-pull(1)
 pull the repo from its remote, then activate
 .TP
+maw\-squash(1)
+fold generations FROM through TO, both included, into one commit, rewriting the repo\*(Aqs history
+.TP
 maw\-src(1)
 packages built from your own xbps\-src templates in srcpkgs/
 .TP
 maw\-help(1)
-read the docs: a topic, a command, or any section by its heading
+read the manual: a chapter, a command, or any section by its heading
 .SH EXTRA
 see: maw help
 .SH VERSION
 v0.2.3
 .SH "SEE ALSO"
-\fBmaw-usage\fR(7), \fBmaw-migrating\fR(7), \fBmaw-modules\fR(5), \fBmaw-formats\fR(5)
+\fBmaw-introduction\fR(7), \fBmaw-getting-started\fR(7), \fBmaw-day-to-day\fR(7), \fBmaw-modules\fR(5), \fBmaw-formats\fR(5), \fBmaw-packages\fR(7), \fBmaw-source-packages\fR(7), \fBmaw-services\fR(7), \fBmaw-secrets\fR(7), \fBmaw-themes\fR(7), \fBmaw-machines\fR(7), \fBmaw-history\fR(7), \fBmaw-migrating\fR(7), \fBmaw-troubleshooting\fR(7), \fBmaw-reference\fR(7)

@@ -2,7 +2,7 @@ use crate::backend::srcpkgs;
 use crate::build::index_file;
 use crate::env::Env;
 use crate::generations;
-use crate::help::TOPICS;
+use crate::help::CHAPTERS;
 use crate::index::Index;
 use crate::inputs::load_json;
 use crate::packages::Target;
@@ -115,9 +115,9 @@ pub fn generations(current: &OsStr) -> Vec<CompletionCandidate> {
     matching(current, generation_numbers(&Env::from_process()))
 }
 
-// help topics with their summaries
+// manual chapters with their summaries
 pub fn topics(current: &OsStr) -> Vec<CompletionCandidate> {
-    matching(current, TOPICS.iter().map(|topic| (topic.name.to_string(), Some(topic.summary.to_string()))))
+    matching(current, CHAPTERS.iter().map(|chapter| (chapter.name.to_string(), Some(chapter.summary.to_string()))))
 }
 
 // the scripts shells load: each asks `maw` itself what completes, through the COMPLETE variable

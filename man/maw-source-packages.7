@@ -1,0 +1,93 @@
+.TH "MAW-SOURCE-PACKAGES" "7" "" "maw 0.2.3" "maw manual"
+.SH NAME
+maw-source-packages \- templates of your own, drafted from nixpkgs or the aur
+.SH DESCRIPTION
+.PP
+Anything the Void repos don't have, you can build yourself with an xbps-src template in \fBsrcpkgs/<name>/template\fR:
+.PP
+.EX
+maw src new hello        # writes a blank template and opens it
+maw install hello        # builds it with xbps-src, installs it, records it
+maw src build hello      # rebuilds after you change the template
+.EE
+.PP
+To draft a template from nixpkgs instead of writing one:
+.PP
+.EX
+maw src new lazygit --from-nix           # from nixpkgs' lazygit
+maw src new rg --from-nix ripgrep        # a different name than nixpkgs uses
+maw src update lazygit                   # later: move it to nixpkgs' current version, then rebuild
+.EE
+.PP
+maw reads the package's metadata from nixpkgs (it never builds with nix) and fills in the version, description, license, homepage, source url and its checksum, the build style (go, cargo, meson, cmake, python, or configure), and the dependencies, using Void's names:
+.PP
+.EX
+# scaffolded by maw from nixpkgs 'ripgrep' at 4975466d3247
+pkgname=ripgrep
+version=15.2.0
+revision=1
+build_style=cargo
+hostmakedepends="pkg-config"
+makedepends="pcre2-devel"
+# TODO: nix had 'libfoo'
+\&...
+.EE
+.PP
+A dependency maw can't match to a Void package is left as a \fB# TODO\fR line. Fix it by hand; when you close the editor, maw asks whether to remember what you replaced it with (\fBrecord libfoo -> foo-devel in depmap? [Y/n]\fR) and saves it to \fBdepmap.nix\fR in your repo, so the next scaffold gets it right. Nix-only build helpers are dropped on their own. Check a draft before building: nixpkgs sometimes patches or configures a package in ways a template needs spelled out, like ripgrep's \fBconfigure_args="--features=pcre2"\fR.
+.PP
+The nixpkgs checkout lives at \fB~/.local/share/maw/nixpkgs\fR (a shallow nixos-unstable clone, about 400MB), made on first use; \fBmaw.nixpkgs\fR in \fBconfig.nix\fR points elsewhere.
+.PP
+Or from an AUR package, which works the same way:
+.PP
+.EX
+maw src new wlogout --from-aur           # from the aur's wlogout
+maw src new yay --from-aur yay-bin       # a different name than the aur uses
+.EE
+.PP
+maw reads the AUR's metadata and the package's PKGBUILD. It never runs the PKGBUILD: it reads its plain assignments and simple \fB${var}\fR expansions, so anything cleverer shows up as a \fB# TODO\fR. The build style comes from the build tools and the PKGBUILD's \fBbuild()\fR. Arch's \fBdepends\fR holds both libraries and programs, so libraries go to \fBmakedepends\fR as their \fB-devel\fR package and programs to \fBdepends\fR. The PKGBUILD's \fBpackage()\fR is kept as comments at the end of the draft, for install steps the build style doesn't cover (licenses, completions, config files):
+.PP
+.EX
+# the PKGBUILD's package(), for anything the build style doesn't cover:
+#	install -Dm644 man/paru.8 "$pkgdir/usr/share/man/man8/paru.8"
+#	install -Dm644 completions/zsh "${pkgdir}/usr/share/zsh/site-functions/_paru"
+.EE
+.PP
+A \fB-bin\fR package that repackages prebuilt files gets no build style and a TODO to port its \fBpackage()\fR into \fBdo_install()\fR. A \fB-git\fR package builds from a checkout, which xbps-src can't do; draft from the release package instead. Arch-only dependencies, like \fBpacman\fR, stay as TODOs to delete.
+.PP
+\fBsrc update\fR works on templates drafted either way, which it recognizes by their \fB# scaffolded by maw\fR line; it touches only \fBversion\fR, \fBrevision\fR, \fBdistfiles\fR, and \fBchecksum\fR, so your other edits stay. On a template you wrote yourself, it follows the upstream's releases instead; see updating (\fBmaw help updating\fR).
+.SS "Patching Void's packages"
+.PP
+To change a package Void already has, give it patches instead of a template:
+.PP
+.EX
+srcpkgs/gnome-network-displays/
+  patches/
+    gnd-dmabuf-gl.patch
+.EE
+.PP
+.EX
+maw src build gnome-network-displays    # void's template, plus your patches
+.EE
+.PP
+maw builds Void's own template with your patches applied after Void's (in name order, or the order of a \fBseries\fR file you put next to them), installs it in place of Void's build, and holds it so \fBmaw sync\fR never swaps Void's unpatched build back. When Void releases a new version, \fBmaw status\fR shows \fBoutdated gnome-network-displays 0.99.0_1 -> 1.0.0_1 + patches\fR, and \fBmaw src build\fR (or the next \fBmaw sync\fR) updates the clone to Void's latest templates and rebuilds with your patches. If a patch stops applying to the new version, the build fails and the patched old version stays installed. Delete the \fBsrcpkgs/\fR dir to go back to Void's build; the next \fBmaw sync\fR releases the hold and reinstalls it.
+.PP
+A name with a template in \fBsrcpkgs/\fR is always a source build, and it's recorded under \fBpackages.xbps\fR like any other package; the template's presence is what makes it one. The template is written in xbps-src's own format; see the Void manual on templates (https://github.com/void-linux/void-packages/blob/master/Manual.md).
+.PP
+Builds happen in a void-packages clone maw keeps at \fB~/.local/share/maw/void-packages\fR. The first build clones it (shallowly) and bootstraps its build root, which takes a few minutes; after that, each template is copied into the clone's \fBsrcpkgs/\fR and built with \fBxbps-src pkg <name>\fR, and the package is installed from the clone's \fBhostdir/binpkgs\fR. A template can't use the name of a package void-packages already has; patch that package instead. To build in a clone of your own instead, in \fBconfig.nix\fR:
+.PP
+.EX
+maw.voidPackages = "~/void-packages";
+.EE
+.PP
+Activation builds and installs a declared source package that isn't installed at all. It doesn't rebuild on its own when you change a template: \fBmaw status\fR shows \fBoutdated hello 0.1_1 -> 0.2_1\fR, and \fBmaw src build hello\fR (or the next \fBmaw sync\fR) rebuilds it and upgrades the installed package.
+.PP
+While any source package is declared, maw also manages \fB/etc/xbps.d/10-maw-local.conf\fR, which adds the clone's \fBhostdir/binpkgs\fR to xbps's repositories, so \fBxbps-query\fR, \fBxbps-install\fR, and \fBxbps-install -Su\fR see your builds like any other package.
+.SS "Cleaning up"
+.PP
+Building leaves things behind in the clone: dependencies xbps-src downloaded for the build, and every version of every package it built. After each source package it installs, maw cleans up: the dependencies downloaded to build with go (the next build downloads what it needs again), and so does every built version that's neither installed nor recorded in a \fBmaw help history\fR, since rollback installs those from here. Squashing (\fBmaw help squashing\fR) generations lets old builds go too. To do the same by hand:
+.PP
+.EX
+maw src clean    # freed 612 MB
+.EE
+.PP
+Next: chapter 8, services (\fBmaw help 8\fR).

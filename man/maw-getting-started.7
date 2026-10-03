@@ -1,0 +1,153 @@
+.TH "MAW-GETTING-STARTED" "7" "" "maw 0.2.3" "maw manual"
+.SH NAME
+maw-getting-started \- making a repo, building, activating
+.SH DESCRIPTION
+.PP
+A maw repo holds everything about your machine. This chapter makes one, renders it, and puts it in place: \fBinit\fR, \fBbuild\fR, and \fBactivate\fR, the three steps everything else builds on.
+.SH "SETTING UP"
+.PP
+.EX
+maw init ~/dotfiles
+.EE
+.PP
+This creates the repo, or fills in whatever an existing one is missing, and records its path in \fB~/.config/maw/dotfiles\fR. Existing files are never overwritten.
+.PP
+.EX
+~/dotfiles/
+  default.nix    # entry point, leave as is
+  config.nix     # your shared values
+  maw.nix        # written by maw
+  modules/       # one <name>.nix per program
+  static/        # verbatim files
+  out/           # rendered output, a dir per machine, committed with the repo
+.EE
+.PP
+Every other command finds the repo through that recorded path, so it works from any directory.
+.PP
+Moving an existing setup in? Follow \fBmaw help migrating\fR instead.
+.SS "On a new machine"
+.PP
+.EX
+maw init https://github.com/you/dotfiles          # clones to ~/dotfiles
+maw init git@github.com:you/dotfiles.git ~/dots   # or anywhere
+.EE
+.PP
+Given a git url, \fBinit\fR clones the repo, prints the plan of what activating would do, and asks \fBactivate now? [Y/n]\fR. Saying yes installs every declared package, links and copies every file, and enables every service: the machine becomes the one the repo describes.
+.PP
+Nix isn't needed for that. If it isn't installed, maw activates from the committed \fBout/<machine>/\fR and its index, \fBout/<machine>/.maw/index.json\fR, which every activation keeps up to date; name the new machine after one that has been activated with nix (see \fBmaw help machines\fR). To do the same by hand: \fBmaw activate --no-build\fR. Install nix (\fBmaw install nix\fR) before editing modules; without it maw can't render them.
+.SH "BUILDING"
+.PP
+.EX
+maw build
+.EE
+.PP
+Renders every module into \fBout/<machine>/<name>/\fR (each machine renders into its own dir, since machines can differ), named after the file's destination: \fBout/laptop/niri/config.kdl\fR, \fBout/laptop/waybar/style.css\fR. Output lists what happened:
+.PP
+.EX
+eval niri
+write out/laptop/niri/config.kdl
+remove out/laptop/foot/foot.ini
+.EE
+.PP
+\fBup to date\fR means nothing needed doing.
+.PP
+Builds are incremental:
+.IP \(bu 2
+A module is re-evaluated only when its file, \fBconfig.nix\fR, \fBmaw.nix\fR, or maw itself changed. Editing \fBconfig.nix\fR re-evaluates every module.
+.IP \(bu 2
+A file in \fBout/\fR is rewritten only when its content changed.
+.IP \(bu 2
+Files in \fBout/\fR that no module produces anymore are deleted.
+.IP \(bu 2
+A file in \fBout/\fR edited by hand (usually through its link, see drift) is never overwritten. \fBmaw build --force\fR backs up the edit and overwrites it.
+.SH "ACTIVATING"
+.PP
+.EX
+maw activate
+.EE
+.PP
+Builds, then symlinks every file into place:
+.IP \(bu 2
+rendered files link to \fBout/\fR: \fB~/.config/niri/config.kdl -> ~/dotfiles/out/laptop/niri/config.kdl\fR
+.IP \(bu 2
+files in \fBstatic/<name>/\fR link as they are, each file on its own: \fBstatic/nvim/init.lua\fR goes to \fB~/.config/nvim/init.lua\fR
+.PP
+.EX
+link ~/.config/niri/config.kdl
+backup ~/.config/fuzzel/fuzzel.ini -> ~/.local/state/maw/backups/.config/fuzzel/fuzzel.ini
+link ~/.config/fuzzel/fuzzel.ini
+update ~/.config/waybar/style.css
+unlink ~/.config/foot/foot.ini
+set /org/gnome/desktop/interface/color-scheme 'prefer-dark'
+reload waybar
+.EE
+.IP \(bu 2
+\fBlink\fR: a new link. If a real file or someone else's link was already there, it's moved to the backups dir first (\fBbackup\fR).
+.IP \(bu 2
+\fBrelink\fR: the file now comes from somewhere else, e.g. it moved from a module to \fBstatic/\fR.
+.IP \(bu 2
+\fBupdate\fR: the content behind an existing link changed. Nothing needs doing on disk.
+.IP \(bu 2
+\fBunlink\fR: a module or static file was removed, so its link is too. A backup made when it was first linked stays in the backups dir.
+.IP \(bu 2
+\fBset\fR / \fBreset\fR: a desktop setting declared with \fBmaw help modules\fR was written, or reset once nothing declares it.
+.IP \(bu 2
+\fBreload\fR: a program whose files changed was told to read them again, last, once everything is in place; see \fBmaw help modules\fR.
+.PP
+Since everything is a link, a change reaches the live file as soon as it's in \fBout/\fR or \fBstatic/\fR. Running \fBmaw activate\fR twice in a row does nothing the second time.
+.SS "System files"
+.PP
+Files under \fB/\fR (a registry entry with \fBroot = true\fR, like greetd's \fB/etc/greetd/config.toml\fR) are copied with \fBsudo\fR instead of linked, since \fB/home\fR may not be mounted when the system reads them at boot:
+.PP
+.EX
+backup /etc/greetd/config.toml -> ~/.local/state/maw/backups/system/etc/greetd/config.toml
+copy /etc/greetd/config.toml
+delete /etc/old/thing.conf
+.EE
+.IP \(bu 2
+\fBcopy\fR: the file is new, or changed in the repo. The first time maw replaces a file it didn't write, the original is saved first (\fBbackup\fR).
+.IP \(bu 2
+\fBdelete\fR: nothing declares it anymore. A file someone edited since maw copied it is left alone.
+.PP
+A copy edited by hand is drift, like an edited link: reported as \fBedited\fR, left alone, and overwritten (after a backup) only with \fB--force\fR.
+.PP
+\fBmaw activate --dry-run\fR prints the plan and changes nothing, not even \fBout/\fR. \fBmaw activate --no-build\fR skips nix and activates what's committed in \fBout/\fR; see on a new machine.
+.SS "Loose static files"
+.PP
+Files at the top of \fBstatic/\fR, outside any \fB<name>/\fR dir, are placed by type:
+.PP
+.EX
+file                         goes to
+executable                   ~/.local/bin/
+image (png, jpg, webp, ...)  ~/.local/share/wallpapers/
+font (ttf, otf, woff, ...)   ~/.local/share/fonts/
+.EE
+.PP
+Anything else, or a file that fits more than one row, gets a question the first time you activate in a terminal:
+.PP
+.EX
+static/notes.txt: [s]cript, [w]allpaper, [f]ont, or a path: ~/notes.txt
+record notes.txt in maw.nix
+.EE
+.PP
+A path works like a registry path: relative paths are under \fB~/.config\fR, and a path ending in \fB/\fR is a directory. The answer is recorded in \fBmaw.nix\fR \fBpaths\fR, so you're asked only once. An empty answer, or a run without a terminal, skips the file for now.
+.SS "Drift"
+.PP
+maw never overwrites a change it didn't make. It reports two kinds:
+.PP
+.EX
+drift ~/.config/niri/config.kdl: replaced by another file; --force to relink
+drift ~/.config/waybar/style.css: edited in place; --force to overwrite
+.EE
+.IP \(bu 2
+\fBreplaced\fR: the link is gone and something else sits there, often an app that saves by writing a new file.
+.IP \(bu 2
+\fBedited\fR: the file was edited through its link, so \fBout/\fR holds your edit instead of what the module renders.
+.PP
+Desktop settings declared with \fBmaw help modules\fR drift the same way: \fBdrift /org/gnome/desktop/interface/color-scheme: changed since maw set it; --force to overwrite\fR.
+.PP
+Drifted files are left alone and reported on every run. To keep the change, move it into the module or \fBstatic/\fR. To discard it, run \fBmaw activate --force\fR, which backs up the drifted file and puts maw's version back.
+.PP
+Editing a \fBstatic/\fR file through its link is not drift: the link points straight at \fBstatic/\fR, so you're editing the repo.
+.PP
+Next: chapter 3, day to day (\fBmaw help 3\fR).

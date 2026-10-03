@@ -10,11 +10,14 @@ pub struct Flatpak<'a> {
     runner: &'a dyn Runner,
     sysroot: PathBuf,
     home: PathBuf,
+    // where the installation keeps its apps: the system one, or a scratch root's user one
+    installation: PathBuf,
 }
 
 impl<'a> Flatpak<'a> {
     pub fn new(runner: &'a dyn Runner, env: &Env) -> Self {
-        Flatpak { runner, sysroot: env.sysroot.clone(), home: env.home.clone() }
+        let installation = if env.sysroot == Path::new("/") { PathBuf::from("/var/lib/flatpak") } else { env.home.join(".local/share/flatpak") };
+        Flatpak { runner, sysroot: env.sysroot.clone(), home: env.home.clone(), installation }
     }
 
     // the system installation on the real root; a scratch root gets a user installation under its home, so it never touches the machine
@@ -36,9 +39,12 @@ impl<'a> Flatpak<'a> {
         Ok(as_root(self.runner, &self.sysroot, "flatpak", &args)?)
     }
 
-    // the full commit an installed app is at
+    // the full commit an installed app is at: the name its deploy's `active` link points at, which flatpak info reads
+    // too, else flatpak info itself
     fn commit(&self, id: &str) -> Option<String> {
-        Some(self.query(&["info", "--show-commit", id]).ok()?.trim().to_string()).filter(|commit| !commit.is_empty())
+        let active = std::fs::read_link(self.installation.join("app").join(id).join("current/active")).ok();
+        let on_disk = active.and_then(|commit| Some(commit.file_name()?.to_string_lossy().into_owned())).filter(|commit| commit.len() == 64);
+        on_disk.or_else(|| Some(self.query(&["info", "--show-commit", id]).ok()?.trim().to_string()).filter(|commit| !commit.is_empty()))
     }
 
     // an app from flathub's appstream api: None when flathub says it has no such app, the bare id when it can't be asked
@@ -170,9 +176,24 @@ mod tests {
     }
 
     #[test]
+    fn commits_come_from_the_deploy_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let commit = "9ca1af9262bd6f208c8e247bce01d1300eabd2342d19a2b8c92f9cd4d541fc77";
+        let current = dir.path().join("home/.local/share/flatpak/app/com.slack.Slack/current");
+        std::fs::create_dir_all(&current).unwrap();
+        std::os::unix::fs::symlink(commit, current.join("active")).unwrap();
+        let runner = FakeRunner::new(|_, _| String::new());
+        let flatpak = Flatpak::new(&runner, &env(&dir.path().join("sys").display().to_string()));
+        let flatpak = Flatpak { installation: dir.path().join("home/.local/share/flatpak"), ..flatpak };
+        assert_eq!(flatpak.commit("com.slack.Slack").as_deref(), Some(commit));
+        assert!(runner.calls.borrow().is_empty());
+    }
+
+    #[test]
     fn list_reads_apps_and_their_commits() {
         let runner = FakeRunner::new(fake);
-        let apps = Flatpak::new(&runner, &env("/")).list().unwrap();
+        // no deploy links to read, so the commits come from flatpak info
+        let apps = Flatpak { installation: PathBuf::from("/nonexistent"), ..Flatpak::new(&runner, &env("/")) }.list().unwrap();
         assert_eq!(apps.iter().map(|app| (app.source.as_str(), app.version.as_str(), app.build.as_str())).collect::<Vec<_>>(), [
             ("com.slack.Slack", "4.52.155", "15c0ffee"),
             ("com.tomjwatson.Emote", "4.0.2", "20c0ffee")

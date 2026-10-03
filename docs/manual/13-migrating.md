@@ -1,4 +1,4 @@
-# Migrating
+# 13. Migrating
 
 How to move a machine you already configured by hand, or with stow or a bare git repo, into maw. Nothing on disk changes until the final `maw activate`, and everything it replaces is backed up first.
 
@@ -35,12 +35,12 @@ maw add ~/.gitconfig --no-activate
 maw add ~/.local/bin/powermenu --no-activate
 ```
 
-Each copy lands back exactly where it came from; see "Adding verbatim files" in `maw help usage`.
+Each copy lands back exactly where it came from; see [adding verbatim files](03-day-to-day.md#adding-verbatim-files).
 
 ### What to leave out
 
 - Files an app rewrites on its own, like a GUI's settings file or a plugin lockfile. Linked, they turn into drift every time the app saves.
-- Anything holding secrets or tokens (`gh/hosts.yml`, `rclone.conf`), unless you encrypt it with `maw add --secret`; see "Encrypted files" in `maw help usage`.
+- Anything holding secrets or tokens (`gh/hosts.yml`, `rclone.conf`), unless you encrypt it with `maw add --secret`; see [secrets](09-secrets.md).
 - Configs for programs you no longer have installed.
 
 ## 3. Check before touching anything
@@ -101,3 +101,5 @@ mv ~/.local/state/maw/backups/.config/foot/foot.ini ~/.config/foot/foot.ini
 ```
 
 A module or static file you remove from the repo is unlinked on the next `maw activate`; its backup stays where it is, so restore it the same way.
+
+Next: chapter 14, troubleshooting (`maw help 14`).

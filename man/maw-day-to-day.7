@@ -1,0 +1,93 @@
+.TH "MAW-DAY-TO-DAY" "7" "" "maw 0.2.3" "maw manual"
+.SH NAME
+maw-day-to-day \- writing, editing, adding, and checking config
+.SH DESCRIPTION
+.PP
+Most of the time with maw is changing config: a new module for a program, an edit, a file copied in as it is, and a look at what's out of sync before activating.
+.SH "WRITING A MODULE"
+.PP
+.EX
+maw new foot
+maw new foot --format ini
+.EE
+.PP
+Creates \fBmodules/foot.nix\fR, opens it in your editor, and activates when you close it. The format defaults to the registry's for that program (\fBraw\fR if it has none), and a program with several files gets a \fBfiles\fR set with a format per file, guessed from each file's extension.
+.PP
+If the program already has a config where the module will put it, the file is imported as \fBlib.raw\fR, so the module renders exactly what you had:
+.PP
+.EX
+{ config, lib, ... }:
+lib.program "foot" {
+  format = "ini";
+  # imported from ~/.config/foot/foot.ini
+  settings = lib.raw ''
+    [main]
+    font=monospace:size=11
+  '';
+}
+.EE
+.PP
+From there, move settings out of the raw block into Nix at your own pace.
+.SH "EDITING"
+.PP
+.EX
+maw edit foot       # modules/foot.nix, or static/foot/ if there's no module
+maw edit config     # config.nix
+.EE
+.PP
+Opens \fB$VISUAL\fR, else \fB$EDITOR\fR, else \fBvi\fR, then activates. If the module doesn't evaluate, maw prints the error and asks whether to reopen it.
+.SH "ADDING VERBATIM FILES"
+.PP
+.EX
+maw add ~/.config/nvim          # a whole dir, file by file
+maw add ~/.bashrc
+maw add ~/.tmux.conf tmux       # under an explicit name
+.EE
+.PP
+Copies into \fBstatic/\fR and activates, so the original is backed up and replaced by a link to the copy. Each file lands back exactly where it came from:
+.IP \(bu 2
+a path the registry knows is filed under that program: \fB~/.bashrc\fR becomes \fBstatic/bash/.bashrc\fR
+.IP \(bu 2
+a path under \fB~/.config/<name>/\fR is filed under \fB<name>\fR: \fBstatic/nvim/init.lua\fR
+.IP \(bu 2
+anything else goes at the top of \fBstatic/\fR, like a loose file (\fBmaw help loose static files\fR)
+.PP
+When the registry alone would put the copy somewhere else, the original path is recorded in \fBmaw.nix\fR \fBpaths\fR. Adding a file maw already links is an error.
+.PP
+\fBedit\fR, \fBnew\fR, and \fBadd\fR all take \fB--no-activate\fR, to change several things and activate once at the end, e.g. when moving an existing setup into maw.
+.SH "CHECKING"
+.PP
+.EX
+maw status
+.EE
+.PP
+The one report of everything out of sync, one line each, or \fBclean\fR. First what \fBmaw activate\fR would change, then what \fBmaw.nix\fR doesn't cover:
+.PP
+.EX
+label       meaning
+missing     a declared package isn't installed
+new         declared, not linked yet
+blocked     a file maw doesn't manage is in the way; activating backs it up
+changed     a module changed and out/ hasn't caught up, or a declared desktop setting isn't set yet
+moved       the file now comes from somewhere else
+stale       no longer declared; activating unlinks, deletes, or disables it
+replaced    drift (maw help drift): the link was replaced
+edited      drift (maw help drift): edited through the link, or a desktop setting changed by hand
+skipped     desktop settings can't be applied now, e.g. outside a desktop session
+unplaced    a loose static file with no destination yet
+disabled    a declared service isn't enabled
+restart     a running service's files changed
+undeclared  installed by hand or enabled, but not in maw.nix; see adopting (maw help adopting)
+orphan      a module or static/ dir for a program that isn't installed
+outdated    a source package whose template is at a newer version than what's installed, or whose patches aren't built into the installed package yet; see maw help source packages
+.EE
+.PP
+A program counts as installed when any source has a package by that name or a command by that name is on your \fBPATH\fR, so \fBstatic/nvim/\fR isn't an orphan while \fBneovim\fR is installed. Data dirs like \fBfonts\fR and \fBwallpapers\fR are never orphans.
+.PP
+.EX
+maw diff
+.EE
+.PP
+A unified diff of each live file against what maw would put there, the same as \fBmaw activate --force\fR would leave. Removed links diff against nothing. Neither command writes anything.
+.PP
+Next: chapter 4, modules (\fBmaw help 4\fR).

@@ -7,10 +7,12 @@ let
     concatStrings
     concatStringsSep
     filterAttrs
+    genAttrs
     hasInfix
     hasPrefix
     isAttrs
     isList
+    mapAttrs
     mapAttrsToList
     replicate
     ;
@@ -375,6 +377,35 @@ let
       content = renderFile (if isAttrs format then format.${key} else format) fileSettings;
     }) files;
 
+  # a flatpak app's permissions and environment, written as flatpak's own user overrides for that app id; lists are
+  # written the way flatpak does, each item followed by ;, and an item starting with ! takes a permission away
+  flatpak =
+    id:
+    {
+      env ? { },
+      sockets ? [ ],
+      filesystems ? [ ],
+      devices ? [ ],
+      shared ? [ ],
+      talk ? [ ],
+      own ? [ ],
+    }:
+    let
+      joined = concatMapStrings (item: "${item};");
+      context = filterAttrs (_: list: list != [ ]) { inherit sockets filesystems devices shared; };
+      bus = genAttrs talk (_: "talk") // genAttrs own (_: "own");
+      sections = filterAttrs (_: section: section != { }) {
+        Context = mapAttrs (_: joined) context;
+        Environment = env;
+        "Session Bus Policy" = bus;
+      };
+    in
+    program "flatpak" {
+      format = "ini";
+      path = id;
+      settings = sections;
+    };
+
   # a gvariant string as g_variant_print writes it: double quotes when it holds a single quote, else single
   gvariantString =
     text:
@@ -525,9 +556,12 @@ let
       log ? true,
       enable ? true,
       env ? { },
+      core ? false,
     }:
     if !builtins.elem scope [ "system" "user" ] then
       throw "maw: service ${name} has scope ${toString scope}; use \"system\" or \"user\""
+    else if core && scope != "user" then
+      throw "maw: service ${name} is core; only user services can be"
     else
       [
         {
@@ -536,7 +570,7 @@ let
           content = "";
           executable = false;
           service = {
-            inherit run log enable;
+            inherit run log enable core;
             env = builtins.mapAttrs (_: toString) env;
           };
         }
@@ -549,6 +583,7 @@ nixpkgs
     isRaw
     program
     service
+    flatpak
     dconf
     color
     toGVariant

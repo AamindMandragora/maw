@@ -1,4 +1,5 @@
 use crate::env::Env;
+use crate::inputs::{hash_bytes, load_json, save_json};
 use crate::repo::Repo;
 use crate::runner::{RunError, Runner};
 use serde::{Deserialize, Serialize};
@@ -109,9 +110,19 @@ fn matugen(runner: &dyn Runner, args: &[String]) -> Result<String, ThemeError> {
 }
 
 // the colors an image offers to grow a palette from, most dominant first
-fn candidates(runner: &dyn Runner, image: &Path) -> Result<usize, ThemeError> {
+// how many candidate colors an image has, asked of matugen once per image and remembered by its content
+fn candidates(env: &Env, runner: &dyn Runner, image: &Path) -> Result<usize, ThemeError> {
+    let record = env.state_dir.join("wallpaper-colors.json");
+    let mut counts: BTreeMap<String, usize> = load_json(&record).unwrap_or_default();
+    let hash = hash_bytes(&fs::read(image).map_err(io(image))?);
+    if let Some(count) = counts.get(&hash) {
+        return Ok(*count);
+    }
     let output = matugen(runner, &["image".into(), image.display().to_string(), "--show-source-colors".into()])?;
-    Ok(output.lines().filter(|line| line.trim().starts_with('#')).count().max(1))
+    let count = output.lines().filter(|line| line.trim().starts_with('#')).count().max(1);
+    counts.insert(hash, count);
+    save_json(&record, &counts).ok();
+    Ok(count)
 }
 
 // a mode's colors from matugen's json: { name: { dark: { color }, light: { color } } }
@@ -121,9 +132,9 @@ fn mode_colors(section: &Value, mode: &str) -> BTreeMap<String, String> {
 }
 
 // a palette from static/wallpapers/<name>, grown from the candidate color at index, or a random one
-pub fn generate(runner: &dyn Runner, repo: &Repo, name: &str, settings: &ThemeSettings, index: Option<usize>) -> Result<Theme, ThemeError> {
+pub fn generate(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, settings: &ThemeSettings, index: Option<usize>) -> Result<Theme, ThemeError> {
     let image = wallpapers_dir(repo).join(name);
-    let count = candidates(runner, &image)?;
+    let count = candidates(env, runner, &image)?;
     let index = index.unwrap_or_else(|| random(count)).min(count - 1);
 
     let mut args: Vec<String> = ["image", &image.display().to_string(), "-m", &settings.mode, "-t", &settings.scheme, "--source-color-index", &index.to_string()].map(String::from).to_vec();
@@ -165,7 +176,7 @@ pub fn adopt(repo: &Repo, image: &Path) -> Result<(String, bool), ThemeError> {
 
 // sets the theme to a wallpaper, with a random candidate color
 pub fn set(env: &Env, runner: &dyn Runner, repo: &Repo, name: &str, settings: &ThemeSettings) -> Result<Theme, ThemeError> {
-    let theme = generate(runner, repo, name, settings, None)?;
+    let theme = generate(env, runner, repo, name, settings, None)?;
     save(env, &theme)?;
     Ok(theme)
 }
@@ -186,8 +197,8 @@ pub fn ensure(env: &Env, runner: &dyn Runner, repo: &Repo, settings: Option<&The
     let wanted = settings.cloned().or_else(|| current.as_ref().map(|theme| theme.settings.clone()));
     let theme = match (current, wanted) {
         (Some(theme), Some(wanted)) if theme.settings == wanted => return Ok(()),
-        (Some(theme), Some(wanted)) => generate(runner, repo, theme.image.trim_start_matches("static/wallpapers/"), &wanted, Some(theme.index))?,
-        (None, Some(wanted)) => generate(runner, repo, wallpapers(repo).first().ok_or(ThemeError::NoWallpapers)?, &wanted, Some(0))?,
+        (Some(theme), Some(wanted)) => generate(env, runner, repo, theme.image.trim_start_matches("static/wallpapers/"), &wanted, Some(theme.index))?,
+        (None, Some(wanted)) => generate(env, runner, repo, wallpapers(repo).first().ok_or(ThemeError::NoWallpapers)?, &wanted, Some(0))?,
         (_, None) => return Ok(()),
     };
     save(env, &theme)
@@ -214,10 +225,14 @@ mod tests {
         let fixture = fixture(&[]);
         write(&fixture.repo.static_dir().join("wallpapers/paper.jpg"), "jpeg");
         let runner = matugen();
-        let theme = generate(&runner, &fixture.repo, "paper.jpg", &ThemeSettings::default(), Some(2)).unwrap();
+        let theme = generate(&fixture.env, &runner, &fixture.repo, "paper.jpg", &ThemeSettings::default(), Some(2)).unwrap();
         assert_eq!((theme.colors["primary"].as_str(), theme.base16["base00"].as_str(), theme.source.as_str()), ("#a6d0b0", "#0c2011", "#7f8d2e"));
         assert_eq!((theme.index, theme.count, theme.image.as_str()), (2, 3, "static/wallpapers/paper.jpg"));
         assert!(runner.calls.borrow().last().unwrap().contains("-m dark -t scheme-tonal-spot --source-color-index 2 --json hex --dry-run -q"));
+
+        // the image's candidates are remembered: a second palette asks matugen once
+        generate(&fixture.env, &runner, &fixture.repo, "paper.jpg", &ThemeSettings::default(), Some(1)).unwrap();
+        assert_eq!(runner.calls.borrow().iter().filter(|call| call.contains("--show-source-colors")).count(), 1);
     }
 
     #[test]

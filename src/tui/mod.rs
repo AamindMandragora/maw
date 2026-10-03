@@ -77,15 +77,20 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
     let mut app = App::new();
     let mut reply: Option<Sender<Option<String>>> = None;
     let mut previewed = (usize::MAX, String::new());
+    // drawn only after something changed: a key, a message, or a load; an idle tui does nothing between events
+    let mut dirty = true;
 
     loop {
-        term.draw(&app)?;
+        if std::mem::take(&mut dirty) {
+            term.draw(&app)?;
+        }
 
         // a tab loads the first time it's shown, and again after anything runs; packages wait while showing a search
         let showing_search = app.finding.is_some() && app.current_tab() == Tab::Packages;
         if !app.state().loaded && !showing_search {
             let tab = app.current_tab();
             app.set_rows(tab, data::load(env, &runner, tab));
+            dirty = true;
             continue;
         }
 
@@ -94,10 +99,11 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
         if selected != previewed {
             app.preview = data::preview(env, app.current_tab(), &selected.1);
             previewed = selected;
+            dirty = true;
         }
 
         let request = match event::poll(Duration::from_millis(100))? {
-            true => match event::read()? {
+            true => match event::read().inspect(|_| dirty = true)? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
                 Event::Mouse(mouse) => app.handle_mouse(mouse),
                 _ => None,
@@ -128,6 +134,7 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
 
         // everything the background command sent since the last frame
         while let Ok(message) = receiver.try_recv() {
+            dirty = true;
             match message {
                 Message::Line(line) => app.output.push(line),
                 Message::Ask(question, answer) => {
@@ -157,6 +164,7 @@ fn event_loop(env: &Env, term: &mut Term, sender: &Sender<Message>, receiver: &R
 
 // every tab reloads the next time it's shown
 fn reload(app: &mut App) {
+    crate::runner::forget();
     app.finding = None;
     TABS.iter().enumerate().for_each(|(index, _)| app.tabs[index].loaded = false);
 }

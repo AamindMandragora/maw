@@ -25,3 +25,9 @@ tempfile = "3"
 
 [workspace]
 members = ["tools/scrape-registry"]
+
+# a smaller, faster binary at the cost of a slower release build
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
